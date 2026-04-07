@@ -2,11 +2,13 @@
 
 # volta-gateway
 
-Auth-aware reverse proxy powered by state machine.
+Auth-aware reverse proxy for small-to-medium SaaS, powered by state machine.
 
 **Every request rides on rails** — the state machine ensures that only valid transitions happen. No request smuggling. No forgotten auth checks. No invisible failures.
 
-> **Why build your own proxy?** Because Traefik's ForwardAuth adds 4-10ms per request (2 HTTP round-trips). volta-gateway does it in 0.5-1ms (localhost, 1 round-trip). And every step is visible.
+> **For large-scale deployments (50+ services, Kubernetes, Canary deploys):** use [Traefik](https://traefik.io/) + [volta-auth-proxy](https://github.com/opaopa6969/volta-auth-proxy) with ForwardAuth. Traefik's ecosystem is unmatched for orchestration.
+>
+> **For small-to-medium SaaS (5-20 services, auth latency matters):** volta-gateway gives you 5-10x faster auth checks, per-step visibility, and a single YAML config.
 
 ## How it works
 

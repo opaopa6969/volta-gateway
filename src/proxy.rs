@@ -15,8 +15,29 @@ use crate::auth::{AuthResult, VoltaAuthClient};
 use crate::flow::{self, AuthData, BackendResponse, RequestData, RouteTarget};
 use crate::state::ProxyState;
 
-/// Routing table: host → (backend_url, app_id)
-pub type RoutingTable = HashMap<String, (String, Option<String>)>;
+/// GW-23: Routing table with multiple backends for round-robin LB.
+/// host → (backend_urls, app_id)
+pub type RoutingTable = HashMap<String, (Vec<String>, Option<String>)>;
+
+/// Round-robin backend selector.
+#[derive(Clone)]
+pub struct BackendSelector {
+    counter: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl BackendSelector {
+    pub fn new() -> Self {
+        Self { counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)) }
+    }
+
+    pub fn select<'a>(&self, backends: &'a [String]) -> &'a str {
+        if backends.len() <= 1 {
+            return &backends[0];
+        }
+        let idx = self.counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % backends.len();
+        &backends[idx]
+    }
+}
 
 /// PH2-2: Per-IP + global rate limiter.
 #[derive(Clone)]
@@ -85,6 +106,7 @@ pub struct ProxyService {
     pub routing: Arc<RoutingTable>,
     flow_def: Arc<FlowDefinition<ProxyState>>,
     pub rate_limiter: RateLimiter,
+    backend_selector: BackendSelector,
 }
 
 impl ProxyService {
@@ -93,7 +115,7 @@ impl ProxyService {
             .pool_max_idle_per_host(64)
             .build_http();
         let flow_def = flow::build_proxy_flow(routing.clone());
-        Self { volta, backend_client, routing, flow_def, rate_limiter: RateLimiter::new(1000, 100) }
+        Self { volta, backend_client, routing, flow_def, rate_limiter: RateLimiter::new(1000, 100), backend_selector: BackendSelector::new() }
     }
 
     /// Handle a single request through the SM lifecycle.
@@ -104,6 +126,17 @@ impl ProxyService {
         if !self.rate_limiter.allow(remote_addr.ip()) {
             warn!(state = "RATE_LIMITED", client_ip = %remote_addr.ip());
             return rate_limited_response(&request_id);
+        }
+
+        // GW-19: WebSocket upgrade detection
+        let is_upgrade = req.headers().get("upgrade")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.eq_ignore_ascii_case("websocket"))
+            .unwrap_or(false);
+        if is_upgrade {
+            // TODO Phase 4: TCP tunnel for WebSocket proxy
+            warn!(state = "WEBSOCKET_UNSUPPORTED", client_ip = %remote_addr.ip());
+            return error_response(StatusCode::NOT_IMPLEMENTED, &request_id);
         }
 
         let start = Instant::now();
@@ -156,7 +189,10 @@ impl ProxyService {
                 None => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &request_id),
             };
             match flow.context.get::<RouteTarget>() {
-                Ok(rt) => (rt.backend_url.clone(), rt.app_id.clone()),
+                Ok(rt) => {
+                    let selected = self.backend_selector.select(&rt.backends).to_string();
+                    (selected, rt.app_id.clone())
+                }
                 Err(_) => return error_response(StatusCode::BAD_REQUEST, &request_id),
             }
         };
@@ -275,6 +311,11 @@ impl ProxyService {
         }
         headers.insert("x-request-id", request_id.parse().unwrap());
 
+        // GW-21: CORS headers
+        headers.insert("access-control-allow-origin", "*".parse().unwrap());
+        headers.insert("access-control-allow-methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS".parse().unwrap());
+        headers.insert("access-control-allow-headers", "Content-Type, Authorization, X-CSRF-Token".parse().unwrap());
+
         // GW-4: Security response headers
         headers.insert("strict-transport-security",
             "max-age=31536000; includeSubDomains".parse().unwrap());
@@ -303,11 +344,20 @@ impl ProxyService {
     }
 }
 
+/// GW-26: Extract host, handling IPv6 literals like [::1]:8080
 fn extract_host(req: &Request<Incoming>) -> Option<String> {
     req.headers()
         .get("host")
         .and_then(|v| v.to_str().ok())
-        .map(|h| h.split(':').next().unwrap_or(h).to_lowercase())
+        .map(|h| {
+            if h.starts_with('[') {
+                // IPv6: [::1]:8080 → [::1]
+                h.split(']').next().map(|s| format!("{}]", s)).unwrap_or_else(|| h.to_string())
+            } else {
+                // IPv4/hostname: app.example.com:8080 → app.example.com
+                h.split(':').next().unwrap_or(h).to_string()
+            }.to_lowercase()
+        })
 }
 
 fn error_response(status: StatusCode, request_id: &str) -> Response<BoxBody<Bytes, hyper::Error>> {

@@ -32,6 +32,9 @@ tramli = "0.1"
 # IP allowlist (CIDR parsing)
 ipnet = "2"
 
+# Atomic config swap for hot reload
+arc-swap = "1"
+
 # Utilities
 uuid = { version = "1", features = ["v4"] }
 

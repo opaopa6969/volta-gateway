@@ -2,11 +2,13 @@
 
 # volta-gateway
 
-ステートマシン駆動の認証対応リバースプロキシ。
+中小規模 SaaS 向け、ステートマシン駆動の認証対応リバースプロキシ。
 
 **全てのリクエストはレールの上を走る** — ステートマシンが有効な遷移だけを許可する。リクエストスマグリングなし。認証チェック忘れなし。見えない障害なし。
 
-> **なぜプロキシを自作するのか？** Traefik の ForwardAuth はリクエストあたり 4-10ms 追加（HTTP 2往復）。volta-gateway は 0.5-1ms（localhost、1往復）。そして全ステップが可視化される。
+> **大規模 (50+ サービス, Kubernetes, Canary):** [Traefik](https://traefik.io/) + [volta-auth-proxy](https://github.com/opaopa6969/volta-auth-proxy) の ForwardAuth を推奨。Traefik のエコシステムはオーケストレーションで無敵。
+>
+> **中小規模 SaaS (5-20 サービス, 認証レイテンシ重視):** volta-gateway なら認証チェック 5-10倍速、ステップ別可視化、YAML 1ファイル設定。
 
 ## 仕組み
 

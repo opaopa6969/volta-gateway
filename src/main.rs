@@ -25,13 +25,15 @@ use proxy::ProxyService;
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "volta_gateway=info".into()),
-        )
-        .json()
-        .init();
+    // GW-24: VOLTA_LOG_FORMAT=pretty for human-readable logs (default: json)
+    let log_format = std::env::var("VOLTA_LOG_FORMAT").unwrap_or_else(|_| "json".into());
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "volta_gateway=info".into());
+    if log_format == "pretty" {
+        tracing_subscriber::fmt().with_env_filter(filter).pretty().init();
+    } else {
+        tracing_subscriber::fmt().with_env_filter(filter).json().init();
+    }
 
     let config_path = std::env::args()
         .nth(1)
@@ -71,6 +73,32 @@ async fn main() {
         info!("shutdown signal received — draining connections...");
         shutdown_flag.store(true, Ordering::SeqCst);
     });
+
+    // GW-22: SIGHUP config reload notification
+    #[cfg(unix)]
+    {
+        let config_path_clone = config_path.clone();
+        tokio::spawn(async move {
+            let mut sighup = tokio::signal::unix::signal(
+                tokio::signal::unix::SignalKind::hangup()
+            ).expect("failed to register SIGHUP");
+            loop {
+                sighup.recv().await;
+                match GatewayConfig::load(std::path::Path::new(&config_path_clone)) {
+                    Ok(new_config) => {
+                        if let Err(errors) = new_config.validate() {
+                            for e in &errors { warn!("reload config error: {e}"); }
+                        } else {
+                            info!(routes = new_config.routing.len(),
+                                "config reloaded from {}. Restart to apply routing changes.",
+                                config_path_clone);
+                        }
+                    }
+                    Err(e) => warn!("failed to reload config: {e}"),
+                }
+            }
+        });
+    }
 
     // PH2-2: Rate limiter GC task (cleanup idle IP entries every 30s)
     let rl = proxy.rate_limiter.clone();

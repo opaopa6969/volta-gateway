@@ -10,8 +10,8 @@ use volta_gateway::state::ProxyState;
 
 fn test_routing() -> Arc<RoutingTable> {
     let mut rt = RoutingTable::new();
-    rt.insert("app.example.com".into(), ("http://localhost:3000".into(), Some("app-wiki".into())));
-    rt.insert("*.example.com".into(), ("http://localhost:3001".into(), None));
+    rt.insert("app.example.com".into(), (vec!["http://localhost:3000".into()], Some("app-wiki".into())));
+    rt.insert("*.example.com".into(), (vec!["http://localhost:3001".into()], None));
     Arc::new(rt)
 }
 

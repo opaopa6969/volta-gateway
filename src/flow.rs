@@ -24,7 +24,8 @@ pub struct RequestData {
 
 #[derive(Debug, Clone)]
 pub struct RouteTarget {
-    pub backend_url: String,
+    pub backend_url: String,       // selected by round-robin (or first)
+    pub backends: Vec<String>,     // all available backends
     pub app_id: Option<String>,
 }
 
@@ -93,7 +94,7 @@ impl StateProcessor<ProxyState> for RoutingResolver {
         let req = ctx.get::<RequestData>()?;
         let host = req.host.clone();
 
-        let (backend, app_id) = self.routing.get(&host)
+        let (backends, app_id) = self.routing.get(&host)
             .or_else(|| {
                 host.splitn(2, '.').nth(1)
                     .and_then(|domain| self.routing.get(&format!("*.{domain}")))
@@ -101,7 +102,11 @@ impl StateProcessor<ProxyState> for RoutingResolver {
             .ok_or_else(|| FlowError::new("BAD_REQUEST", "No route"))?
             .clone();
 
-        ctx.put(RouteTarget { backend_url: backend, app_id });
+        let backend = backends.first()
+            .ok_or_else(|| FlowError::new("BAD_REQUEST", "No backends configured"))?
+            .clone();
+
+        ctx.put(RouteTarget { backend_url: backend, backends, app_id });
         Ok(())
     }
 }

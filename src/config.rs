@@ -42,11 +42,27 @@ pub struct AuthConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct RouteEntry {
     pub host: String,
-    pub backend: String,
+    /// Single backend (simple)
+    #[serde(default)]
+    pub backend: Option<String>,
+    /// Multiple backends for load balancing (round-robin)
+    #[serde(default)]
+    pub backends: Vec<String>,
     #[serde(default)]
     pub app_id: Option<String>,
     #[serde(default)]
     pub ip_allowlist: Vec<String>,
+}
+
+impl RouteEntry {
+    /// Get all backend URLs (merges `backend` and `backends`).
+    pub fn all_backends(&self) -> Vec<String> {
+        let mut result: Vec<String> = self.backends.clone();
+        if let Some(ref b) = self.backend {
+            if !result.contains(b) { result.insert(0, b.clone()); }
+        }
+        result
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -115,11 +131,11 @@ impl GatewayConfig {
         if errors.is_empty() { Ok(()) } else { Err(errors) }
     }
 
-    /// Build routing table: host → (backend_url, app_id)
-    pub fn routing_table(&self) -> HashMap<String, (String, Option<String>)> {
+    /// Build routing table: host → (backend_urls, app_id)
+    pub fn routing_table(&self) -> HashMap<String, (Vec<String>, Option<String>)> {
         self.routing
             .iter()
-            .map(|r| (r.host.clone(), (r.backend.clone(), r.app_id.clone())))
+            .map(|r| (r.host.clone(), (r.all_backends(), r.app_id.clone())))
             .collect()
     }
 
