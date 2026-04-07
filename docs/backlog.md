@@ -77,16 +77,21 @@
 | GW-42 | URI unwrap_or_default | セキュリティ | 🟢 Low | 不正入力で予想外ルーティングのリスク (低) |
 | GW-54 | SM 遷移ログ活用事例 | DX | 🟢 Low | Grafana ダッシュボード等の実運用例 |
 
-## v0.5.0 backlog (プロダクト進化)
+## v0.5.0 完了 (プロダクト進化)
+
+| # | Item | Status | Description |
+|---|------|--------|-------------|
+| PROD-1 | Backend health check | ✅ | per-backend alive flag + background ping + dead skip |
+| PROD-2 | Admin API | ✅ | /admin/routes, /admin/backends, /admin/reload, /admin/drain (localhost only) |
+| PROD-3 | HTTP reload endpoint | ✅ | POST /admin/reload — config reload via HTTP |
+| PROD-4 | CF-Connecting-IP trusted proxy | ✅ | server.trusted_proxies + CF-Connecting-IP / X-Real-IP |
+| PROD-5 | Metrics histogram | ✅ | 8 cumulative buckets (1ms-5s-Inf) for Prometheus |
+
+## v0.6.0 backlog
 
 | # | Item | Category | Severity | Description |
 |---|------|----------|----------|-------------|
-| PROD-1 | Backend health check + 自動切り離し | 運用 | 🟠 High | HealthCheckConfig 実装。per-backend AtomicBool alive flag、バックグラウンド定期 ping、BackendSelector で dead skip |
-| PROD-2 | Admin API | 運用 | 🟠 High | `GET /admin/routes` (routing table), `GET /admin/backends` (health + pool), `POST /admin/drain` (graceful)。ip_allowlist 127.0.0.1/8 制限。volta-console service card 連携 |
-| PROD-3 | HTTP reload endpoint | 運用 | 🟠 High | `POST /admin/reload` — SIGHUP に加えて HTTP 経由で config reload。volta-console から curl 一発 |
-| PROD-4 | CF-Connecting-IP trusted proxy | セキュリティ | 🟠 High | trusted_proxies config。CF-Connecting-IP があれば client_ip として採用。FraudAlert JA3/JA4 連携の前提 |
-| PROD-5 | Metrics histogram | 可観測性 | 🟡 Medium | AtomicU64 bucket カウンタ (1ms/5ms/25ms/100ms/500ms/1s/5s)。route 別ラベル。Grafana latency 分布 |
-| PROD-6 | Chunked body Limited | セキュリティ | 🟡 Medium | `http_body_util::Limited` で body をラップ。content-length なし chunked の 10MB すり抜け対策 |
+| PROD-6 | Chunked body Limited | セキュリティ | 🟡 Medium | `http_body_util::Limited` で body をラップ。chunked 10MB すり抜け対策 |
 
 ## Design Decisions
 
