@@ -18,6 +18,7 @@ mod auth;
 mod proxy;
 mod flow;
 mod metrics;
+mod websocket;
 
 use config::GatewayConfig;
 use auth::VoltaAuthClient;

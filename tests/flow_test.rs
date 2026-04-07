@@ -35,6 +35,7 @@ fn happy_path_auto_chains_to_routed() {
             method: "GET".into(),
             header_size: 200,
             content_length: None,
+            client_ip: None,
         })),
     ];
 
@@ -64,6 +65,7 @@ fn wildcard_routing_works() {
             method: "GET".into(),
             header_size: 100,
             content_length: None,
+            client_ip: None,
         })),
     ];
 
@@ -88,6 +90,7 @@ fn unknown_host_goes_to_error() {
             method: "GET".into(),
             header_size: 100,
             content_length: None,
+            client_ip: None,
         })),
     ];
 
@@ -110,6 +113,7 @@ fn path_traversal_rejected() {
             method: "GET".into(),
             header_size: 100,
             content_length: None,
+            client_ip: None,
         })),
     ];
 
@@ -131,6 +135,7 @@ fn oversized_headers_rejected() {
             method: "GET".into(),
             header_size: 10000, // > 8192
             content_length: None,
+            client_ip: None,
         })),
     ];
 
@@ -152,6 +157,7 @@ fn full_lifecycle_with_resume() {
             method: "GET".into(),
             header_size: 200,
             content_length: None,
+            client_ip: None,
         })),
     ];
 
@@ -197,6 +203,7 @@ fn transition_log_records_all_steps() {
             method: "GET".into(),
             header_size: 100,
             content_length: None,
+            client_ip: None,
         })),
     ];
 

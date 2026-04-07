@@ -20,6 +20,7 @@ pub struct RequestData {
     pub method: String,
     pub header_size: usize,
     pub content_length: Option<u64>,
+    pub client_ip: Option<std::net::IpAddr>,
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +44,7 @@ pub struct BackendResponse {
 
 pub struct RequestValidator {
     pub routing: Arc<RoutingTable>,
+    pub ip_allowlists: HashMap<String, Vec<ipnet::IpNet>>,
 }
 
 impl StateProcessor<ProxyState> for RequestValidator {
@@ -75,6 +77,16 @@ impl StateProcessor<ProxyState> for RequestValidator {
         };
         if !known {
             return Err(FlowError::new("BAD_REQUEST", "Unknown host"));
+        }
+
+        // GW-17: IP allowlist enforcement
+        if let Some(allowlist) = self.ip_allowlists.get(&req.host) {
+            if let Some(client_ip) = req.client_ip {
+                let allowed = allowlist.iter().any(|net| net.contains(&client_ip));
+                if !allowed {
+                    return Err(FlowError::new("DENIED", "IP not in allowlist"));
+                }
+            }
         }
 
         Ok(())
@@ -163,6 +175,13 @@ impl TransitionGuard<ProxyState> for ForwardGuard {
 // ─── Flow Definition ────────────────────────────────────
 
 pub fn build_proxy_flow(routing: Arc<RoutingTable>) -> Arc<FlowDefinition<ProxyState>> {
+    build_proxy_flow_with_allowlist(routing, HashMap::new())
+}
+
+pub fn build_proxy_flow_with_allowlist(
+    routing: Arc<RoutingTable>,
+    ip_allowlists: HashMap<String, Vec<ipnet::IpNet>>,
+) -> Arc<FlowDefinition<ProxyState>> {
     use ProxyState::*;
 
     Arc::new(
@@ -170,7 +189,7 @@ pub fn build_proxy_flow(routing: Arc<RoutingTable>) -> Arc<FlowDefinition<ProxyS
             .ttl(Duration::from_secs(30))
             .initially_available(vec![TypeId::of::<RequestData>()])
 
-            .from(Received).auto(Validated, RequestValidator { routing: routing.clone() })
+            .from(Received).auto(Validated, RequestValidator { routing: routing.clone(), ip_allowlists })
             .from(Validated).auto(Routed, RoutingResolver { routing })
             .from(Routed).external(AuthChecked, AuthGuard)
             .from(AuthChecked).external(Forwarded, ForwardGuard)

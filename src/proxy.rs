@@ -128,15 +128,15 @@ impl ProxyService {
             return rate_limited_response(&request_id);
         }
 
-        // GW-19: WebSocket upgrade detection
+        // GW-19: WebSocket upgrade → delegate to websocket module
         let is_upgrade = req.headers().get("upgrade")
             .and_then(|v| v.to_str().ok())
             .map(|v| v.eq_ignore_ascii_case("websocket"))
             .unwrap_or(false);
         if is_upgrade {
-            // TODO Phase 4: TCP tunnel for WebSocket proxy
-            warn!(state = "WEBSOCKET_UNSUPPORTED", client_ip = %remote_addr.ip());
-            return error_response(StatusCode::NOT_IMPLEMENTED, &request_id);
+            return crate::websocket::handle_websocket(
+                req, remote_addr, &self.volta, &self.routing,
+            ).await;
         }
 
         let start = Instant::now();
@@ -161,6 +161,7 @@ impl ProxyService {
             method: method.to_string(),
             header_size,
             content_length,
+            client_ip: Some(remote_addr.ip()),
         };
 
         // ─── SM Phase 1: start_flow (sync) ──────────────────
