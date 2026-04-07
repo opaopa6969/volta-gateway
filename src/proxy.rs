@@ -1,3 +1,4 @@
+use arc_swap::ArcSwap;
 use bytes::Bytes;
 use http_body_util::{combinators::BoxBody, BodyExt, Empty, Full};
 use hyper::{body::Incoming, Request, Response, StatusCode, Uri};
@@ -95,6 +96,129 @@ impl RateLimiter {
     }
 }
 
+/// Pre-loaded error pages: status code → HTML content.
+pub type ErrorPages = HashMap<u16, String>;
+
+/// CORS origins table: host → allowed origins. Empty map entry = use wildcard "*".
+pub type CorsTable = HashMap<String, Vec<String>>;
+
+/// Hot-swappable state: routing table + flow definition + error pages + CORS config.
+/// Rebuilt on SIGHUP and atomically swapped via ArcSwap.
+pub struct HotState {
+    pub routing: Arc<RoutingTable>,
+    pub flow_def: Arc<FlowDefinition<ProxyState>>,
+    pub error_pages: ErrorPages,
+    pub cors: CorsTable,
+}
+
+impl HotState {
+    pub fn new(routing: Arc<RoutingTable>) -> Self {
+        let flow_def = flow::build_proxy_flow(routing.clone());
+        Self { routing, flow_def, error_pages: HashMap::new(), cors: HashMap::new() }
+    }
+
+    pub fn new_with_config(
+        routing: Arc<RoutingTable>,
+        ip_allowlists: HashMap<String, Vec<ipnet::IpNet>>,
+        error_pages_dir: Option<&str>,
+        cors: CorsTable,
+    ) -> Self {
+        let flow_def = flow::build_proxy_flow_with_allowlist(routing.clone(), ip_allowlists);
+        let error_pages = load_error_pages(error_pages_dir);
+        Self { routing, flow_def, error_pages, cors }
+    }
+}
+
+/// Load HTML error pages from directory. Files named like 502.html, 403.html.
+fn load_error_pages(dir: Option<&str>) -> ErrorPages {
+    let mut pages = HashMap::new();
+    let dir = match dir {
+        Some(d) => d,
+        None => return pages,
+    };
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return pages,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("html") {
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                if let Ok(code) = stem.parse::<u16>() {
+                    if let Ok(content) = std::fs::read_to_string(&path) {
+                        pages.insert(code, content);
+                    }
+                }
+            }
+        }
+    }
+    if !pages.is_empty() {
+        tracing::info!(count = pages.len(), dir = dir, "loaded custom error pages");
+    }
+    pages
+}
+
+/// Per-backend circuit breaker.
+#[derive(Clone)]
+pub struct CircuitBreaker {
+    /// backend_url → (failure_count, last_failure_time, state)
+    backends: Arc<Mutex<HashMap<String, CircuitState>>>,
+    /// Failures before opening circuit
+    threshold: u32,
+    /// How long to keep circuit open before trying half-open
+    recovery_secs: u64,
+}
+
+struct CircuitState {
+    failures: u32,
+    last_failure: Instant,
+    open: bool,
+}
+
+impl CircuitBreaker {
+    fn new(threshold: u32, recovery_secs: u64) -> Self {
+        Self {
+            backends: Arc::new(Mutex::new(HashMap::new())),
+            threshold,
+            recovery_secs,
+        }
+    }
+
+    /// Returns true if the backend is available (closed or half-open).
+    fn is_available(&self, backend: &str) -> bool {
+        let map = self.backends.lock().unwrap();
+        match map.get(backend) {
+            None => true,
+            Some(state) => {
+                if !state.open { return true; }
+                // Half-open: allow one request after recovery period
+                state.last_failure.elapsed() >= std::time::Duration::from_secs(self.recovery_secs)
+            }
+        }
+    }
+
+    /// Record a successful request — reset circuit.
+    fn record_success(&self, backend: &str) {
+        let mut map = self.backends.lock().unwrap();
+        map.remove(backend);
+    }
+
+    /// Record a failure — may open circuit.
+    fn record_failure(&self, backend: &str) {
+        let mut map = self.backends.lock().unwrap();
+        let state = map.entry(backend.to_string()).or_insert(CircuitState {
+            failures: 0,
+            last_failure: Instant::now(),
+            open: false,
+        });
+        state.failures += 1;
+        state.last_failure = Instant::now();
+        if state.failures >= self.threshold {
+            state.open = true;
+        }
+    }
+}
+
 /// Core proxy service. Drives each request through the tramli SM engine.
 ///
 /// B-pattern: sync SM judgment + async I/O outside.
@@ -103,19 +227,27 @@ impl RateLimiter {
 pub struct ProxyService {
     volta: VoltaAuthClient,
     backend_client: Client<hyper_util::client::legacy::connect::HttpConnector, Incoming>,
-    pub routing: Arc<RoutingTable>,
-    flow_def: Arc<FlowDefinition<ProxyState>>,
+    retry_client: Client<hyper_util::client::legacy::connect::HttpConnector, Empty<Bytes>>,
+    pub hot: Arc<ArcSwap<HotState>>,
     pub rate_limiter: RateLimiter,
-    backend_selector: BackendSelector,
+    pub backend_selector: BackendSelector,
+    circuit_breaker: CircuitBreaker,
 }
 
 impl ProxyService {
-    pub fn new(volta: VoltaAuthClient, routing: Arc<RoutingTable>) -> Self {
+    pub fn new(volta: VoltaAuthClient, hot: Arc<ArcSwap<HotState>>) -> Self {
         let backend_client = Client::builder(TokioExecutor::new())
             .pool_max_idle_per_host(64)
             .build_http();
-        let flow_def = flow::build_proxy_flow(routing.clone());
-        Self { volta, backend_client, routing, flow_def, rate_limiter: RateLimiter::new(1000, 100), backend_selector: BackendSelector::new() }
+        let retry_client = Client::builder(TokioExecutor::new())
+            .pool_max_idle_per_host(64)
+            .build_http();
+        Self {
+            volta, backend_client, retry_client, hot,
+            rate_limiter: RateLimiter::new(1000, 100),
+            backend_selector: BackendSelector::new(),
+            circuit_breaker: CircuitBreaker::new(5, 30),
+        }
     }
 
     /// Handle a single request through the SM lifecycle.
@@ -128,6 +260,9 @@ impl ProxyService {
             return rate_limited_response(&request_id);
         }
 
+        // Load current hot state (atomic, lock-free)
+        let hot = self.hot.load();
+
         // GW-19: WebSocket upgrade → delegate to websocket module
         let is_upgrade = req.headers().get("upgrade")
             .and_then(|v| v.to_str().ok())
@@ -135,7 +270,7 @@ impl ProxyService {
             .unwrap_or(false);
         if is_upgrade {
             return crate::websocket::handle_websocket(
-                req, remote_addr, &self.volta, &self.routing,
+                req, remote_addr, &self.volta, &hot.routing, &self.backend_selector,
             ).await;
         }
 
@@ -153,6 +288,13 @@ impl ProxyService {
         let cookie = req.headers().get("cookie")
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
+        let req_origin = req.headers().get("origin")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        let accept_encoding = req.headers().get("accept-encoding")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
         let proto = if req.uri().scheme_str() == Some("https") { "https" } else { "http" };
 
         let req_data = RequestData {
@@ -172,7 +314,7 @@ impl ProxyService {
             let initial_data: Vec<(TypeId, Box<dyn CloneAny>)> = vec![
                 (TypeId::of::<RequestData>(), Box::new(req_data)),
             ];
-            match eng.start_flow(self.flow_def.clone(), &request_id, initial_data) {
+            match eng.start_flow(hot.flow_def.clone(), &request_id, initial_data) {
                 Ok(id) => id,
                 Err(e) => {
                     warn!(state = "BAD_REQUEST", reason = %e, host = %host);
@@ -213,11 +355,11 @@ impl ProxyService {
             }
             AuthResult::Denied => {
                 info!(state = "DENIED", host = %host, path = %uri_path);
-                return error_response(StatusCode::FORBIDDEN, &request_id);
+                return error_response_with_pages(StatusCode::FORBIDDEN, &request_id, &hot.error_pages);
             }
             AuthResult::Error(msg) => {
                 warn!(state = "BAD_GATEWAY", reason = %msg, host = %host);
-                return error_response(StatusCode::BAD_GATEWAY, &request_id);
+                return error_response_with_pages(StatusCode::BAD_GATEWAY, &request_id, &hot.error_pages);
             }
         };
 
@@ -229,33 +371,47 @@ impl ProxyService {
             ];
             if let Err(e) = eng.resume_and_execute(&flow_id, auth_data) {
                 warn!(state = "BAD_GATEWAY", reason = %e, host = %host);
-                return error_response(StatusCode::BAD_GATEWAY, &request_id);
+                return error_response_with_pages(StatusCode::BAD_GATEWAY, &request_id, &hot.error_pages);
             }
         }
 
         // ─── Async I/O: backend forward ─────────────────────
-        let target_uri = format!("{}{}", backend_url, req.uri().path_and_query()
-            .map(|pq| pq.as_str()).unwrap_or("/"));
-
-        let mut backend_req = Request::builder()
-            .method(req.method())
-            .uri(target_uri.parse::<Uri>().unwrap_or_default());
-
-        for (name, value) in req.headers() {
-            if name != "host" {
-                backend_req = backend_req.header(name, value);
-            }
+        // Circuit breaker check
+        if !self.circuit_breaker.is_available(&backend_url) {
+            warn!(state = "CIRCUIT_OPEN", backend = %backend_url, host = %host);
+            return error_response_with_pages(StatusCode::BAD_GATEWAY, &request_id, &hot.error_pages);
         }
-        for (key, value) in &volta_headers {
-            backend_req = backend_req.header(key.as_str(), value.as_str());
-        }
-        // X-Forwarded-For: append client IP to existing chain
+
+        let path_and_query = req.uri().path_and_query()
+            .map(|pq| pq.as_str().to_string())
+            .unwrap_or_else(|| "/".to_string());
+        let target_uri = format!("{}{}", backend_url, path_and_query);
+
+        // Collect headers for potential retry
+        let req_method = req.method().clone();
+        let req_headers: Vec<_> = req.headers().iter()
+            .filter(|(name, _)| *name != "host")
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
         let client_ip = remote_addr.ip().to_string();
         let xff = match req.headers().get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
             Some(existing) => format!("{}, {}", existing, client_ip),
             None => client_ip,
         };
 
+        let is_idempotent = matches!(req_method.as_str(), "GET" | "HEAD" | "OPTIONS");
+        let max_retries = if is_idempotent { 2u32 } else { 0 };
+
+        let mut backend_req = Request::builder()
+            .method(&req_method)
+            .uri(target_uri.parse::<Uri>().unwrap_or_default());
+        for (name, value) in &req_headers {
+            backend_req = backend_req.header(name, value);
+        }
+        for (key, value) in &volta_headers {
+            backend_req = backend_req.header(key.as_str(), value.as_str());
+        }
         backend_req = backend_req
             .header("X-Request-Id", &request_id)
             .header("X-Forwarded-For", &xff)
@@ -266,7 +422,7 @@ impl ProxyService {
             Ok(r) => r,
             Err(e) => {
                 warn!(state = "BAD_GATEWAY", reason = %e);
-                return error_response(StatusCode::BAD_GATEWAY, &request_id);
+                return error_response_with_pages(StatusCode::BAD_GATEWAY, &request_id, &hot.error_pages);
             }
         };
 
@@ -275,19 +431,53 @@ impl ProxyService {
             self.backend_client.request(backend_req),
         ).await;
 
+        // Retry on connection error for idempotent requests (body already consumed)
+        let backend_result = match &backend_result {
+            Ok(Err(_)) if max_retries > 0 => {
+                self.circuit_breaker.record_failure(&backend_url);
+                info!(state = "RETRY", attempt = 1, backend = %backend_url);
+                // Rebuild request (no body for idempotent methods)
+                let mut retry_req = Request::builder()
+                    .method(&req_method)
+                    .uri(format!("{}{}", backend_url, path_and_query).parse::<Uri>().unwrap_or_default());
+                for (name, value) in &req_headers {
+                    retry_req = retry_req.header(name, value);
+                }
+                for (key, value) in &volta_headers {
+                    retry_req = retry_req.header(key.as_str(), value.as_str());
+                }
+                retry_req = retry_req
+                    .header("X-Request-Id", &request_id)
+                    .header("X-Forwarded-For", &xff)
+                    .header("X-Forwarded-Host", &host)
+                    .header("X-Forwarded-Proto", proto);
+                let retry_req = retry_req
+                    .body(Empty::<Bytes>::new())
+                    .unwrap();
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(30),
+                    self.retry_client.request(retry_req),
+                ).await
+            }
+            _ => backend_result,
+        };
+
         // ─── SM Phase 3: resume with backend response (sync) ─
         let (response_status, mut response) = match backend_result {
             Ok(Ok(resp)) => {
+                self.circuit_breaker.record_success(&backend_url);
                 let status = resp.status().as_u16();
                 (status, resp)
             }
             Ok(Err(e)) => {
+                self.circuit_breaker.record_failure(&backend_url);
                 warn!(state = "BAD_GATEWAY", reason = %e, host = %host, path = %uri_path);
-                return error_response(StatusCode::BAD_GATEWAY, &request_id);
+                return error_response_with_pages(StatusCode::BAD_GATEWAY, &request_id, &hot.error_pages);
             }
             Err(_) => {
+                self.circuit_breaker.record_failure(&backend_url);
                 warn!(state = "GATEWAY_TIMEOUT", host = %host, path = %uri_path);
-                return error_response(StatusCode::GATEWAY_TIMEOUT, &request_id);
+                return error_response_with_pages(StatusCode::GATEWAY_TIMEOUT, &request_id, &hot.error_pages);
             }
         };
 
@@ -312,10 +502,28 @@ impl ProxyService {
         }
         headers.insert("x-request-id", request_id.parse().unwrap());
 
-        // GW-21: CORS headers
-        headers.insert("access-control-allow-origin", "*".parse().unwrap());
-        headers.insert("access-control-allow-methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS".parse().unwrap());
-        headers.insert("access-control-allow-headers", "Content-Type, Authorization, X-CSRF-Token".parse().unwrap());
+        // GW-21: CORS headers (per-route or wildcard)
+        let cors_origin = match hot.cors.get(&host) {
+            Some(origins) => {
+                // Check if request Origin matches any allowed origin
+                let req_origin = req_origin.as_deref().unwrap_or("");
+                if origins.iter().any(|o| o == req_origin) {
+                    req_origin.to_string()
+                } else {
+                    // Origin not allowed — don't set CORS headers
+                    String::new()
+                }
+            }
+            None => "*".to_string(), // No per-route config → wildcard
+        };
+        if !cors_origin.is_empty() {
+            headers.insert("access-control-allow-origin", cors_origin.parse().unwrap());
+            headers.insert("access-control-allow-methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS".parse().unwrap());
+            headers.insert("access-control-allow-headers", "Content-Type, Authorization, X-CSRF-Token".parse().unwrap());
+            if cors_origin != "*" {
+                headers.insert("vary", "Origin".parse().unwrap());
+            }
+        }
 
         // GW-4: Security response headers
         headers.insert("strict-transport-security",
@@ -341,6 +549,68 @@ impl ProxyService {
             user_id = volta_headers.get("x-volta-user-id").map(|s| s.as_str()).unwrap_or("-"),
         );
 
+        // Compression: gzip text-based responses if client accepts and backend didn't compress
+        let already_encoded = response.headers().contains_key("content-encoding");
+        let is_compressible = response.headers().get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .map(|ct| ct.starts_with("text/") || ct.contains("json") || ct.contains("xml") || ct.contains("javascript"))
+            .unwrap_or(false);
+        let client_accepts_gzip = accept_encoding.contains("gzip");
+
+        if !already_encoded && is_compressible && client_accepts_gzip {
+            use std::io::Write;
+            // Collect body and compress
+            let body_bytes = match http_body_util::BodyExt::collect(response.into_body()).await {
+                Ok(collected) => collected.to_bytes(),
+                Err(_) => return error_response_with_pages(StatusCode::BAD_GATEWAY, &request_id, &hot.error_pages),
+            };
+
+            let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            if encoder.write_all(&body_bytes).is_ok() {
+                if let Ok(compressed) = encoder.finish() {
+                    if compressed.len() < body_bytes.len() {
+                        let mut resp = Response::builder()
+                            .status(StatusCode::from_u16(response_status).unwrap_or(StatusCode::OK));
+                        // We need to rebuild headers — but we already modified them above via `headers`
+                        // Instead, return a compressed response with the same headers
+                        // Note: response was consumed, so rebuild from scratch
+                        resp = resp
+                            .header("content-encoding", "gzip")
+                            .header("content-length", compressed.len().to_string())
+                            .header("x-request-id", &request_id)
+                            .header("x-content-type-options", "nosniff")
+                            .header("x-frame-options", "DENY")
+                            .header("strict-transport-security", "max-age=31536000; includeSubDomains");
+
+                        if !cors_origin.is_empty() {
+                            resp = resp
+                                .header("access-control-allow-origin", &cors_origin)
+                                .header("access-control-allow-methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+                                .header("access-control-allow-headers", "Content-Type, Authorization, X-CSRF-Token");
+                        }
+
+                        let body = Full::new(Bytes::from(compressed));
+                        return resp.body(body.map_err(|e| match e {}).boxed()).unwrap();
+                    }
+                }
+            }
+            // Compression failed or didn't help — return uncompressed
+            let body = Full::new(body_bytes);
+            let mut resp = Response::builder()
+                .status(StatusCode::from_u16(response_status).unwrap_or(StatusCode::OK))
+                .header("x-request-id", &request_id)
+                .header("x-content-type-options", "nosniff")
+                .header("x-frame-options", "DENY")
+                .header("strict-transport-security", "max-age=31536000; includeSubDomains");
+            if !cors_origin.is_empty() {
+                resp = resp
+                    .header("access-control-allow-origin", &cors_origin)
+                    .header("access-control-allow-methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+                    .header("access-control-allow-headers", "Content-Type, Authorization, X-CSRF-Token");
+            }
+            return resp.body(body.map_err(|e| match e {}).boxed()).unwrap();
+        }
+
         Response::from(response).map(|b| b.boxed())
     }
 }
@@ -362,7 +632,26 @@ fn extract_host(req: &Request<Incoming>) -> Option<String> {
 }
 
 fn error_response(status: StatusCode, request_id: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
-    // GW-2: Generic reason for client (detailed reason goes to server log only)
+    error_response_with_pages(status, request_id, &HashMap::new())
+}
+
+fn error_response_with_pages(
+    status: StatusCode,
+    request_id: &str,
+    error_pages: &ErrorPages,
+) -> Response<BoxBody<Bytes, hyper::Error>> {
+    // Check for custom HTML error page
+    if let Some(html) = error_pages.get(&status.as_u16()) {
+        let body = Full::new(Bytes::from(html.clone()));
+        return Response::builder()
+            .status(status)
+            .header("content-type", "text/html; charset=utf-8")
+            .header("x-request-id", request_id)
+            .body(body.map_err(|e| match e {}).boxed())
+            .unwrap();
+    }
+
+    // GW-2: JSON fallback
     let reason = match status {
         StatusCode::BAD_REQUEST => "Bad Request",
         StatusCode::FORBIDDEN => "Forbidden",

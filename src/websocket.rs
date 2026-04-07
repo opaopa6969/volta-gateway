@@ -1,27 +1,30 @@
 use bytes::Bytes;
-use http_body_util::{combinators::BoxBody, BodyExt, Empty};
+use http_body_util::{combinators::BoxBody, BodyExt, Empty, Full};
 use hyper::body::Incoming;
-use hyper::{Request, Response, StatusCode};
-use hyper_util::rt::TokioIo;
+use hyper::{Request, Response, StatusCode, Uri};
+use hyper_util::client::legacy::Client;
+use hyper_util::rt::{TokioExecutor, TokioIo};
 use std::sync::Arc;
-use tracing::{info, warn};
+use tokio::io::copy_bidirectional;
+use tracing::{info, warn, error};
 
 use crate::auth::{AuthResult, VoltaAuthClient};
-use crate::proxy::RoutingTable;
+use crate::proxy::{BackendSelector, RoutingTable};
 
 /// GW-19: WebSocket proxy — upgrade + bidirectional TCP tunnel.
 ///
 /// Flow:
-///   1. Auth check (volta /auth/verify) — authenticated users only
+///   1. Auth check (volta /auth/verify)
 ///   2. Resolve backend from routing table
-///   3. Send upgrade request to backend
-///   4. If backend accepts, upgrade client connection too
+///   3. Forward upgrade request to backend
+///   4. If backend accepts (101), upgrade client side too
 ///   5. Bidirectional copy (tokio::io::copy_bidirectional)
 pub async fn handle_websocket(
     req: Request<Incoming>,
     remote_addr: std::net::SocketAddr,
     volta: &VoltaAuthClient,
     routing: &Arc<RoutingTable>,
+    backend_selector: &BackendSelector,
 ) -> Response<BoxBody<Bytes, hyper::Error>> {
     let request_id = uuid::Uuid::new_v4().to_string();
 
@@ -44,18 +47,11 @@ pub async fn handle_websocket(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
-    let (_, app_id) = match routing.get(&host) {
-        Some(r) => r.clone(),
+    let (backends, app_id) = match resolve_backend(routing, &host) {
+        Some(r) => r,
         None => {
-            let wildcard = host.splitn(2, '.').nth(1)
-                .and_then(|domain| routing.get(&format!("*.{domain}")));
-            match wildcard {
-                Some(r) => r.clone(),
-                None => {
-                    warn!(state = "WS_BAD_REQUEST", reason = "unknown host", host = %host);
-                    return error_response(StatusCode::BAD_REQUEST, &request_id);
-                }
-            }
+            warn!(state = "WS_BAD_REQUEST", reason = "unknown host", host = %host);
+            return error_response(StatusCode::BAD_REQUEST, &request_id);
         }
     };
 
@@ -75,18 +71,11 @@ pub async fn handle_websocket(
         }
     }
 
-    // Resolve backend
-    let backends = match routing.get(&host).or_else(|| {
-        host.splitn(2, '.').nth(1)
-            .and_then(|d| routing.get(&format!("*.{d}")))
-    }) {
-        Some((backends, _)) => backends.clone(),
-        None => return error_response(StatusCode::BAD_GATEWAY, &request_id),
-    };
-    let backend = &backends[0];
+    // Select backend (round-robin)
+    let backend = backend_selector.select(&backends).to_string();
 
-    // Build WebSocket URL for backend
-    let ws_url = format!("{}{}", backend.replace("http://", "ws://").replace("https://", "wss://"),
+    // Build backend upgrade request
+    let backend_uri = format!("{}{}", backend,
         req.uri().path_and_query().map(|pq| pq.as_str()).unwrap_or("/"));
 
     info!(
@@ -97,38 +86,153 @@ pub async fn handle_websocket(
         client_ip = %remote_addr.ip(),
     );
 
-    // For Phase 4: actual TCP tunnel requires hyper::upgrade::on()
-    // on both client and backend sides, then tokio::io::copy_bidirectional.
-    // This is complex due to hyper 1.x's ownership model.
-    //
-    // For now, return 101 headers to indicate WebSocket support is recognized,
-    // but the actual tunnel will be implemented when we integrate with
-    // a WebSocket-aware backend proxy crate (e.g., tokio-tungstenite).
-    //
-    // Temporary: pass through to backend via normal HTTP
-    // (works for polling-based WebSocket fallback like Socket.IO)
-    info!(state = "WS_PASSTHROUGH", host = %host, path = %uri_path);
+    // Connect to backend with upgrade request
+    let mut backend_req = Request::builder()
+        .method("GET")
+        .uri(backend_uri.parse::<Uri>().unwrap_or_default());
 
-    // Forward as normal HTTP request (backend handles upgrade)
-    // This works because hyper's auto::Builder supports HTTP upgrades
-    // when the service returns a response with Upgrade header
-    let resp = Response::builder()
+    // Forward relevant headers
+    for (name, value) in req.headers() {
+        let key = name.as_str();
+        match key {
+            "host" => {} // skip — backend gets its own host
+            "upgrade" | "connection" | "sec-websocket-key"
+            | "sec-websocket-version" | "sec-websocket-protocol"
+            | "sec-websocket-extensions" | "cookie" | "authorization" => {
+                backend_req = backend_req.header(name, value);
+            }
+            _ if key.starts_with("x-") => {
+                backend_req = backend_req.header(name, value);
+            }
+            _ => {}
+        }
+    }
+    backend_req = backend_req
+        .header("X-Request-Id", &request_id)
+        .header("X-Forwarded-For", remote_addr.ip().to_string())
+        .header("X-Forwarded-Host", &host)
+        .header("X-Forwarded-Proto", "https");
+
+    let backend_req = match backend_req.body(Empty::<Bytes>::new()) {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(state = "WS_BAD_GATEWAY", reason = %e);
+            return error_response(StatusCode::BAD_GATEWAY, &request_id);
+        }
+    };
+
+    // Send upgrade request to backend
+    let backend_client: Client<_, Empty<Bytes>> = Client::builder(TokioExecutor::new())
+        .build_http();
+
+    let backend_resp = match tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        backend_client.request(backend_req),
+    ).await {
+        Ok(Ok(resp)) => resp,
+        Ok(Err(e)) => {
+            warn!(state = "WS_BAD_GATEWAY", reason = %e, backend = %backend);
+            return error_response(StatusCode::BAD_GATEWAY, &request_id);
+        }
+        Err(_) => {
+            warn!(state = "WS_GATEWAY_TIMEOUT", backend = %backend);
+            return error_response(StatusCode::GATEWAY_TIMEOUT, &request_id);
+        }
+    };
+
+    // Backend must respond with 101 Switching Protocols
+    if backend_resp.status() != StatusCode::SWITCHING_PROTOCOLS {
+        warn!(
+            state = "WS_BACKEND_REJECT",
+            status = backend_resp.status().as_u16(),
+            backend = %backend,
+        );
+        return error_response(StatusCode::BAD_GATEWAY, &request_id);
+    }
+
+    // Build 101 response for client, forwarding backend's WebSocket headers
+    let mut client_resp = Response::builder()
         .status(StatusCode::SWITCHING_PROTOCOLS)
-        .header("upgrade", "websocket")
-        .header("connection", "Upgrade")
-        .header("x-request-id", &request_id)
+        .header("x-request-id", &request_id);
+
+    for (name, value) in backend_resp.headers() {
+        let key = name.as_str();
+        match key {
+            "upgrade" | "connection" | "sec-websocket-accept"
+            | "sec-websocket-protocol" | "sec-websocket-extensions" => {
+                client_resp = client_resp.header(name, value);
+            }
+            _ => {}
+        }
+    }
+
+    let client_resp = client_resp
         .body(Empty::<Bytes>::new().map_err(|e| match e {}).boxed())
         .unwrap();
 
-    resp
+    // Spawn TCP tunnel: upgrade both sides and copy bidirectionally
+    let req_id = request_id.clone();
+    let host_log = host.clone();
+    tokio::spawn(async move {
+        // Upgrade backend connection
+        let backend_upgraded = match hyper::upgrade::on(backend_resp).await {
+            Ok(u) => u,
+            Err(e) => {
+                error!(state = "WS_TUNNEL_FAIL", side = "backend", reason = %e, request_id = %req_id);
+                return;
+            }
+        };
+
+        // Upgrade client connection
+        let client_upgraded = match hyper::upgrade::on(req).await {
+            Ok(u) => u,
+            Err(e) => {
+                error!(state = "WS_TUNNEL_FAIL", side = "client", reason = %e, request_id = %req_id);
+                return;
+            }
+        };
+
+        let mut client_io = TokioIo::new(client_upgraded);
+        let mut backend_io = TokioIo::new(backend_upgraded);
+
+        match copy_bidirectional(&mut client_io, &mut backend_io).await {
+            Ok((client_to_backend, backend_to_client)) => {
+                info!(
+                    state = "WS_TUNNEL_CLOSED",
+                    host = %host_log,
+                    request_id = %req_id,
+                    client_to_backend = client_to_backend,
+                    backend_to_client = backend_to_client,
+                );
+            }
+            Err(e) => {
+                // Normal: peer closed connection
+                let msg = e.to_string();
+                if msg.contains("reset") || msg.contains("broken pipe") || msg.contains("closed") {
+                    info!(state = "WS_TUNNEL_CLOSED", host = %host_log, request_id = %req_id);
+                } else {
+                    warn!(state = "WS_TUNNEL_ERROR", reason = %e, request_id = %req_id);
+                }
+            }
+        }
+    });
+
+    client_resp
+}
+
+fn resolve_backend(routing: &RoutingTable, host: &str) -> Option<(Vec<String>, Option<String>)> {
+    routing.get(host).cloned().or_else(|| {
+        host.splitn(2, '.').nth(1)
+            .and_then(|d| routing.get(&format!("*.{d}")).cloned())
+    })
 }
 
 fn error_response(status: StatusCode, request_id: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
-    use http_body_util::Full;
     let reason = match status {
         StatusCode::BAD_REQUEST => "Bad Request",
         StatusCode::FORBIDDEN => "Forbidden",
         StatusCode::BAD_GATEWAY => "Bad Gateway",
+        StatusCode::GATEWAY_TIMEOUT => "Gateway Timeout",
         _ => "Internal Server Error",
     };
     let body = Full::new(Bytes::from(format!(

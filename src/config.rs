@@ -15,6 +15,44 @@ pub struct GatewayConfig {
     pub healthcheck: HealthCheckConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
+    /// Directory containing custom error pages (e.g. 502.html, 403.html).
+    /// Falls back to JSON if not set or file not found.
+    #[serde(default)]
+    pub error_pages_dir: Option<String>,
+    /// TLS/ACME configuration. If set, enables HTTPS with Let's Encrypt.
+    #[serde(default)]
+    pub tls: Option<TlsConfig>,
+    /// L4 (TCP/UDP) proxy entries. Each entry forwards a local port to a backend.
+    #[serde(default)]
+    pub l4_proxy: Vec<L4ProxyEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct L4ProxyEntry {
+    /// Listen port
+    pub listen_port: u16,
+    /// Protocol: "tcp" or "udp"
+    #[serde(default = "default_l4_proto")]
+    pub protocol: String,
+    /// Backend address (e.g. "10.0.0.5:5432")
+    pub backend: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TlsConfig {
+    /// Domains for ACME certificate. Must match routing hosts.
+    pub domains: Vec<String>,
+    /// Contact email for Let's Encrypt (e.g. "mailto:admin@example.com")
+    pub contact_email: String,
+    /// HTTPS port (default: 443)
+    #[serde(default = "default_tls_port")]
+    pub port: u16,
+    /// Cache directory for ACME certificates (default: "./acme-cache")
+    #[serde(default = "default_acme_cache")]
+    pub cache_dir: String,
+    /// Use Let's Encrypt staging (default: false). Set to true for testing.
+    #[serde(default)]
+    pub staging: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -25,6 +63,9 @@ pub struct ServerConfig {
     pub read_timeout_secs: u64,
     #[serde(default = "default_request_timeout")]
     pub request_timeout_secs: u64,
+    /// Redirect HTTP to HTTPS (requires tls config). Default: false.
+    #[serde(default)]
+    pub force_https: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -52,6 +93,9 @@ pub struct RouteEntry {
     pub app_id: Option<String>,
     #[serde(default)]
     pub ip_allowlist: Vec<String>,
+    /// Allowed CORS origins for this route. Empty = wildcard "*".
+    #[serde(default)]
+    pub cors_origins: Vec<String>,
 }
 
 impl RouteEntry {
@@ -139,6 +183,14 @@ impl GatewayConfig {
             .collect()
     }
 
+    /// Build CORS origins table: host → allowed origins (empty = wildcard "*")
+    pub fn cors_table(&self) -> HashMap<String, Vec<String>> {
+        self.routing.iter()
+            .filter(|r| !r.cors_origins.is_empty())
+            .map(|r| (r.host.clone(), r.cors_origins.clone()))
+            .collect()
+    }
+
     /// Build IP allowlist: host → Vec<IpNet>
     pub fn ip_allowlist_table(&self) -> HashMap<String, Vec<ipnet::IpNet>> {
         self.routing.iter()
@@ -166,6 +218,9 @@ fn default_hc_interval() -> u64 { 30 }
 fn default_hc_path() -> String { "/healthz".into() }
 fn default_log_level() -> String { "info".into() }
 fn default_log_format() -> String { "json".into() }
+fn default_tls_port() -> u16 { 443 }
+fn default_acme_cache() -> String { "./acme-cache".into() }
+fn default_l4_proto() -> String { "tcp".into() }
 
 impl Default for RateLimitConfig {
     fn default() -> Self { Self { requests_per_second: default_rps(), per_ip_rps: default_per_ip_rps() } }

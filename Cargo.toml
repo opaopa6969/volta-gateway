@@ -16,7 +16,7 @@ tokio = { version = "1", features = ["full"] }
 
 # Middleware
 tower = { version = "0.5", features = ["full"] }
-tower-http = { version = "0.6", features = ["trace", "timeout"] }
+tower-http = { version = "0.6", features = ["trace", "timeout", "compression-gzip", "compression-br"] }
 
 # Config
 serde = { version = "1", features = ["derive"] }
@@ -34,6 +34,15 @@ ipnet = "2"
 
 # Atomic config swap for hot reload
 arc-swap = "1"
+
+# TLS + ACME (Let's Encrypt)
+tokio-rustls = "0.26"
+rustls = "0.23"
+rustls-acme = { version = "0.12", features = ["axum"] }
+futures = "0.3"
+
+# Compression
+flate2 = "1"
 
 # Utilities
 uuid = { version = "1", features = ["v4"] }

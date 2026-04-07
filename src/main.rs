@@ -1,3 +1,4 @@
+use arc_swap::ArcSwap;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
@@ -17,12 +18,14 @@ mod state;
 mod auth;
 mod proxy;
 mod flow;
+mod l4_proxy;
 mod metrics;
+mod tls;
 mod websocket;
 
 use config::GatewayConfig;
 use auth::VoltaAuthClient;
-use proxy::ProxyService;
+use proxy::{HotState, ProxyService};
 
 #[tokio::main]
 async fn main() {
@@ -55,8 +58,13 @@ async fn main() {
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.server.port));
     let routing = Arc::new(config.routing_table());
+    let ip_allowlists = config.ip_allowlist_table();
+    let cors = config.cors_table();
+    let hot = Arc::new(ArcSwap::from_pointee(
+        HotState::new_with_config(routing, ip_allowlists, config.error_pages_dir.as_deref(), cors),
+    ));
     let volta = VoltaAuthClient::new(&config.auth);
-    let proxy = ProxyService::new(volta.clone(), routing);
+    let proxy = ProxyService::new(volta.clone(), hot.clone());
     let metrics = Arc::new(metrics::Metrics::new());
 
     info!(port = config.server.port, "volta-gateway starting");
@@ -75,10 +83,11 @@ async fn main() {
         shutdown_flag.store(true, Ordering::SeqCst);
     });
 
-    // GW-22: SIGHUP config reload notification
+    // GW-22: SIGHUP zero-downtime config reload via ArcSwap
     #[cfg(unix)]
     {
         let config_path_clone = config_path.clone();
+        let hot_reload = hot.clone();
         tokio::spawn(async move {
             let mut sighup = tokio::signal::unix::signal(
                 tokio::signal::unix::SignalKind::hangup()
@@ -89,9 +98,21 @@ async fn main() {
                     Ok(new_config) => {
                         if let Err(errors) = new_config.validate() {
                             for e in &errors { warn!("reload config error: {e}"); }
+                            warn!("config reload aborted — keeping current config");
                         } else {
-                            info!(routes = new_config.routing.len(),
-                                "config reloaded from {}. Restart to apply routing changes.",
+                            let new_routing = Arc::new(new_config.routing_table());
+                            let new_allowlists = new_config.ip_allowlist_table();
+                            let routes = new_config.routing.len();
+                            let new_cors = new_config.cors_table();
+                            hot_reload.store(Arc::new(
+                                HotState::new_with_config(
+                                    new_routing, new_allowlists,
+                                    new_config.error_pages_dir.as_deref(),
+                                    new_cors,
+                                ),
+                            ));
+                            info!(routes = routes,
+                                "config reloaded from {} — routing updated (zero-downtime)",
                                 config_path_clone);
                         }
                     }
@@ -112,6 +133,24 @@ async fn main() {
 
     // Track in-flight connections
     let in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    // Start HTTPS/ACME listener if TLS config is present
+    if let Some(ref tls_config) = config.tls {
+        let tls_proxy = proxy.clone();
+        let tls_volta = volta.clone();
+        let tls_metrics = metrics.clone();
+        let tls_in_flight = in_flight.clone();
+        let tls_config = tls_config.clone();
+        tokio::spawn(async move {
+            tls::serve_tls(&tls_config, tls_proxy, tls_volta, tls_metrics, tls_in_flight).await;
+        });
+    }
+
+    // Start L4 (TCP/UDP) proxy listeners
+    if !config.l4_proxy.is_empty() {
+        info!(count = config.l4_proxy.len(), "starting L4 proxy listeners");
+        l4_proxy::spawn_l4_proxies(&config.l4_proxy);
+    }
 
     let mut drain_deadline: Option<tokio::time::Instant> = None;
 
@@ -152,6 +191,8 @@ async fn main() {
         let volta_health = volta.clone();
         let in_flight = in_flight.clone();
         let metrics = metrics.clone();
+        let force_https = config.server.force_https && config.tls.is_some();
+        let tls_port = config.tls.as_ref().map(|t| t.port).unwrap_or(443);
 
         in_flight.fetch_add(1, Ordering::SeqCst);
         metrics.active_connections.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -164,6 +205,29 @@ async fn main() {
                 let metrics = metrics2.clone();
                 let addr = remote_addr;
                 async move {
+                    // HTTP → HTTPS redirect
+                    if force_https {
+                        let host = req.headers().get("host")
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("localhost");
+                        // Strip port from host if present
+                        let host_no_port = host.split(':').next().unwrap_or(host);
+                        let path = req.uri().path_and_query()
+                            .map(|pq| pq.as_str())
+                            .unwrap_or("/");
+                        let location = if tls_port == 443 {
+                            format!("https://{}{}", host_no_port, path)
+                        } else {
+                            format!("https://{}:{}{}", host_no_port, tls_port, path)
+                        };
+                        let resp = hyper::Response::builder()
+                            .status(301)
+                            .header("location", location)
+                            .body(Full::new(Bytes::from("Moved Permanently")).map_err(|e| match e {}).boxed())
+                            .unwrap();
+                        return Ok::<_, hyper::Error>(resp);
+                    }
+
                     // PH2-3: /metrics endpoint
                     if req.uri().path() == "/metrics" {
                         let body = metrics.render();
@@ -200,7 +264,7 @@ async fn main() {
                 .http1()
                 .max_buf_size(10 * 1024 * 1024)
                 .timer(hyper_util::rt::TokioTimer::new())
-                .serve_connection(TokioIo::new(stream), service)
+                .serve_connection_with_upgrades(TokioIo::new(stream), service)
                 .await
             {
                 // auto::Builder returns Box<dyn Error> — just log it

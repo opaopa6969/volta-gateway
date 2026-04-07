@@ -3,5 +3,7 @@ pub mod state;
 pub mod auth;
 pub mod proxy;
 pub mod flow;
+pub mod l4_proxy;
 pub mod metrics;
+pub mod tls;
 pub mod websocket;
