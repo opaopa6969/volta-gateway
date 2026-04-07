@@ -52,6 +52,17 @@ pub struct Metrics {
     pub l4_tcp_connections_total: AtomicU64,
     pub l4_tcp_active: AtomicU64,
     pub l4_udp_packets_total: AtomicU64,
+
+    // PROD-5: Latency histogram buckets (μs thresholds)
+    // Buckets: ≤1ms, ≤5ms, ≤25ms, ≤100ms, ≤500ms, ≤1s, ≤5s, >5s
+    pub latency_bucket_1ms: AtomicU64,
+    pub latency_bucket_5ms: AtomicU64,
+    pub latency_bucket_25ms: AtomicU64,
+    pub latency_bucket_100ms: AtomicU64,
+    pub latency_bucket_500ms: AtomicU64,
+    pub latency_bucket_1s: AtomicU64,
+    pub latency_bucket_5s: AtomicU64,
+    pub latency_bucket_inf: AtomicU64,
 }
 
 impl Metrics {
@@ -59,7 +70,6 @@ impl Metrics {
         Self::default()
     }
 
-    #[allow(dead_code)]
     pub fn record_status(&self, status: u16) {
         self.requests_total.fetch_add(1, Ordering::Relaxed);
         match status {
@@ -74,10 +84,22 @@ impl Metrics {
         }
     }
 
-    #[allow(dead_code)]
     pub fn record_duration(&self, start: Instant) {
         let us = start.elapsed().as_micros() as u64;
         self.request_duration_us_sum.fetch_add(us, Ordering::Relaxed);
+
+        // PROD-5: Histogram bucket
+        let ms = us / 1000;
+        match ms {
+            0..=1 => self.latency_bucket_1ms.fetch_add(1, Ordering::Relaxed),
+            2..=5 => self.latency_bucket_5ms.fetch_add(1, Ordering::Relaxed),
+            6..=25 => self.latency_bucket_25ms.fetch_add(1, Ordering::Relaxed),
+            26..=100 => self.latency_bucket_100ms.fetch_add(1, Ordering::Relaxed),
+            101..=500 => self.latency_bucket_500ms.fetch_add(1, Ordering::Relaxed),
+            501..=1000 => self.latency_bucket_1s.fetch_add(1, Ordering::Relaxed),
+            1001..=5000 => self.latency_bucket_5s.fetch_add(1, Ordering::Relaxed),
+            _ => self.latency_bucket_inf.fetch_add(1, Ordering::Relaxed),
+        };
     }
 
     /// Render Prometheus exposition format.
@@ -85,6 +107,16 @@ impl Metrics {
         let total = self.requests_total.load(Ordering::Relaxed);
         let dur_sum = self.request_duration_us_sum.load(Ordering::Relaxed);
         let avg_ms = if total > 0 { dur_sum as f64 / total as f64 / 1000.0 } else { 0.0 };
+
+        // Histogram bucket loads
+        let b1 = self.latency_bucket_1ms.load(Ordering::Relaxed);
+        let b5 = self.latency_bucket_5ms.load(Ordering::Relaxed);
+        let b25 = self.latency_bucket_25ms.load(Ordering::Relaxed);
+        let b100 = self.latency_bucket_100ms.load(Ordering::Relaxed);
+        let b500 = self.latency_bucket_500ms.load(Ordering::Relaxed);
+        let b1000 = self.latency_bucket_1s.load(Ordering::Relaxed);
+        let b5000 = self.latency_bucket_5s.load(Ordering::Relaxed);
+        let binf = self.latency_bucket_inf.load(Ordering::Relaxed);
 
         format!(
             r#"# HELP volta_gateway_requests_total Total HTTP requests
@@ -146,6 +178,16 @@ volta_gateway_l4_tcp_active {l4_tcp_active}
 # HELP volta_gateway_l4_udp_packets_total L4 UDP packets forwarded
 # TYPE volta_gateway_l4_udp_packets_total counter
 volta_gateway_l4_udp_packets_total {l4_udp}
+# HELP volta_gateway_request_duration_ms Latency histogram
+# TYPE volta_gateway_request_duration_ms histogram
+volta_gateway_request_duration_ms_bucket{{le="1"}} {h1}
+volta_gateway_request_duration_ms_bucket{{le="5"}} {h5}
+volta_gateway_request_duration_ms_bucket{{le="25"}} {h25}
+volta_gateway_request_duration_ms_bucket{{le="100"}} {h100}
+volta_gateway_request_duration_ms_bucket{{le="500"}} {h500}
+volta_gateway_request_duration_ms_bucket{{le="1000"}} {h1000}
+volta_gateway_request_duration_ms_bucket{{le="5000"}} {h5000}
+volta_gateway_request_duration_ms_bucket{{le="+Inf"}} {hinf}
 "#,
             r200 = self.requests_200.load(Ordering::Relaxed),
             r302 = self.requests_302.load(Ordering::Relaxed),
@@ -174,6 +216,15 @@ volta_gateway_l4_udp_packets_total {l4_udp}
             l4_tcp = self.l4_tcp_connections_total.load(Ordering::Relaxed),
             l4_tcp_active = self.l4_tcp_active.load(Ordering::Relaxed),
             l4_udp = self.l4_udp_packets_total.load(Ordering::Relaxed),
+            // PROD-5: Cumulative histogram buckets
+            h1 = b1,
+            h5 = b1 + b5,
+            h25 = b1 + b5 + b25,
+            h100 = b1 + b5 + b25 + b100,
+            h500 = b1 + b5 + b25 + b100 + b500,
+            h1000 = b1 + b5 + b25 + b100 + b500 + b1000,
+            h5000 = b1 + b5 + b25 + b100 + b500 + b1000 + b5000,
+            hinf = b1 + b5 + b25 + b100 + b500 + b1000 + b5000 + binf,
         )
     }
 }
