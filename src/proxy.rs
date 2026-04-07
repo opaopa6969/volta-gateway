@@ -3,30 +3,31 @@ use http_body_util::{combinators::BoxBody, BodyExt, Empty, Full};
 use hyper::{body::Incoming, Request, Response, StatusCode, Uri};
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
+use std::any::TypeId;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tracing::{info, warn};
 
+use tramli::{FlowDefinition, FlowEngine, InMemoryFlowStore, CloneAny};
+
 use crate::auth::{AuthResult, VoltaAuthClient};
+use crate::flow::{self, AuthData, BackendResponse, RequestData, RouteTarget};
 use crate::state::ProxyState;
 
 /// Routing table: host → (backend_url, app_id)
 pub type RoutingTable = HashMap<String, (String, Option<String>)>;
 
-/// Core proxy service. Implements the SM lifecycle for each request.
+/// Core proxy service. Drives each request through the tramli SM engine.
 ///
-/// SM pattern (sync judgment, async I/O):
-///   RECEIVED → VALIDATED → ROUTED (sync)
-///   → volta auth check (async)
-///   → AUTH_CHECKED (sync judgment)
-///   → backend forward (async)
-///   → FORWARDED → COMPLETED (sync)
+/// B-pattern: sync SM judgment + async I/O outside.
+///   start_flow (sync, ~1μs) → volta auth (async) → resume (sync) → backend (async) → resume (sync)
 #[derive(Clone)]
 pub struct ProxyService {
     volta: VoltaAuthClient,
     backend_client: Client<hyper_util::client::legacy::connect::HttpConnector, Incoming>,
-    routing: Arc<RoutingTable>,
+    pub routing: Arc<RoutingTable>,
+    flow_def: Arc<FlowDefinition<ProxyState>>,
 }
 
 impl ProxyService {
@@ -34,12 +35,8 @@ impl ProxyService {
         let backend_client = Client::builder(TokioExecutor::new())
             .pool_max_idle_per_host(64)
             .build_http();
-        Self { volta, backend_client, routing }
-    }
-
-    /// Update routing table (hot reload via SIGHUP).
-    pub fn update_routing(&mut self, routing: Arc<RoutingTable>) {
-        self.routing = routing;
+        let flow_def = flow::build_proxy_flow(routing.clone());
+        Self { volta, backend_client, routing, flow_def }
     }
 
     /// Handle a single request through the SM lifecycle.
@@ -49,53 +46,58 @@ impl ProxyService {
         let method = req.method().clone();
         let uri_path = req.uri().path().to_string();
 
-        // ─── RECEIVED → VALIDATED (sync) ────────────────────
-        let host = match extract_host(&req) {
-            Some(h) => h,
-            None => {
-                warn!(state = "BAD_REQUEST", reason = "missing Host header");
-                return error_response(StatusCode::BAD_REQUEST, &request_id);
-            }
-        };
-
-        // Validate path
-        if uri_path.contains("..") || uri_path.contains("//") {
-            warn!(state = "BAD_REQUEST", reason = "invalid path", path = %uri_path);
-            return error_response(StatusCode::BAD_REQUEST, &request_id);
-        }
-
-        // Header size check (approximate)
+        // Extract request metadata for SM
+        let host = extract_host(&req).unwrap_or_default();
         let header_size: usize = req.headers().iter()
-            .map(|(k, v)| k.as_str().len() + v.len())
-            .sum();
-        if header_size > 8192 {
-            warn!(state = "BAD_REQUEST", reason = "headers too large", size = header_size);
-            return error_response(StatusCode::BAD_REQUEST, &request_id);
-        }
-
-        // ─── VALIDATED → ROUTED (sync) ──────────────────────
-        let (backend_url, app_id) = match self.routing.get(&host) {
-            Some(r) => r.clone(),
-            None => {
-                // Try wildcard: *.example.com
-                let wildcard = host.splitn(2, '.').nth(1)
-                    .and_then(|domain| self.routing.get(&format!("*.{domain}")));
-                match wildcard {
-                    Some(r) => r.clone(),
-                    None => {
-                        warn!(state = "BAD_REQUEST", reason = "unknown host", host = %host);
-                        return error_response(StatusCode::BAD_REQUEST, &request_id);
-                    }
-                }
-            }
-        };
-
-        // ─── ROUTED → AUTH_CHECKED (async: volta call) ──────
+            .map(|(k, v)| k.as_str().len() + v.len()).sum();
+        let content_length = req.headers().get("content-length")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse().ok());
         let cookie = req.headers().get("cookie")
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
         let proto = if req.uri().scheme_str() == Some("https") { "https" } else { "http" };
 
+        let req_data = RequestData {
+            host: host.clone(),
+            path: uri_path.clone(),
+            method: method.to_string(),
+            header_size,
+            content_length,
+        };
+
+        // ─── SM Phase 1: start_flow (sync) ──────────────────
+        // RECEIVED → VALIDATED → ROUTED (auto-chain, stops at External)
+        let engine = Mutex::new(FlowEngine::new(InMemoryFlowStore::new()));
+        let flow_id = {
+            let mut eng = engine.lock().unwrap();
+            let initial_data: Vec<(TypeId, Box<dyn CloneAny>)> = vec![
+                (TypeId::of::<RequestData>(), Box::new(req_data)),
+            ];
+            match eng.start_flow(self.flow_def.clone(), &request_id, initial_data) {
+                Ok(id) => id,
+                Err(e) => {
+                    warn!(state = "BAD_REQUEST", reason = %e, host = %host);
+                    return error_response(StatusCode::BAD_REQUEST, &request_id);
+                }
+            }
+        };
+
+        // SM should be in ROUTED state now (waiting for External: auth check)
+        // Extract route target from SM context
+        let (backend_url, app_id) = {
+            let eng = engine.lock().unwrap();
+            let flow = match eng.store.get(&flow_id) {
+                Some(f) => f,
+                None => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &request_id),
+            };
+            match flow.context.get::<RouteTarget>() {
+                Ok(rt) => (rt.backend_url.clone(), rt.app_id.clone()),
+                Err(_) => return error_response(StatusCode::BAD_REQUEST, &request_id),
+            }
+        };
+
+        // ─── Async I/O: volta auth check ────────────────────
         let auth_result = self.volta.check(
             &host, &uri_path, proto,
             cookie.as_deref(),
@@ -118,7 +120,19 @@ impl ProxyService {
             }
         };
 
-        // ─── AUTH_CHECKED → FORWARDED (async: backend call) ─
+        // ─── SM Phase 2: resume with auth data (sync) ───────
+        {
+            let mut eng = engine.lock().unwrap();
+            let auth_data: Vec<(TypeId, Box<dyn CloneAny>)> = vec![
+                (TypeId::of::<AuthData>(), Box::new(AuthData { volta_headers: volta_headers.clone() })),
+            ];
+            if let Err(e) = eng.resume_and_execute(&flow_id, auth_data) {
+                warn!(state = "BAD_GATEWAY", reason = %e, host = %host);
+                return error_response(StatusCode::BAD_GATEWAY, &request_id);
+            }
+        }
+
+        // ─── Async I/O: backend forward ─────────────────────
         let target_uri = format!("{}{}", backend_url, req.uri().path_and_query()
             .map(|pq| pq.as_str()).unwrap_or("/"));
 
@@ -126,19 +140,14 @@ impl ProxyService {
             .method(req.method())
             .uri(target_uri.parse::<Uri>().unwrap_or_default());
 
-        // Copy original headers (except Host)
         for (name, value) in req.headers() {
             if name != "host" {
                 backend_req = backend_req.header(name, value);
             }
         }
-
-        // Inject X-Volta-* from auth
         for (key, value) in &volta_headers {
             backend_req = backend_req.header(key.as_str(), value.as_str());
         }
-
-        // Add proxy headers
         backend_req = backend_req
             .header("X-Request-Id", &request_id)
             .header("X-Forwarded-Host", &host)
@@ -157,44 +166,61 @@ impl ProxyService {
             self.backend_client.request(backend_req),
         ).await;
 
-        // ─── FORWARDED → COMPLETED (sync) ───────────────────
-        let duration = start.elapsed();
-
-        match backend_result {
-            Ok(Ok(mut resp)) => {
-                // Strip X-Volta-* from backend response (RP-16: forgery prevention)
-                let headers = resp.headers_mut();
-                let volta_keys: Vec<_> = headers.keys()
-                    .filter(|k| k.as_str().starts_with("x-volta-"))
-                    .cloned()
-                    .collect();
-                for key in volta_keys {
-                    headers.remove(&key);
-                }
-
-                headers.insert("x-request-id", request_id.parse().unwrap());
-
-                info!(
-                    state = "COMPLETED",
-                    method = %method,
-                    host = %host,
-                    path = %uri_path,
-                    status = resp.status().as_u16(),
-                    duration_ms = duration.as_millis() as u64,
-                    user_id = volta_headers.get("x-volta-user-id").map(|s| s.as_str()).unwrap_or("-"),
-                );
-
-                Response::from(resp).map(|b| b.boxed())
+        // ─── SM Phase 3: resume with backend response (sync) ─
+        let (response_status, mut response) = match backend_result {
+            Ok(Ok(resp)) => {
+                let status = resp.status().as_u16();
+                (status, resp)
             }
             Ok(Err(e)) => {
                 warn!(state = "BAD_GATEWAY", reason = %e, host = %host, path = %uri_path);
-                error_response(StatusCode::BAD_GATEWAY, &request_id)
+                return error_response(StatusCode::BAD_GATEWAY, &request_id);
             }
             Err(_) => {
                 warn!(state = "GATEWAY_TIMEOUT", host = %host, path = %uri_path);
-                error_response(StatusCode::GATEWAY_TIMEOUT, &request_id)
+                return error_response(StatusCode::GATEWAY_TIMEOUT, &request_id);
             }
+        };
+
+        {
+            let mut eng = engine.lock().unwrap();
+            let resp_data: Vec<(TypeId, Box<dyn CloneAny>)> = vec![
+                (TypeId::of::<BackendResponse>(), Box::new(BackendResponse { status: response_status })),
+            ];
+            let _ = eng.resume_and_execute(&flow_id, resp_data);
         }
+
+        // ─── Response processing ────────────────────────────
+        let duration = start.elapsed();
+
+        // Strip X-Volta-* from backend response (RP-16: forgery prevention)
+        let headers = response.headers_mut();
+        let volta_keys: Vec<_> = headers.keys()
+            .filter(|k| k.as_str().starts_with("x-volta-"))
+            .cloned().collect();
+        for key in volta_keys {
+            headers.remove(&key);
+        }
+        headers.insert("x-request-id", request_id.parse().unwrap());
+
+        // Log with SM transition info
+        let transition_count = {
+            let eng = engine.lock().unwrap();
+            eng.store.transition_log().len()
+        };
+
+        info!(
+            state = "COMPLETED",
+            method = %method,
+            host = %host,
+            path = %uri_path,
+            status = response_status,
+            duration_ms = duration.as_millis() as u64,
+            transitions = transition_count,
+            user_id = volta_headers.get("x-volta-user-id").map(|s| s.as_str()).unwrap_or("-"),
+        );
+
+        Response::from(response).map(|b| b.boxed())
     }
 }
 
