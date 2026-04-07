@@ -67,6 +67,7 @@ async fn main() {
             let service = service_fn(move |req: Request<Incoming>| {
                 let proxy = proxy.clone();
                 let volta_health = volta_health.clone();
+                let addr = remote_addr;
                 async move {
                     if req.uri().path() == "/healthz" {
                         let volta_ok = volta_health.health().await;
@@ -83,7 +84,7 @@ async fn main() {
                         return Ok::<_, hyper::Error>(resp);
                     }
 
-                    Ok(proxy.handle(req).await)
+                    Ok(proxy.handle(req, addr).await)
                 }
             });
 

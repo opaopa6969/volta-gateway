@@ -40,7 +40,7 @@ impl ProxyService {
     }
 
     /// Handle a single request through the SM lifecycle.
-    pub async fn handle(&self, req: Request<Incoming>) -> Response<BoxBody<Bytes, hyper::Error>> {
+    pub async fn handle(&self, req: Request<Incoming>, remote_addr: std::net::SocketAddr) -> Response<BoxBody<Bytes, hyper::Error>> {
         let start = Instant::now();
         let request_id = uuid::Uuid::new_v4().to_string();
         let method = req.method().clone();
@@ -148,8 +148,16 @@ impl ProxyService {
         for (key, value) in &volta_headers {
             backend_req = backend_req.header(key.as_str(), value.as_str());
         }
+        // X-Forwarded-For: append client IP to existing chain
+        let client_ip = remote_addr.ip().to_string();
+        let xff = match req.headers().get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+            Some(existing) => format!("{}, {}", existing, client_ip),
+            None => client_ip,
+        };
+
         backend_req = backend_req
             .header("X-Request-Id", &request_id)
+            .header("X-Forwarded-For", &xff)
             .header("X-Forwarded-Host", &host)
             .header("X-Forwarded-Proto", proto);
 
