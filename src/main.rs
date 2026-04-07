@@ -1,10 +1,10 @@
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
-use hyper::server::conn::http1;
+use hyper_util::server::conn::auto;
 use hyper::service::service_fn;
 use hyper::Request;
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioExecutor, TokioIo};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
@@ -61,6 +61,15 @@ async fn main() {
         tokio::signal::ctrl_c().await.ok();
         info!("shutdown signal received — draining connections...");
         shutdown_flag.store(true, Ordering::SeqCst);
+    });
+
+    // PH2-2: Rate limiter GC task (cleanup idle IP entries every 30s)
+    let rl = proxy.rate_limiter.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            rl.gc(std::time::Duration::from_secs(60));
+        }
     });
 
     // Track in-flight connections
@@ -132,12 +141,19 @@ async fn main() {
                 }
             });
 
-            if let Err(e) = http1::Builder::new()
+            // PH2-1: HTTP/1.1 + HTTP/2 auto-negotiation
+            // PH2-7: chunked body limit 10MB
+            if let Err(e) = auto::Builder::new(TokioExecutor::new())
+                .http1()
+                .max_buf_size(10 * 1024 * 1024)
+                .timer(hyper_util::rt::TokioTimer::new())
                 .serve_connection(TokioIo::new(stream), service)
                 .await
             {
-                if !e.is_incomplete_message() {
-                    error!(remote = %remote_addr, "connection error: {e}");
+                // auto::Builder returns Box<dyn Error> — just log it
+                let msg = e.to_string();
+                if !msg.contains("connection closed") && !msg.contains("incomplete") {
+                    error!(remote = %remote_addr, "connection error: {msg}");
                 }
             }
 

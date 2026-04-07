@@ -18,32 +18,59 @@ use crate::state::ProxyState;
 /// Routing table: host → (backend_url, app_id)
 pub type RoutingTable = HashMap<String, (String, Option<String>)>;
 
-/// GW-3: Simple global rate limiter (requests per second).
+/// PH2-2: Per-IP + global rate limiter.
 #[derive(Clone)]
-struct RateLimiter {
-    count: Arc<std::sync::atomic::AtomicU64>,
-    limit: u64,
-    window_start: Arc<Mutex<Instant>>,
+pub struct RateLimiter {
+    global_count: Arc<std::sync::atomic::AtomicU64>,
+    global_limit: u64,
+    global_window: Arc<Mutex<Instant>>,
+    per_ip: Arc<Mutex<HashMap<std::net::IpAddr, (u64, Instant)>>>,
+    per_ip_limit: u64,
 }
 
 impl RateLimiter {
-    fn new(rps: u64) -> Self {
+    fn new(global_rps: u64, per_ip_rps: u64) -> Self {
         Self {
-            count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            limit: rps,
-            window_start: Arc::new(Mutex::new(Instant::now())),
+            global_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            global_limit: global_rps,
+            global_window: Arc::new(Mutex::new(Instant::now())),
+            per_ip: Arc::new(Mutex::new(HashMap::new())),
+            per_ip_limit: per_ip_rps,
         }
     }
 
-    fn allow(&self) -> bool {
-        let mut start = self.window_start.lock().unwrap();
-        if start.elapsed() >= std::time::Duration::from_secs(1) {
-            *start = Instant::now();
-            self.count.store(1, std::sync::atomic::Ordering::SeqCst);
-            return true;
+    fn allow(&self, ip: std::net::IpAddr) -> bool {
+        // Global check
+        {
+            let mut start = self.global_window.lock().unwrap();
+            if start.elapsed() >= std::time::Duration::from_secs(1) {
+                *start = Instant::now();
+                self.global_count.store(1, std::sync::atomic::Ordering::SeqCst);
+            } else {
+                let current = self.global_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if current >= self.global_limit { return false; }
+            }
         }
-        let current = self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        current < self.limit
+
+        // Per-IP check
+        {
+            let mut map = self.per_ip.lock().unwrap();
+            let entry = map.entry(ip).or_insert((0, Instant::now()));
+            if entry.1.elapsed() >= std::time::Duration::from_secs(1) {
+                *entry = (1, Instant::now());
+            } else {
+                entry.0 += 1;
+                if entry.0 > self.per_ip_limit { return false; }
+            }
+        }
+
+        true
+    }
+
+    /// GC: remove IP entries idle for > ttl.
+    pub fn gc(&self, ttl: std::time::Duration) {
+        let mut map = self.per_ip.lock().unwrap();
+        map.retain(|_, (_, last)| last.elapsed() < ttl);
     }
 }
 
@@ -57,7 +84,7 @@ pub struct ProxyService {
     backend_client: Client<hyper_util::client::legacy::connect::HttpConnector, Incoming>,
     pub routing: Arc<RoutingTable>,
     flow_def: Arc<FlowDefinition<ProxyState>>,
-    rate_limiter: RateLimiter,
+    pub rate_limiter: RateLimiter,
 }
 
 impl ProxyService {
@@ -66,15 +93,15 @@ impl ProxyService {
             .pool_max_idle_per_host(64)
             .build_http();
         let flow_def = flow::build_proxy_flow(routing.clone());
-        Self { volta, backend_client, routing, flow_def, rate_limiter: RateLimiter::new(1000) }
+        Self { volta, backend_client, routing, flow_def, rate_limiter: RateLimiter::new(1000, 100) }
     }
 
     /// Handle a single request through the SM lifecycle.
     pub async fn handle(&self, req: Request<Incoming>, remote_addr: std::net::SocketAddr) -> Response<BoxBody<Bytes, hyper::Error>> {
         let request_id = uuid::Uuid::new_v4().to_string();
 
-        // GW-3: Rate limiting
-        if !self.rate_limiter.allow() {
+        // PH2-2: Per-IP + global rate limiting
+        if !self.rate_limiter.allow(remote_addr.ip()) {
             warn!(state = "RATE_LIMITED", client_ip = %remote_addr.ip());
             return rate_limited_response(&request_id);
         }
