@@ -9,6 +9,10 @@
 
 ## 1. Introduction
 
+### 1.0 Motivation
+
+volta-gateway は volta-auth-proxy の companion として開発された。Traefik + volta-auth-proxy の組み合わせは機能的に十分だが、ForwardAuth middleware の設定が散在し (Docker labels + middleware chain + service 定義)、5-10 サービスの小規模 SaaS でも設定ファイルが複雑化する。volta-gateway の動機は「認証レイテンシの最適化」と「設定の簡潔さ」の両立である。
+
 ### 1.1 The Auth Latency Problem
 
 マイクロサービスアーキテクチャにおける認証は、リバースプロキシが外部認証サービスに問い合わせる Forward Auth パターンが主流である。Traefik の ForwardAuth、Caddy の forward_auth、NGINX の auth_request — いずれもリクエストごとに 1 回のネットワークラウンドトリップを追加する。
@@ -24,6 +28,10 @@
 ### 1.2 The Caching Dilemma
 
 認証レスポンスのキャッシュは レイテンシを削減するが、revoke されたセッションがキャッシュ TTL 内で有効なまま残る「stale-auth」リスクを導入する。これは Forward Auth モデルの根本的なトレードオフであり、クリーンな解決策が存在しない。
+
+### 1.25 Scope
+
+本論文はプロキシ層で認証を行う SaaS アーキテクチャを対象とする。認証をエッジ (Cloudflare Workers + KV) やデータベース層 (Supabase RLS) で行うアーキテクチャは範囲外である。これらのアプローチはプロキシ層の認証レイテンシ問題を「解消」するが、既存の Forward Auth ベースのインフラからの移行コストが大きく、多くの小規模 SaaS は依然としてプロキシ層認証に依存している。
 
 ### 1.3 Contribution
 
