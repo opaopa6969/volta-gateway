@@ -1,0 +1,18 @@
+# volta-gateway — minimal config (5-service SaaS)
+# Only server, auth, and routing are required. Everything else has defaults.
+
+server:
+  port: 8080
+
+auth:
+  volta_url: http://localhost:7070
+
+routing:
+  - host: app.example.com
+    backend: http://localhost:3000
+    app_id: my-app
+
+  - host: api.example.com
+    backend: http://localhost:4000
+    cors_origins:
+      - https://app.example.com

@@ -414,7 +414,11 @@ impl ProxyService {
         // Circuit breaker check
         if !self.circuit_breaker.is_available(&backend_url) {
             warn!(state = "CIRCUIT_OPEN", backend = %backend_url, host = %host);
-            return error_response_with_pages(StatusCode::BAD_GATEWAY, &request_id, &hot.error_pages);
+            // GW-46: Retry-After header tells client when to retry
+            let mut resp = error_response_with_pages(StatusCode::SERVICE_UNAVAILABLE, &request_id, &hot.error_pages);
+            resp.headers_mut().insert("retry-after",
+                self.circuit_breaker.recovery_secs.to_string().parse().unwrap());
+            return resp;
         }
 
         let path_and_query = req.uri().path_and_query()

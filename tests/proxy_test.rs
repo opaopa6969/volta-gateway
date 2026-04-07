@@ -306,3 +306,107 @@ routing:
     let cors = config.cors_table();
     assert!(cors.contains_key("app.example.com"));
 }
+
+// GW-33: New field validation tests
+
+#[test]
+fn config_rejects_empty_tls_domains() {
+    use volta_gateway::config::GatewayConfig;
+    let yaml = r#"
+server:
+  port: 8080
+auth:
+  volta_url: http://localhost:7070
+routing:
+  - host: app.example.com
+    backend: http://localhost:3000
+tls:
+  domains: []
+  contact_email: admin@example.com
+"#;
+    let config: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+    let result = config.validate();
+    assert!(result.is_err());
+    assert!(result.unwrap_err().iter().any(|e| e.contains("tls.domains is empty")));
+}
+
+#[test]
+fn config_rejects_force_https_without_tls() {
+    use volta_gateway::config::GatewayConfig;
+    let yaml = r#"
+server:
+  port: 8080
+  force_https: true
+auth:
+  volta_url: http://localhost:7070
+routing:
+  - host: app.example.com
+    backend: http://localhost:3000
+"#;
+    let config: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+    let result = config.validate();
+    assert!(result.is_err());
+    assert!(result.unwrap_err().iter().any(|e| e.contains("force_https requires tls")));
+}
+
+#[test]
+fn config_rejects_invalid_l4_entry() {
+    use volta_gateway::config::GatewayConfig;
+    let yaml = r#"
+server:
+  port: 8080
+auth:
+  volta_url: http://localhost:7070
+routing:
+  - host: app.example.com
+    backend: http://localhost:3000
+l4_proxy:
+  - listen_port: 0
+    backend: ""
+    protocol: ftp
+"#;
+    let config: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+    let result = config.validate();
+    assert!(result.is_err());
+    let errors = result.unwrap_err();
+    assert!(errors.iter().any(|e| e.contains("listen_port must be > 0")));
+    assert!(errors.iter().any(|e| e.contains("backend is empty")));
+    assert!(errors.iter().any(|e| e.contains("protocol must be")));
+}
+
+#[test]
+fn config_rejects_no_backends() {
+    use volta_gateway::config::GatewayConfig;
+    let yaml = r#"
+server:
+  port: 8080
+auth:
+  volta_url: http://localhost:7070
+routing:
+  - host: app.example.com
+"#;
+    let config: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+    let result = config.validate();
+    assert!(result.is_err());
+    assert!(result.unwrap_err().iter().any(|e| e.contains("no backends")));
+}
+
+#[test]
+fn config_host_normalized_to_lowercase() {
+    // GW-45: routing_table keys should be lowercase
+    use volta_gateway::config::GatewayConfig;
+    let yaml = r#"
+server:
+  port: 8080
+auth:
+  volta_url: http://localhost:7070
+routing:
+  - host: App.Example.COM
+    backend: http://localhost:3000
+"#;
+    let config: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+    assert!(config.validate().is_ok());
+    let table = config.routing_table();
+    assert!(table.contains_key("app.example.com"));
+    assert!(!table.contains_key("App.Example.COM"));
+}

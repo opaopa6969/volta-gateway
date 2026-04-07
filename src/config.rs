@@ -172,6 +172,40 @@ impl GatewayConfig {
                 }
             }
         }
+        // Validate TLS config
+        if let Some(ref tls) = self.tls {
+            if tls.domains.is_empty() {
+                errors.push("tls.domains is empty — no certificates will be issued".into());
+            }
+            if tls.contact_email.is_empty() {
+                errors.push("tls.contact_email is required for ACME".into());
+            }
+            if tls.port == 0 {
+                errors.push("tls.port must be > 0".into());
+            }
+        }
+        // Validate force_https requires TLS
+        if self.server.force_https && self.tls.is_none() {
+            errors.push("server.force_https requires tls config".into());
+        }
+        // Validate L4 proxy entries
+        for (i, entry) in self.l4_proxy.iter().enumerate() {
+            if entry.listen_port == 0 {
+                errors.push(format!("l4_proxy[{}].listen_port must be > 0", i));
+            }
+            if entry.backend.is_empty() {
+                errors.push(format!("l4_proxy[{}].backend is empty", i));
+            }
+            if entry.protocol != "tcp" && entry.protocol != "udp" {
+                errors.push(format!("l4_proxy[{}].protocol must be 'tcp' or 'udp', got '{}'", i, entry.protocol));
+            }
+        }
+        // Validate no backend configured
+        for r in &self.routing {
+            if r.all_backends().is_empty() {
+                errors.push(format!("routing host '{}' has no backends", r.host));
+            }
+        }
         if errors.is_empty() { Ok(()) } else { Err(errors) }
     }
 

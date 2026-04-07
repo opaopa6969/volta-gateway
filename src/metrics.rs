@@ -31,6 +31,26 @@ pub struct Metrics {
     // Duration tracking (sum of microseconds for average calculation)
     pub request_duration_us_sum: AtomicU64,
     pub auth_duration_us_sum: AtomicU64,
+
+    // GW-27: WebSocket metrics
+    pub ws_connections_total: AtomicU64,
+    pub ws_active: AtomicU64,
+    pub ws_rejected_limit: AtomicU64,
+
+    // GW-27: Circuit breaker metrics
+    pub cb_opens_total: AtomicU64,
+    pub cb_half_opens_total: AtomicU64,
+    pub cb_resets_total: AtomicU64,
+
+    // GW-27: Compression metrics
+    pub compression_applied_total: AtomicU64,
+    pub compression_skipped_total: AtomicU64,
+    pub compression_bytes_saved: AtomicU64,
+
+    // GW-27: L4 proxy metrics
+    pub l4_tcp_connections_total: AtomicU64,
+    pub l4_tcp_active: AtomicU64,
+    pub l4_udp_packets_total: AtomicU64,
 }
 
 impl Metrics {
@@ -90,6 +110,39 @@ volta_gateway_active_connections {ac}
 # HELP volta_gateway_request_duration_avg_ms Average request duration (ms)
 # TYPE volta_gateway_request_duration_avg_ms gauge
 volta_gateway_request_duration_avg_ms {avg:.2}
+# HELP volta_gateway_ws_connections_total Total WebSocket connections
+# TYPE volta_gateway_ws_connections_total counter
+volta_gateway_ws_connections_total {ws_total}
+# HELP volta_gateway_ws_active Active WebSocket tunnels
+# TYPE volta_gateway_ws_active gauge
+volta_gateway_ws_active {ws_active}
+# HELP volta_gateway_ws_rejected_limit WebSocket connections rejected (limit)
+# TYPE volta_gateway_ws_rejected_limit counter
+volta_gateway_ws_rejected_limit {ws_rej}
+# HELP volta_gateway_circuit_breaker_opens_total Circuit breaker open events
+# TYPE volta_gateway_circuit_breaker_opens_total counter
+volta_gateway_circuit_breaker_opens_total {cb_open}
+# HELP volta_gateway_circuit_breaker_resets_total Circuit breaker reset events
+# TYPE volta_gateway_circuit_breaker_resets_total counter
+volta_gateway_circuit_breaker_resets_total {cb_reset}
+# HELP volta_gateway_compression_applied_total Responses compressed
+# TYPE volta_gateway_compression_applied_total counter
+volta_gateway_compression_applied_total {comp_applied}
+# HELP volta_gateway_compression_skipped_total Responses not compressed
+# TYPE volta_gateway_compression_skipped_total counter
+volta_gateway_compression_skipped_total {comp_skip}
+# HELP volta_gateway_compression_bytes_saved_total Bytes saved by compression
+# TYPE volta_gateway_compression_bytes_saved_total counter
+volta_gateway_compression_bytes_saved_total {comp_saved}
+# HELP volta_gateway_l4_tcp_connections_total L4 TCP connections total
+# TYPE volta_gateway_l4_tcp_connections_total counter
+volta_gateway_l4_tcp_connections_total {l4_tcp}
+# HELP volta_gateway_l4_tcp_active L4 TCP active connections
+# TYPE volta_gateway_l4_tcp_active gauge
+volta_gateway_l4_tcp_active {l4_tcp_active}
+# HELP volta_gateway_l4_udp_packets_total L4 UDP packets forwarded
+# TYPE volta_gateway_l4_udp_packets_total counter
+volta_gateway_l4_udp_packets_total {l4_udp}
 "#,
             r200 = self.requests_200.load(Ordering::Relaxed),
             r302 = self.requests_302.load(Ordering::Relaxed),
@@ -107,6 +160,17 @@ volta_gateway_request_duration_avg_ms {avg:.2}
             smgt = self.sm_gateway_timeout.load(Ordering::Relaxed),
             ac = self.active_connections.load(Ordering::Relaxed),
             avg = avg_ms,
+            ws_total = self.ws_connections_total.load(Ordering::Relaxed),
+            ws_active = self.ws_active.load(Ordering::Relaxed),
+            ws_rej = self.ws_rejected_limit.load(Ordering::Relaxed),
+            cb_open = self.cb_opens_total.load(Ordering::Relaxed),
+            cb_reset = self.cb_resets_total.load(Ordering::Relaxed),
+            comp_applied = self.compression_applied_total.load(Ordering::Relaxed),
+            comp_skip = self.compression_skipped_total.load(Ordering::Relaxed),
+            comp_saved = self.compression_bytes_saved.load(Ordering::Relaxed),
+            l4_tcp = self.l4_tcp_connections_total.load(Ordering::Relaxed),
+            l4_tcp_active = self.l4_tcp_active.load(Ordering::Relaxed),
+            l4_udp = self.l4_udp_packets_total.load(Ordering::Relaxed),
         )
     }
 }

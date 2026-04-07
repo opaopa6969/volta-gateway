@@ -1,0 +1,68 @@
+# volta-gateway — full config reference
+# All fields shown with defaults. Only server/auth/routing are required.
+
+server:
+  port: 8080                    # HTTP listen port
+  read_timeout_secs: 10         # TCP read timeout
+  request_timeout_secs: 30      # Backend request timeout
+  force_https: false            # Redirect HTTP → HTTPS (requires tls)
+
+auth:
+  volta_url: http://localhost:7070  # volta-auth-proxy URL
+  verify_path: /auth/verify         # Auth verification endpoint
+  timeout_ms: 500                   # Auth request timeout
+  pool_max_idle: 32                 # Connection pool idle per host
+
+routing:
+  - host: app.example.com       # Hostname (lowercased internally)
+    backend: http://localhost:3000  # Single backend
+    # backends:                  # Multiple backends (round-robin LB)
+    #   - http://localhost:3000
+    #   - http://localhost:3001
+    app_id: my-app               # Optional: passed as X-Volta-App-Id
+    cors_origins:                # Optional: allowed CORS origins
+      - https://app.example.com  #   (omit for no CORS headers)
+      # - "*"                    #   (explicit wildcard)
+    ip_allowlist:                # Optional: CIDR allowlist
+      - 10.0.0.0/8
+      - 192.168.0.0/16
+
+  - host: "*.example.com"       # Wildcard routing
+    backend: http://localhost:3001
+
+rate_limit:                      # Global + per-IP rate limiting
+  requests_per_second: 1000      # Global RPS
+  per_ip_rps: 100                # Per-IP RPS
+
+backend_pool:
+  max_idle_per_host: 64          # Connection pool idle per backend
+  idle_timeout_secs: 90          # Idle connection timeout
+
+healthcheck:
+  interval_secs: 30              # Health check interval
+  path: /healthz                 # Health check path
+
+logging:
+  level: info                    # Log level (trace/debug/info/warn/error)
+  format: json                   # Log format (json/pretty via VOLTA_LOG_FORMAT)
+
+error_pages_dir: ./error-pages   # Optional: directory with 502.html, 403.html etc.
+
+# TLS / Let's Encrypt ACME (optional)
+tls:
+  domains:
+    - app.example.com
+    - api.example.com
+  contact_email: admin@example.com
+  port: 443                      # HTTPS listen port
+  cache_dir: ./acme-cache        # ACME certificate cache
+  staging: false                 # Use Let's Encrypt staging (for testing)
+
+# L4 TCP/UDP proxy (optional, no auth — use ip_allowlist for protection)
+l4_proxy:
+  - listen_port: 5433
+    protocol: tcp
+    backend: 10.0.0.5:5432       # PostgreSQL
+  - listen_port: 6380
+    protocol: tcp
+    backend: 10.0.0.6:6379       # Redis
