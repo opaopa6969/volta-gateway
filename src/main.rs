@@ -8,8 +8,9 @@ use hyper_util::rt::TokioIo;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::net::TcpListener;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 mod config;
 mod state;
@@ -51,17 +52,52 @@ async fn main() {
     let listener = TcpListener::bind(addr).await.unwrap();
     info!(addr = %addr, "listening");
 
+    // ─── GW-5: Graceful shutdown ────────────────────────
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_flag = shutdown.clone();
+
+    // Spawn shutdown signal listener
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.ok();
+        info!("shutdown signal received — draining connections...");
+        shutdown_flag.store(true, Ordering::SeqCst);
+    });
+
+    // Track in-flight connections
+    let in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
     loop {
-        let (stream, remote_addr) = match listener.accept().await {
-            Ok(s) => s,
-            Err(e) => {
+        if shutdown.load(Ordering::SeqCst) {
+            // Stop accepting new connections
+            let remaining = in_flight.load(Ordering::SeqCst);
+            if remaining == 0 {
+                info!("all connections drained — shutting down");
+                break;
+            }
+            info!(remaining = remaining, "waiting for in-flight connections...");
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            continue;
+        }
+
+        let accept = tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            listener.accept(),
+        ).await;
+
+        let (stream, remote_addr) = match accept {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => {
                 error!("accept error: {e}");
                 continue;
             }
+            Err(_) => continue, // timeout — check shutdown flag
         };
 
         let proxy = proxy.clone();
         let volta_health = volta.clone();
+        let in_flight = in_flight.clone();
+
+        in_flight.fetch_add(1, Ordering::SeqCst);
 
         tokio::spawn(async move {
             let service = service_fn(move |req: Request<Incoming>| {
@@ -96,6 +132,8 @@ async fn main() {
                     error!(remote = %remote_addr, "connection error: {e}");
                 }
             }
+
+            in_flight.fetch_sub(1, Ordering::SeqCst);
         });
     }
 }

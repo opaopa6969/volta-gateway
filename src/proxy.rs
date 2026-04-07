@@ -18,6 +18,35 @@ use crate::state::ProxyState;
 /// Routing table: host → (backend_url, app_id)
 pub type RoutingTable = HashMap<String, (String, Option<String>)>;
 
+/// GW-3: Simple global rate limiter (requests per second).
+#[derive(Clone)]
+struct RateLimiter {
+    count: Arc<std::sync::atomic::AtomicU64>,
+    limit: u64,
+    window_start: Arc<Mutex<Instant>>,
+}
+
+impl RateLimiter {
+    fn new(rps: u64) -> Self {
+        Self {
+            count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            limit: rps,
+            window_start: Arc::new(Mutex::new(Instant::now())),
+        }
+    }
+
+    fn allow(&self) -> bool {
+        let mut start = self.window_start.lock().unwrap();
+        if start.elapsed() >= std::time::Duration::from_secs(1) {
+            *start = Instant::now();
+            self.count.store(1, std::sync::atomic::Ordering::SeqCst);
+            return true;
+        }
+        let current = self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        current < self.limit
+    }
+}
+
 /// Core proxy service. Drives each request through the tramli SM engine.
 ///
 /// B-pattern: sync SM judgment + async I/O outside.
@@ -28,6 +57,7 @@ pub struct ProxyService {
     backend_client: Client<hyper_util::client::legacy::connect::HttpConnector, Incoming>,
     pub routing: Arc<RoutingTable>,
     flow_def: Arc<FlowDefinition<ProxyState>>,
+    rate_limiter: RateLimiter,
 }
 
 impl ProxyService {
@@ -36,13 +66,20 @@ impl ProxyService {
             .pool_max_idle_per_host(64)
             .build_http();
         let flow_def = flow::build_proxy_flow(routing.clone());
-        Self { volta, backend_client, routing, flow_def }
+        Self { volta, backend_client, routing, flow_def, rate_limiter: RateLimiter::new(1000) }
     }
 
     /// Handle a single request through the SM lifecycle.
     pub async fn handle(&self, req: Request<Incoming>, remote_addr: std::net::SocketAddr) -> Response<BoxBody<Bytes, hyper::Error>> {
-        let start = Instant::now();
         let request_id = uuid::Uuid::new_v4().to_string();
+
+        // GW-3: Rate limiting
+        if !self.rate_limiter.allow() {
+            warn!(state = "RATE_LIMITED", client_ip = %remote_addr.ip());
+            return rate_limited_response(&request_id);
+        }
+
+        let start = Instant::now();
         let method = req.method().clone();
         let uri_path = req.uri().path().to_string();
 
@@ -211,7 +248,13 @@ impl ProxyService {
         }
         headers.insert("x-request-id", request_id.parse().unwrap());
 
-        // Log with SM transition info
+        // GW-4: Security response headers
+        headers.insert("strict-transport-security",
+            "max-age=31536000; includeSubDomains".parse().unwrap());
+        headers.insert("x-content-type-options", "nosniff".parse().unwrap());
+        headers.insert("x-frame-options", "DENY".parse().unwrap());
+
+        // GW-6: Log with client IP + SM transition info
         let transition_count = {
             let eng = engine.lock().unwrap();
             eng.store.transition_log().len()
@@ -225,6 +268,7 @@ impl ProxyService {
             status = response_status,
             duration_ms = duration.as_millis() as u64,
             transitions = transition_count,
+            client_ip = %remote_addr.ip(),
             user_id = volta_headers.get("x-volta-user-id").map(|s| s.as_str()).unwrap_or("-"),
         );
 
@@ -240,9 +284,17 @@ fn extract_host(req: &Request<Incoming>) -> Option<String> {
 }
 
 fn error_response(status: StatusCode, request_id: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
+    // GW-2: Generic reason for client (detailed reason goes to server log only)
+    let reason = match status {
+        StatusCode::BAD_REQUEST => "Bad Request",
+        StatusCode::FORBIDDEN => "Forbidden",
+        StatusCode::BAD_GATEWAY => "Bad Gateway",
+        StatusCode::GATEWAY_TIMEOUT => "Gateway Timeout",
+        _ => "Internal Server Error",
+    };
     let body = Full::new(Bytes::from(format!(
-        r#"{{"error":{{"code":"{}","request_id":"{}"}}}}"#,
-        status.as_u16(), request_id
+        r#"{{"error":{{"code":{},"reason":"{}","request_id":"{}"}}}}"#,
+        status.as_u16(), reason, request_id
     )));
     Response::builder()
         .status(status)
@@ -258,5 +310,19 @@ fn redirect_response(location: &str, request_id: &str) -> Response<BoxBody<Bytes
         .header("location", location)
         .header("x-request-id", request_id)
         .body(Empty::<Bytes>::new().map_err(|e| match e {}).boxed())
+        .unwrap()
+}
+
+fn rate_limited_response(request_id: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
+    let body = Full::new(Bytes::from(format!(
+        r#"{{"error":{{"code":429,"reason":"Too Many Requests","request_id":"{}"}}}}"#,
+        request_id
+    )));
+    Response::builder()
+        .status(StatusCode::TOO_MANY_REQUESTS)
+        .header("content-type", "application/json")
+        .header("retry-after", "1")
+        .header("x-request-id", request_id)
+        .body(body.map_err(|e| match e {}).boxed())
         .unwrap()
 }
