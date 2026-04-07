@@ -1,0 +1,12 @@
+entryPoints:
+  web:
+    address: ":18081"
+
+providers:
+  file:
+    filename: /etc/traefik/dynamic.yaml
+
+log:
+  level: ERROR
+
+accessLog: {}

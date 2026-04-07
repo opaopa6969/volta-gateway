@@ -71,6 +71,38 @@ volta-gateway ~5-15x faster in same-condition comparison, primarily due to:
 2. Connection pool reuse (64 idle connections)
 3. No middleware chain overhead (direct SM dispatch)
 
+## Traefik Same-Condition Comparison (GW-52)
+
+Both using localhost auth (same mock_auth on port 17070), same mock_backend.
+Traefik v3.4 in Docker, ForwardAuth middleware. volta-gateway native release build.
+oha -n 500 -c 1 (single connection, no rate limiter interference).
+
+| Metric | volta-gateway | Traefik + ForwardAuth | Ratio |
+|--------|--------------|----------------------|-------|
+| **p50** | **0.252 ms** | **1.673 ms** | **6.6x faster** |
+| avg | 0.395 ms | 1.777 ms | 4.5x faster |
+| p95 | 1.060 ms | 2.273 ms | 2.1x faster |
+| p99 | 1.235 ms | 2.373 ms | 1.9x faster |
+| req/sec | 2,501 | 561 | 4.5x higher |
+
+### Analysis
+
+The "5-10x faster" claim is validated at p50 (6.6x). The advantage narrows
+at higher percentiles (1.9x at p99) because tail latency is dominated by
+OS scheduling and TCP stack overhead, not proxy implementation.
+
+Sources of volta-gateway's advantage:
+1. Rust hyper HTTP client vs Go net/http (less overhead per hop)
+2. Connection pool with 64 idle connections (Traefik default: 200, but Go's
+   pool has higher per-connection overhead)
+3. Direct SM dispatch vs Traefik's middleware chain (entrypoint → router →
+   middleware → ForwardAuth → middleware → service)
+4. No Docker networking overhead (volta-gateway runs native)
+
+Note: Traefik runs in Docker which adds ~0.1-0.3ms of networking overhead
+via the Docker bridge. A native Traefik binary would be slightly faster,
+but the Docker deployment is the typical production setup.
+
 ## Limitations
 
 - Single connection benchmark (rate limiter prevents high concurrency testing

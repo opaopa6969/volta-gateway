@@ -13,7 +13,7 @@ use tokio::net::TcpListener;
 #[tokio::main]
 async fn main() {
     let port = std::env::args().nth(1).unwrap_or("9001".into()).parse::<u16>().unwrap();
-    let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).await.unwrap();
+    let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await.unwrap();
     eprintln!("mock backend listening on 127.0.0.1:{}", port);
 
     loop {

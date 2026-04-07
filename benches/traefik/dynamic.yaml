@@ -1,0 +1,24 @@
+http:
+  routers:
+    bench:
+      rule: "Host(`bench.local`)"
+      entryPoints:
+        - web
+      middlewares:
+        - volta-auth
+      service: backend
+
+  middlewares:
+    volta-auth:
+      forwardAuth:
+        address: "http://host.docker.internal:17070/auth/verify"
+        authResponseHeaders:
+          - "X-Volta-User-Id"
+          - "X-Volta-Email"
+          - "X-Volta-Tenant-Id"
+
+  services:
+    backend:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:19001"
