@@ -1,3 +1,5 @@
+use tramli::FlowState;
+
 /// Proxy request lifecycle states — the SM "track" that every request rides on.
 ///
 /// ```text
@@ -14,7 +16,6 @@ pub enum ProxyState {
     Routed,
     AuthChecked,
     Forwarded,
-    ResponseReceived,
     Completed,
 
     // Error terminals
@@ -25,8 +26,8 @@ pub enum ProxyState {
     GatewayTimeout,
 }
 
-impl ProxyState {
-    pub fn is_terminal(&self) -> bool {
+impl FlowState for ProxyState {
+    fn is_terminal(&self) -> bool {
         matches!(
             self,
             Self::Completed
@@ -38,13 +39,24 @@ impl ProxyState {
         )
     }
 
-    pub fn is_initial(&self) -> bool {
+    fn is_initial(&self) -> bool {
         matches!(self, Self::Received)
     }
 
+    fn all_states() -> &'static [Self] {
+        &[
+            Self::Received, Self::Validated, Self::Routed,
+            Self::AuthChecked, Self::Forwarded, Self::Completed,
+            Self::BadRequest, Self::Redirect, Self::Denied,
+            Self::BadGateway, Self::GatewayTimeout,
+        ]
+    }
+}
+
+impl ProxyState {
     pub fn as_status_code(&self) -> u16 {
         match self {
-            Self::Completed => 200, // actual status from backend
+            Self::Completed => 200,
             Self::BadRequest => 400,
             Self::Redirect => 302,
             Self::Denied => 403,

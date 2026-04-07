@@ -15,6 +15,7 @@ mod config;
 mod state;
 mod auth;
 mod proxy;
+mod flow;
 
 use config::GatewayConfig;
 use auth::VoltaAuthClient;
