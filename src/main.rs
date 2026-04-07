@@ -66,12 +66,20 @@ async fn main() {
     // Track in-flight connections
     let in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
+    let mut drain_deadline: Option<tokio::time::Instant> = None;
+
     loop {
         if shutdown.load(Ordering::SeqCst) {
-            // Stop accepting new connections
+            // GW-15: drain with 30s timeout
+            let deadline = *drain_deadline.get_or_insert(
+                tokio::time::Instant::now() + std::time::Duration::from_secs(30));
             let remaining = in_flight.load(Ordering::SeqCst);
             if remaining == 0 {
                 info!("all connections drained — shutting down");
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                warn!(remaining = remaining, "drain timeout (30s) — forcing shutdown");
                 break;
             }
             info!(remaining = remaining, "waiting for in-flight connections...");
