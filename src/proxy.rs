@@ -20,27 +20,109 @@ use crate::state::ProxyState;
 /// host → (backend_urls, app_id)
 pub type RoutingTable = HashMap<String, (Vec<String>, Option<String>)>;
 
-/// Round-robin backend selector (per-host counters).
+/// Round-robin backend selector with health-aware routing.
+/// Dead backends are skipped. Health is tracked per-backend URL.
 #[derive(Clone)]
 pub struct BackendSelector {
     counters: Arc<Mutex<HashMap<String, usize>>>,
+    health: Arc<Mutex<HashMap<String, bool>>>,
 }
 
 impl BackendSelector {
     pub fn new() -> Self {
-        Self { counters: Arc::new(Mutex::new(HashMap::new())) }
+        Self {
+            counters: Arc::new(Mutex::new(HashMap::new())),
+            health: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 
+    /// Select next healthy backend (round-robin, skip dead).
+    /// Falls back to any backend if all are dead.
     pub fn select<'a>(&self, host: &str, backends: &'a [String]) -> &'a str {
         if backends.len() <= 1 {
             return &backends[0];
         }
+        let health = self.health.lock().unwrap();
         let mut map = self.counters.lock().unwrap();
         let counter = map.entry(host.to_string()).or_insert(0);
-        let idx = *counter % backends.len();
-        *counter = counter.wrapping_add(1);
-        &backends[idx]
+
+        // Try up to len backends to find a healthy one
+        for _ in 0..backends.len() {
+            let idx = *counter % backends.len();
+            *counter = counter.wrapping_add(1);
+            let backend = &backends[idx];
+            if *health.get(backend.as_str()).unwrap_or(&true) {
+                return backend;
+            }
+        }
+        // All dead — fall back to round-robin anyway
+        &backends[*counter % backends.len()]
     }
+
+    /// Mark backend as alive or dead.
+    pub fn set_health(&self, backend: &str, alive: bool) {
+        let mut h = self.health.lock().unwrap();
+        h.insert(backend.to_string(), alive);
+    }
+
+    /// Get health status of all known backends.
+    pub fn health_status(&self) -> HashMap<String, bool> {
+        self.health.lock().unwrap().clone()
+    }
+}
+
+/// PROD-1: Background health checker for backends.
+pub fn spawn_health_checker(
+    routing: Arc<RoutingTable>,
+    selector: BackendSelector,
+    interval_secs: u64,
+    path: String,
+) {
+    tokio::spawn(async move {
+        let client: hyper_util::client::legacy::Client<_, Empty<Bytes>> =
+            hyper_util::client::legacy::Client::builder(
+                hyper_util::rt::TokioExecutor::new()
+            ).build_http();
+
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
+
+            // Collect all unique backend URLs
+            let mut backends: Vec<String> = Vec::new();
+            for (urls, _) in routing.values() {
+                for url in urls {
+                    if !backends.contains(url) {
+                        backends.push(url.clone());
+                    }
+                }
+            }
+
+            for backend in &backends {
+                let url = format!("{}{}", backend, path);
+                let req = match hyper::Request::builder()
+                    .uri(url.parse::<hyper::Uri>().unwrap_or_default())
+                    .body(Empty::<Bytes>::new()) {
+                    Ok(r) => r,
+                    Err(_) => {
+                        selector.set_health(backend, false);
+                        continue;
+                    }
+                };
+
+                let result = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    client.request(req),
+                ).await;
+
+                let alive = matches!(result, Ok(Ok(resp)) if resp.status().is_success());
+                selector.set_health(backend, alive);
+
+                if !alive {
+                    tracing::warn!(backend = %backend, "health check failed");
+                }
+            }
+        }
+    });
 }
 
 /// PH2-2: Per-IP + global rate limiter.
@@ -110,13 +192,14 @@ pub struct HotState {
     pub flow_def: Arc<FlowDefinition<ProxyState>>,
     pub error_pages: ErrorPages,
     pub cors: CorsTable,
+    pub trusted_proxies: Vec<ipnet::IpNet>,
 }
 
 impl HotState {
     #[allow(dead_code)]
     pub fn new(routing: Arc<RoutingTable>) -> Self {
         let flow_def = flow::build_proxy_flow(routing.clone());
-        Self { routing, flow_def, error_pages: HashMap::new(), cors: HashMap::new() }
+        Self { routing, flow_def, error_pages: HashMap::new(), cors: HashMap::new(), trusted_proxies: Vec::new() }
     }
 
     pub fn new_with_config(
@@ -125,9 +208,19 @@ impl HotState {
         error_pages_dir: Option<&str>,
         cors: CorsTable,
     ) -> Self {
+        Self::new_full(routing, ip_allowlists, error_pages_dir, cors, Vec::new())
+    }
+
+    pub fn new_full(
+        routing: Arc<RoutingTable>,
+        ip_allowlists: HashMap<String, Vec<ipnet::IpNet>>,
+        error_pages_dir: Option<&str>,
+        cors: CorsTable,
+        trusted_proxies: Vec<ipnet::IpNet>,
+    ) -> Self {
         let flow_def = flow::build_proxy_flow_with_allowlist(routing.clone(), ip_allowlists);
         let error_pages = load_error_pages(error_pages_dir);
-        Self { routing, flow_def, error_pages, cors }
+        Self { routing, flow_def, error_pages, cors, trusted_proxies }
     }
 }
 
@@ -257,14 +350,27 @@ impl ProxyService {
     pub async fn handle(&self, req: Request<Incoming>, remote_addr: std::net::SocketAddr) -> Response<BoxBody<Bytes, hyper::Error>> {
         let request_id = uuid::Uuid::new_v4().to_string();
 
+        // Load current hot state (atomic, lock-free) — needed early for trusted proxy check
+        let hot = self.hot.load();
+
+        // PROD-4: Resolve real client IP before rate limiting
+        let real_client_ip = if !hot.trusted_proxies.is_empty()
+            && hot.trusted_proxies.iter().any(|net| net.contains(&remote_addr.ip()))
+        {
+            req.headers().get("cf-connecting-ip")
+                .or_else(|| req.headers().get("x-real-ip"))
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<std::net::IpAddr>().ok())
+                .unwrap_or(remote_addr.ip())
+        } else {
+            remote_addr.ip()
+        };
+
         // PH2-2: Per-IP + global rate limiting
-        if !self.rate_limiter.allow(remote_addr.ip()) {
-            warn!(state = "RATE_LIMITED", client_ip = %remote_addr.ip());
+        if !self.rate_limiter.allow(real_client_ip) {
+            warn!(state = "RATE_LIMITED", client_ip = %real_client_ip);
             return rate_limited_response(&request_id);
         }
-
-        // Load current hot state (atomic, lock-free)
-        let hot = self.hot.load();
 
         // GW-19: WebSocket upgrade → delegate to websocket module
         let is_upgrade = req.headers().get("upgrade")
@@ -341,7 +447,7 @@ impl ProxyService {
             method: method.to_string(),
             header_size,
             content_length,
-            client_ip: Some(remote_addr.ip()),
+            client_ip: Some(real_client_ip),
         };
 
         // ─── SM Phase 1: start_flow (sync) ──────────────────

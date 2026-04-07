@@ -60,8 +60,11 @@ async fn main() {
     let routing = Arc::new(config.routing_table());
     let ip_allowlists = config.ip_allowlist_table();
     let cors = config.cors_table();
+    let trusted_proxies: Vec<ipnet::IpNet> = config.server.trusted_proxies.iter()
+        .filter_map(|s| s.parse().ok())
+        .collect();
     let hot = Arc::new(ArcSwap::from_pointee(
-        HotState::new_with_config(routing, ip_allowlists, config.error_pages_dir.as_deref(), cors),
+        HotState::new_full(routing, ip_allowlists, config.error_pages_dir.as_deref(), cors, trusted_proxies),
     ));
     let volta = VoltaAuthClient::new(&config.auth);
     let metrics = Arc::new(metrics::Metrics::new());
@@ -134,6 +137,17 @@ async fn main() {
     // Track in-flight connections
     let in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
+    // PROD-1: Backend health checker
+    {
+        let hot_snapshot = proxy.hot.load();
+        proxy::spawn_health_checker(
+            hot_snapshot.routing.clone(),
+            proxy.backend_selector.clone(),
+            config.healthcheck.interval_secs,
+            config.healthcheck.path.clone(),
+        );
+    }
+
     // Start HTTPS/ACME listener if TLS config is present
     if let Some(ref tls_config) = config.tls {
         let tls_proxy = proxy.clone();
@@ -193,16 +207,28 @@ async fn main() {
         let metrics = metrics.clone();
         let force_https = config.server.force_https && config.tls.is_some();
         let tls_port = config.tls.as_ref().map(|t| t.port).unwrap_or(443);
+        let hot_admin = hot.clone();
+        let config_path_admin = config_path.clone();
+        let shutdown_admin = shutdown.clone();
+        let error_pages_dir_admin = config.error_pages_dir.clone();
 
         in_flight.fetch_add(1, Ordering::SeqCst);
         metrics.active_connections.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         tokio::spawn(async move {
             let metrics2 = metrics.clone();
+            let hot_admin2 = hot_admin.clone();
+            let config_path_admin2 = config_path_admin.clone();
+            let error_pages_dir_admin2 = error_pages_dir_admin.clone();
+            let shutdown_admin2 = shutdown_admin.clone();
             let service = service_fn(move |req: Request<Incoming>| {
                 let proxy = proxy.clone();
                 let volta_health = volta_health.clone();
                 let metrics = metrics2.clone();
+                let hot_admin = hot_admin2.clone();
+                let config_path_admin = config_path_admin2.clone();
+                let error_pages_dir_admin = error_pages_dir_admin2.clone();
+                let shutdown_admin = shutdown_admin2.clone();
                 let addr = remote_addr;
                 async move {
                     // HTTP → HTTPS redirect (GW-29/GW-38: skip for healthz, metrics, ACME challenge)
@@ -264,6 +290,102 @@ async fn main() {
                             .body(Full::new(Bytes::from(body)).map_err(|e| match e {}).boxed())
                             .unwrap();
                         return Ok::<_, hyper::Error>(resp);
+                    }
+
+                    // PROD-2/3: Admin API (localhost only)
+                    if req.uri().path().starts_with("/admin/") {
+                        if !addr.ip().is_loopback() {
+                            let resp = hyper::Response::builder()
+                                .status(403)
+                                .body(Full::new(Bytes::from(r#"{"error":"admin API is localhost only"}"#)).map_err(|e| match e {}).boxed())
+                                .unwrap();
+                            return Ok::<_, hyper::Error>(resp);
+                        }
+
+                        match req.uri().path() {
+                            "/admin/routes" => {
+                                let hot = hot_admin.load();
+                                let routes: Vec<_> = hot.routing.iter()
+                                    .map(|(host, (backends, app_id))| {
+                                        format!(r#"{{"host":"{}","backends":{:?},"app_id":{:?}}}"#, host, backends, app_id)
+                                    }).collect();
+                                let body = format!("[{}]", routes.join(","));
+                                let resp = hyper::Response::builder()
+                                    .status(200)
+                                    .header("content-type", "application/json")
+                                    .body(Full::new(Bytes::from(body)).map_err(|e| match e {}).boxed())
+                                    .unwrap();
+                                return Ok(resp);
+                            }
+                            "/admin/backends" => {
+                                let health = proxy.backend_selector.health_status();
+                                let entries: Vec<_> = health.iter()
+                                    .map(|(url, alive)| format!(r#"{{"url":"{}","alive":{}}}"#, url, alive))
+                                    .collect();
+                                let body = format!("[{}]", entries.join(","));
+                                let resp = hyper::Response::builder()
+                                    .status(200)
+                                    .header("content-type", "application/json")
+                                    .body(Full::new(Bytes::from(body)).map_err(|e| match e {}).boxed())
+                                    .unwrap();
+                                return Ok(resp);
+                            }
+                            "/admin/reload" if req.method() == hyper::Method::POST => {
+                                match GatewayConfig::load(std::path::Path::new(&config_path_admin)) {
+                                    Ok(new_config) => {
+                                        if let Err(errors) = new_config.validate() {
+                                            let body = format!(r#"{{"error":"validation failed","details":{:?}}}"#, errors);
+                                            let resp = hyper::Response::builder()
+                                                .status(400)
+                                                .header("content-type", "application/json")
+                                                .body(Full::new(Bytes::from(body)).map_err(|e| match e {}).boxed())
+                                                .unwrap();
+                                            return Ok(resp);
+                                        }
+                                        let new_routing = Arc::new(new_config.routing_table());
+                                        let new_allowlists = new_config.ip_allowlist_table();
+                                        let new_cors = new_config.cors_table();
+                                        let routes = new_config.routing.len();
+                                        hot_admin.store(Arc::new(HotState::new_with_config(
+                                            new_routing, new_allowlists,
+                                            error_pages_dir_admin.as_deref(), new_cors,
+                                        )));
+                                        info!(routes = routes, "config reloaded via admin API");
+                                        let resp = hyper::Response::builder()
+                                            .status(200)
+                                            .header("content-type", "application/json")
+                                            .body(Full::new(Bytes::from(format!(r#"{{"status":"reloaded","routes":{}}}"#, routes))).map_err(|e| match e {}).boxed())
+                                            .unwrap();
+                                        return Ok(resp);
+                                    }
+                                    Err(e) => {
+                                        let resp = hyper::Response::builder()
+                                            .status(500)
+                                            .header("content-type", "application/json")
+                                            .body(Full::new(Bytes::from(format!(r#"{{"error":"{}"}}"#, e))).map_err(|e| match e {}).boxed())
+                                            .unwrap();
+                                        return Ok(resp);
+                                    }
+                                }
+                            }
+                            "/admin/drain" if req.method() == hyper::Method::POST => {
+                                info!("drain requested via admin API");
+                                shutdown_admin.store(true, Ordering::SeqCst);
+                                let resp = hyper::Response::builder()
+                                    .status(200)
+                                    .header("content-type", "application/json")
+                                    .body(Full::new(Bytes::from(r#"{"status":"draining"}"#)).map_err(|e| match e {}).boxed())
+                                    .unwrap();
+                                return Ok(resp);
+                            }
+                            _ => {
+                                let resp = hyper::Response::builder()
+                                    .status(404)
+                                    .body(Full::new(Bytes::from(r#"{"error":"unknown admin endpoint"}"#)).map_err(|e| match e {}).boxed())
+                                    .unwrap();
+                                return Ok(resp);
+                            }
+                        }
                     }
 
                     Ok(proxy.handle(req, addr).await)

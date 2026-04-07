@@ -68,6 +68,10 @@ pub struct ServerConfig {
     /// Redirect HTTP to HTTPS (requires tls config). Default: false.
     #[serde(default)]
     pub force_https: bool,
+    /// Trusted proxy CIDRs (e.g. Cloudflare IPs). When set, CF-Connecting-IP
+    /// is used as client IP instead of X-Forwarded-For.
+    #[serde(default)]
+    pub trusted_proxies: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
