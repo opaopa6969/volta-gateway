@@ -877,6 +877,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "tramli"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4372ed80ad0c985916afaa4ec1ce5754e08fff0b3b4f1607f2e0ca3423235788"
+
+[[package]]
 name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -933,6 +939,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "tramli",
  "uuid",
 ]
 
