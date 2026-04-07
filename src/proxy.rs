@@ -112,6 +112,7 @@ pub struct HotState {
 }
 
 impl HotState {
+    #[allow(dead_code)]
     pub fn new(routing: Arc<RoutingTable>) -> Self {
         let flow_def = flow::build_proxy_flow(routing.clone());
         Self { routing, flow_def, error_pages: HashMap::new(), cors: HashMap::new() }

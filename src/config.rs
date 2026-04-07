@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct GatewayConfig {
     pub server: ServerConfig,
     pub auth: AuthConfig,
@@ -56,6 +57,7 @@ pub struct TlsConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct ServerConfig {
     #[serde(default = "default_port")]
     pub port: u16,
@@ -110,6 +112,7 @@ impl RouteEntry {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct RateLimitConfig {
     #[serde(default = "default_rps")]
     pub requests_per_second: u32,
@@ -118,6 +121,7 @@ pub struct RateLimitConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct BackendPoolConfig {
     #[serde(default = "default_pool_idle")]
     pub max_idle_per_host: usize,
@@ -126,6 +130,7 @@ pub struct BackendPoolConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct HealthCheckConfig {
     #[serde(default = "default_hc_interval")]
     pub interval_secs: u64,
@@ -134,6 +139,7 @@ pub struct HealthCheckConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct LoggingConfig {
     #[serde(default = "default_log_level")]
     pub level: String,

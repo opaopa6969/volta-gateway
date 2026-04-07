@@ -14,6 +14,7 @@ use crate::proxy::RoutingTable;
 // ─── FlowData types ─────────────────────────────────────
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct RequestData {
     pub host: String,
     pub path: String,
@@ -24,6 +25,7 @@ pub struct RequestData {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct RouteTarget {
     pub backend_url: String,       // selected by round-robin (or first)
     pub backends: Vec<String>,     // all available backends
@@ -31,11 +33,13 @@ pub struct RouteTarget {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct AuthData {
     pub volta_headers: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct BackendResponse {
     pub status: u16,
 }
@@ -174,6 +178,7 @@ impl TransitionGuard<ProxyState> for ForwardGuard {
 
 // ─── Flow Definition ────────────────────────────────────
 
+#[allow(dead_code)]
 pub fn build_proxy_flow(routing: Arc<RoutingTable>) -> Arc<FlowDefinition<ProxyState>> {
     build_proxy_flow_with_allowlist(routing, HashMap::new())
 }

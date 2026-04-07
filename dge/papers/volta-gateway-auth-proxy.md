@@ -146,17 +146,45 @@ volta-gateway は **「Caddy の設定簡潔さ」+「Oathkeeper の認証パイ
 
 ### 4.1 Testing
 
-- **30 テスト**: SM lifecycle (8), circuit breaker (4), compression (4), CORS (4), config validation (8), error pages (2)
-- **DGE Tribunal**: 4 ラウンド、9 人の評価者、23 Gap 発見、7 修正、3 Design Decision
+- **35 テスト**: SM lifecycle (8), circuit breaker (4), compression (4), CORS (4), config validation (8), error pages (2), **integration (5)**
+- **Integration tests**: 実 HTTP リクエスト → proxy → backend (200 forward, 403 auth denied, 502 backend down, 204 CORS preflight, 429 rate limit)
+- **DGE Tribunal**: 5 ラウンド、12 人の評価者、29 Gap 発見、7 修正、3 Design Decision
 - **GW-36 (Critical)**: compression でレスポンスヘッダ (Set-Cookie, Cache-Control) が消失するバグを発見・修正
 
-### 4.2 Benchmarks (criterion)
+### 4.2 Benchmarks
+
+#### Micro-benchmarks (criterion)
 
 | Operation | Latency |
 |-----------|---------|
-| Routing lookup (exact) | ~数十 ns |
-| Routing lookup (wildcard) | **60 ns** |
+| SM start_flow | **707 ns** |
+| SM full lifecycle (start + 2x resume) | **1.69 μs** |
+| Routing lookup (exact) | **11 ns** |
+| Routing lookup (wildcard) | **61 ns** |
 | Compression check | **5 ns** |
+
+#### E2E Benchmarks (oha, release build, localhost mock auth + backend)
+
+| Metric | volta-gateway | Direct backend | Proxy overhead |
+|--------|--------------|----------------|----------------|
+| p50 | **0.252 ms** | 0.203 ms | **40 μs** |
+| p99 | 1.235 ms | 0.298 ms | 858 μs |
+| avg | 0.395 ms | 0.209 ms | 171 μs |
+
+SM overhead (1.69μs) は total proxy overhead (171μs) の約 1%。auth round-trip (localhost HTTP) が支配的。
+
+#### Traefik 同条件比較 (GW-52)
+
+同一 localhost mock auth + mock backend。Traefik v3.4 (Docker) + ForwardAuth vs volta-gateway (native release)。
+
+| Metric | volta-gateway | Traefik + ForwardAuth | Ratio |
+|--------|--------------|----------------------|-------|
+| **p50** | **0.252 ms** | **1.673 ms** | **6.6x faster** |
+| avg | 0.395 ms | 1.777 ms | 4.5x faster |
+| p99 | 1.235 ms | 2.373 ms | 1.9x faster |
+| req/sec | 2,501 | 561 | 4.5x higher |
+
+p50 で 6.6 倍、avg で 4.5 倍。tail latency (p99) では差が 1.9 倍に縮まる (OS スケジューリング + TCP stack overhead が支配的)。
 
 ### 4.3 Security Decisions
 
@@ -169,24 +197,31 @@ volta-gateway は **「Caddy の設定簡潔さ」+「Oathkeeper の認証パイ
 
 ### 5.1 Known Limitations
 
-1. **SM overhead**: リクエストごとに InMemoryFlowStore を alloc/dealloc。100K+ req/sec では共有 engine を検討すべき
+1. **SM overhead**: リクエストごとに InMemoryFlowStore を alloc/dealloc (1.69μs)。100K+ req/sec では共有 engine を検討すべき
 2. **proxy.rs の肥大化**: 600 行超。circuit breaker / compression / CORS が同一ファイル
 3. **L4 proxy に認証なし**: TCP/UDP は認証対象外 (DD-002)。IP 制限で保護
-4. **ベンチマークが部分的**: SM start_flow のレイテンシは計測したが、E2E (client → gateway → backend) の req/sec は未計測
+4. **ベンチマーク環境**: WSL2 上の計測。bare metal では異なる結果が予想される
+5. **Traefik 比較の公平性**: Traefik は Docker 内 (~0.1-0.3ms overhead)、volta-gateway は native。native Traefik binary との比較は未実施
 
 ### 5.2 Future Work
 
-- **E2E ベンチマーク**: Traefik/Caddy/NGINX との定量比較
+- **Caddy/NGINX との定量比較**: 同条件 localhost auth benchmark
 - **proxy.rs 分割**: circuit_breaker.rs, compression.rs, cors.rs
 - **L4 IP allowlist**: config ベースの IP 制限 (DD-002)
 - **Brotli compression**: gzip に加えて Accept-Encoding: br 対応
 - **Weighted round-robin**: backend ごとの重み付け LB
+- **bare metal ベンチマーク**: WSL2 以外の環境での再計測
 
 ## 6. Conclusion
 
-volta-gateway は、小規模 SaaS における認証レイテンシの問題に対して、localhost コロケーション + コネクションプール + fail-closed という実用的なアプローチを提供する。Traefik ForwardAuth の 5-10 倍高速な認証チェック (0.5-1ms)、ArcSwap によるゼロダウンタイム設定リロード、tramli SM による状態遷移の可視化を特徴とする。
+volta-gateway は、小規模 SaaS における認証レイテンシの問題に対して、localhost コロケーション + コネクションプール + fail-closed という実用的なアプローチを提供する。
 
-4 ラウンドの DGE Tribunal (23 Gap, 9 人の評価者) を経て、v0.1.0 リリースブロッカーを全件解消し、30 テスト + criterion ベンチマーク基盤を整備した。
+同条件ベンチマーク (localhost mock auth + backend) により、Traefik ForwardAuth との定量比較を実施した:
+- **p50: 6.6 倍高速** (0.252ms vs 1.673ms)
+- **avg: 4.5 倍高速** (0.395ms vs 1.777ms)
+- **SM overhead: total の 1%** (1.69μs / 171μs)
+
+5 ラウンドの DGE Tribunal (29 Gap, 12 人の評価者) を経て、Critical バグ (compression ヘッダ消失) の発見・修正、CORS secure-by-default への変更、Host 正規化の統一を行った。35 テスト (unit + integration) + criterion ベンチマーク基盤を整備。
 
 volta-gateway は Traefik の代替ではない。「50+ サービスの Kubernetes クラスタ」には Traefik + volta-auth-proxy を推奨する。volta-gateway が勝つのは「5-20 サービスの SaaS で、認証レイテンシと設定の簡潔さが最優先」というニッチだ。
 

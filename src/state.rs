@@ -54,6 +54,7 @@ impl FlowState for ProxyState {
 }
 
 impl ProxyState {
+    #[allow(dead_code)]
     pub fn as_status_code(&self) -> u16 {
         match self {
             Self::Completed => 200,

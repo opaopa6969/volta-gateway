@@ -1,7 +1,7 @@
 use hyper::{Request, Uri};
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
-use http_body_util::{BodyExt, Empty};
+use http_body_util::Empty;
 use bytes::Bytes;
 use std::collections::HashMap;
 use std::time::Duration;

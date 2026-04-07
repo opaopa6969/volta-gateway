@@ -5,6 +5,7 @@ use std::time::Instant;
 ///
 /// Endpoint: GET /metrics
 #[derive(Default)]
+#[allow(dead_code)]
 pub struct Metrics {
     // Counters
     pub requests_total: AtomicU64,
@@ -58,6 +59,7 @@ impl Metrics {
         Self::default()
     }
 
+    #[allow(dead_code)]
     pub fn record_status(&self, status: u16) {
         self.requests_total.fetch_add(1, Ordering::Relaxed);
         match status {
@@ -72,6 +74,7 @@ impl Metrics {
         }
     }
 
+    #[allow(dead_code)]
     pub fn record_duration(&self, start: Instant) {
         let us = start.elapsed().as_micros() as u64;
         self.request_duration_us_sum.fetch_add(us, Ordering::Relaxed);

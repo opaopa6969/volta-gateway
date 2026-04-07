@@ -57,8 +57,6 @@ harness = false
 
 [[example]]
 name = "mock_backend"
-path = "benches/mock_backend.rs"
 
 [[example]]
 name = "mock_auth"
-path = "benches/mock_auth.rs"
