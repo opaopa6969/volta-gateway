@@ -79,7 +79,8 @@ fn make_proxy(auth_addr: SocketAddr, backend_addr: SocketAddr, host: &str) -> Pr
     );
 
     let hot = Arc::new(ArcSwap::from_pointee(HotState::new(Arc::new(routing))));
-    ProxyService::new(volta, hot)
+    let metrics = Arc::new(volta_gateway::metrics::Metrics::new());
+    ProxyService::new(volta, hot, metrics)
 }
 
 fn make_proxy_with_cors(auth_addr: SocketAddr, backend_addr: SocketAddr, host: &str, origins: Vec<String>) -> ProxyService {
@@ -103,7 +104,8 @@ fn make_proxy_with_cors(auth_addr: SocketAddr, backend_addr: SocketAddr, host: &
     let hot = Arc::new(ArcSwap::from_pointee(
         HotState::new_with_config(Arc::new(routing), HashMap::new(), None, cors),
     ));
-    ProxyService::new(volta, hot)
+    let metrics = Arc::new(volta_gateway::metrics::Metrics::new());
+    ProxyService::new(volta, hot, metrics)
 }
 
 // ─── Tests ──────────────────────────────────────────────

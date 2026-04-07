@@ -40,16 +40,10 @@ pub async fn handle_websocket(
         return error_response(StatusCode::SERVICE_UNAVAILABLE, &request_id);
     }
 
-    // Extract host
+    // Extract host (shared normalize_host function)
     let host = req.headers().get("host")
         .and_then(|v| v.to_str().ok())
-        .map(|h| {
-            if h.starts_with('[') {
-                h.split(']').next().map(|s| format!("{}]", s)).unwrap_or_else(|| h.to_string())
-            } else {
-                h.split(':').next().unwrap_or(h).to_string()
-            }.to_lowercase()
-        })
+        .map(|h| crate::proxy::normalize_host(h))
         .unwrap_or_default();
 
     let uri_path = req.uri().path().to_string();
@@ -84,7 +78,7 @@ pub async fn handle_websocket(
     }
 
     // Select backend (round-robin)
-    let backend = backend_selector.select(&backends).to_string();
+    let backend = backend_selector.select(&host, &backends).to_string();
 
     // Build backend upgrade request
     let backend_uri = format!("{}{}", backend,

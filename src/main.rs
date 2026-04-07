@@ -64,8 +64,8 @@ async fn main() {
         HotState::new_with_config(routing, ip_allowlists, config.error_pages_dir.as_deref(), cors),
     ));
     let volta = VoltaAuthClient::new(&config.auth);
-    let proxy = ProxyService::new(volta.clone(), hot.clone());
     let metrics = Arc::new(metrics::Metrics::new());
+    let proxy = ProxyService::new(volta.clone(), hot.clone(), metrics.clone());
 
     info!(port = config.server.port, "volta-gateway starting");
 

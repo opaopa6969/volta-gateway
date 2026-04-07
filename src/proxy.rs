@@ -20,32 +20,35 @@ use crate::state::ProxyState;
 /// host → (backend_urls, app_id)
 pub type RoutingTable = HashMap<String, (Vec<String>, Option<String>)>;
 
-/// Round-robin backend selector.
+/// Round-robin backend selector (per-host counters).
 #[derive(Clone)]
 pub struct BackendSelector {
-    counter: Arc<std::sync::atomic::AtomicUsize>,
+    counters: Arc<Mutex<HashMap<String, usize>>>,
 }
 
 impl BackendSelector {
     pub fn new() -> Self {
-        Self { counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)) }
+        Self { counters: Arc::new(Mutex::new(HashMap::new())) }
     }
 
-    pub fn select<'a>(&self, backends: &'a [String]) -> &'a str {
+    pub fn select<'a>(&self, host: &str, backends: &'a [String]) -> &'a str {
         if backends.len() <= 1 {
             return &backends[0];
         }
-        let idx = self.counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % backends.len();
+        let mut map = self.counters.lock().unwrap();
+        let counter = map.entry(host.to_string()).or_insert(0);
+        let idx = *counter % backends.len();
+        *counter = counter.wrapping_add(1);
         &backends[idx]
     }
 }
 
 /// PH2-2: Per-IP + global rate limiter.
+/// Fixed: Mutex<(count, window_start)> — no atomic/Mutex mixing.
 #[derive(Clone)]
 pub struct RateLimiter {
-    global_count: Arc<std::sync::atomic::AtomicU64>,
+    global: Arc<Mutex<(u64, Instant)>>,
     global_limit: u64,
-    global_window: Arc<Mutex<Instant>>,
     per_ip: Arc<Mutex<HashMap<std::net::IpAddr, (u64, Instant)>>>,
     per_ip_limit: u64,
 }
@@ -53,24 +56,22 @@ pub struct RateLimiter {
 impl RateLimiter {
     fn new(global_rps: u64, per_ip_rps: u64) -> Self {
         Self {
-            global_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            global: Arc::new(Mutex::new((0, Instant::now()))),
             global_limit: global_rps,
-            global_window: Arc::new(Mutex::new(Instant::now())),
             per_ip: Arc::new(Mutex::new(HashMap::new())),
             per_ip_limit: per_ip_rps,
         }
     }
 
     fn allow(&self, ip: std::net::IpAddr) -> bool {
-        // Global check
+        // Global check — single Mutex protects both count and window
         {
-            let mut start = self.global_window.lock().unwrap();
-            if start.elapsed() >= std::time::Duration::from_secs(1) {
-                *start = Instant::now();
-                self.global_count.store(1, std::sync::atomic::Ordering::SeqCst);
+            let mut g = self.global.lock().unwrap();
+            if g.1.elapsed() >= std::time::Duration::from_secs(1) {
+                *g = (1, Instant::now());
             } else {
-                let current = self.global_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                if current >= self.global_limit { return false; }
+                g.0 += 1;
+                if g.0 > self.global_limit { return false; }
             }
         }
 
@@ -233,10 +234,11 @@ pub struct ProxyService {
     pub rate_limiter: RateLimiter,
     pub backend_selector: BackendSelector,
     circuit_breaker: CircuitBreaker,
+    pub metrics: Arc<crate::metrics::Metrics>,
 }
 
 impl ProxyService {
-    pub fn new(volta: VoltaAuthClient, hot: Arc<ArcSwap<HotState>>) -> Self {
+    pub fn new(volta: VoltaAuthClient, hot: Arc<ArcSwap<HotState>>, metrics: Arc<crate::metrics::Metrics>) -> Self {
         let backend_client = Client::builder(TokioExecutor::new())
             .pool_max_idle_per_host(64)
             .build_http();
@@ -244,7 +246,7 @@ impl ProxyService {
             .pool_max_idle_per_host(64)
             .build_http();
         Self {
-            volta, backend_client, retry_client, hot,
+            volta, backend_client, retry_client, hot, metrics,
             rate_limiter: RateLimiter::new(1000, 100),
             backend_selector: BackendSelector::new(),
             circuit_breaker: CircuitBreaker::new(5, 30),
@@ -369,7 +371,7 @@ impl ProxyService {
             };
             match flow.context.get::<RouteTarget>() {
                 Ok(rt) => {
-                    let selected = self.backend_selector.select(&rt.backends).to_string();
+                    let selected = self.backend_selector.select(&host, &rt.backends).to_string();
                     (selected, rt.app_id.clone())
                 }
                 Err(_) => return error_response(StatusCode::BAD_REQUEST, &request_id),
@@ -591,6 +593,10 @@ impl ProxyService {
             user_id = volta_headers.get("x-volta-user-id").map(|s| s.as_str()).unwrap_or("-"),
         );
 
+        // Record metrics
+        self.metrics.record_status(response_status);
+        self.metrics.record_duration(start);
+
         // Compression: gzip text-based responses if client accepts and backend didn't compress
         let already_encoded = response.headers().contains_key("content-encoding");
         let is_compressible = response.headers().get("content-type")
@@ -654,20 +660,23 @@ impl ProxyService {
     }
 }
 
-/// GW-26: Extract host, handling IPv6 literals like [::1]:8080
+/// GW-26: Normalize host header — strip port, handle IPv6, lowercase.
+/// Shared by proxy.rs and websocket.rs (fixes extract_host duplication).
+pub fn normalize_host(raw: &str) -> String {
+    if raw.starts_with('[') {
+        // IPv6: [::1]:8080 → [::1]
+        raw.split(']').next().map(|s| format!("{}]", s)).unwrap_or_else(|| raw.to_string())
+    } else {
+        // IPv4/hostname: app.example.com:8080 → app.example.com
+        raw.split(':').next().unwrap_or(raw).to_string()
+    }.to_lowercase()
+}
+
 fn extract_host(req: &Request<Incoming>) -> Option<String> {
     req.headers()
         .get("host")
         .and_then(|v| v.to_str().ok())
-        .map(|h| {
-            if h.starts_with('[') {
-                // IPv6: [::1]:8080 → [::1]
-                h.split(']').next().map(|s| format!("{}]", s)).unwrap_or_else(|| h.to_string())
-            } else {
-                // IPv4/hostname: app.example.com:8080 → app.example.com
-                h.split(':').next().unwrap_or(h).to_string()
-            }.to_lowercase()
-        })
+        .map(|h| normalize_host(h))
 }
 
 fn error_response(status: StatusCode, request_id: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
