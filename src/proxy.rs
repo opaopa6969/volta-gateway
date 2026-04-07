@@ -280,6 +280,35 @@ impl ProxyService {
 
         // Extract request metadata for SM
         let host = extract_host(&req).unwrap_or_default();
+
+        // GW-30: CORS preflight — handle OPTIONS at proxy layer
+        if method == hyper::Method::OPTIONS {
+            let cors_origin = match hot.cors.get(&host) {
+                Some(origins) => {
+                    let req_origin = req.headers().get("origin")
+                        .and_then(|v| v.to_str().ok()).unwrap_or("");
+                    if origins.iter().any(|o| o == req_origin) {
+                        req_origin.to_string()
+                    } else {
+                        String::new()
+                    }
+                }
+                None => "*".to_string(),
+            };
+            if !cors_origin.is_empty() {
+                let mut resp = Response::builder()
+                    .status(StatusCode::NO_CONTENT)
+                    .header("access-control-allow-origin", &cors_origin)
+                    .header("access-control-allow-methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+                    .header("access-control-allow-headers", "Content-Type, Authorization, X-CSRF-Token")
+                    .header("access-control-max-age", "86400")
+                    .header("x-request-id", &request_id);
+                if cors_origin != "*" {
+                    resp = resp.header("vary", "Origin");
+                }
+                return resp.body(Empty::<Bytes>::new().map_err(|e| match e {}).boxed()).unwrap();
+            }
+        }
         let header_size: usize = req.headers().iter()
             .map(|(k, v)| k.as_str().len() + v.len()).sum();
         let content_length = req.headers().get("content-length")
@@ -559,8 +588,20 @@ impl ProxyService {
 
         if !already_encoded && is_compressible && client_accepts_gzip {
             use std::io::Write;
-            // Collect body and compress
-            let body_bytes = match http_body_util::BodyExt::collect(response.into_body()).await {
+
+            // GW-36 fix: preserve all original headers via into_parts()
+            let (parts, body) = response.into_parts();
+
+            // GW-28: skip compression for large responses (> 1MB) to avoid OOM
+            let content_len = parts.headers.get("content-length")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<usize>().ok());
+            if content_len.map_or(false, |len| len > 1_048_576) {
+                let response = Response::from_parts(parts, body);
+                return Response::from(response).map(|b| b.boxed());
+            }
+
+            let body_bytes = match http_body_util::BodyExt::collect(body).await {
                 Ok(collected) => collected.to_bytes(),
                 Err(_) => return error_response_with_pages(StatusCode::BAD_GATEWAY, &request_id, &hot.error_pages),
             };
@@ -569,45 +610,30 @@ impl ProxyService {
             if encoder.write_all(&body_bytes).is_ok() {
                 if let Ok(compressed) = encoder.finish() {
                     if compressed.len() < body_bytes.len() {
-                        let mut resp = Response::builder()
-                            .status(StatusCode::from_u16(response_status).unwrap_or(StatusCode::OK));
-                        // We need to rebuild headers — but we already modified them above via `headers`
-                        // Instead, return a compressed response with the same headers
-                        // Note: response was consumed, so rebuild from scratch
+                        // Rebuild response preserving all original headers
+                        let mut resp = Response::builder().status(parts.status);
+                        for (name, value) in &parts.headers {
+                            // Skip headers that compression changes
+                            match name.as_str() {
+                                "content-length" | "content-encoding" | "transfer-encoding" => {}
+                                _ => { resp = resp.header(name, value); }
+                            }
+                        }
                         resp = resp
                             .header("content-encoding", "gzip")
-                            .header("content-length", compressed.len().to_string())
-                            .header("x-request-id", &request_id)
-                            .header("x-content-type-options", "nosniff")
-                            .header("x-frame-options", "DENY")
-                            .header("strict-transport-security", "max-age=31536000; includeSubDomains");
-
-                        if !cors_origin.is_empty() {
-                            resp = resp
-                                .header("access-control-allow-origin", &cors_origin)
-                                .header("access-control-allow-methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-                                .header("access-control-allow-headers", "Content-Type, Authorization, X-CSRF-Token");
-                        }
+                            .header("content-length", compressed.len().to_string());
 
                         let body = Full::new(Bytes::from(compressed));
                         return resp.body(body.map_err(|e| match e {}).boxed()).unwrap();
                     }
                 }
             }
-            // Compression failed or didn't help — return uncompressed
-            let body = Full::new(body_bytes);
-            let mut resp = Response::builder()
-                .status(StatusCode::from_u16(response_status).unwrap_or(StatusCode::OK))
-                .header("x-request-id", &request_id)
-                .header("x-content-type-options", "nosniff")
-                .header("x-frame-options", "DENY")
-                .header("strict-transport-security", "max-age=31536000; includeSubDomains");
-            if !cors_origin.is_empty() {
-                resp = resp
-                    .header("access-control-allow-origin", &cors_origin)
-                    .header("access-control-allow-methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-                    .header("access-control-allow-headers", "Content-Type, Authorization, X-CSRF-Token");
+            // Compression failed or didn't help — return uncompressed with original headers
+            let mut resp = Response::builder().status(parts.status);
+            for (name, value) in &parts.headers {
+                resp = resp.header(name, value);
             }
+            let body = Full::new(body_bytes);
             return resp.body(body.map_err(|e| match e {}).boxed()).unwrap();
         }
 

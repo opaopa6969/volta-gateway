@@ -205,27 +205,39 @@ async fn main() {
                 let metrics = metrics2.clone();
                 let addr = remote_addr;
                 async move {
-                    // HTTP → HTTPS redirect
+                    // HTTP → HTTPS redirect (GW-29/GW-38: skip for healthz, metrics, ACME challenge)
                     if force_https {
-                        let host = req.headers().get("host")
-                            .and_then(|v| v.to_str().ok())
-                            .unwrap_or("localhost");
-                        // Strip port from host if present
-                        let host_no_port = host.split(':').next().unwrap_or(host);
-                        let path = req.uri().path_and_query()
-                            .map(|pq| pq.as_str())
-                            .unwrap_or("/");
-                        let location = if tls_port == 443 {
-                            format!("https://{}{}", host_no_port, path)
-                        } else {
-                            format!("https://{}:{}{}", host_no_port, tls_port, path)
-                        };
-                        let resp = hyper::Response::builder()
-                            .status(301)
-                            .header("location", location)
-                            .body(Full::new(Bytes::from("Moved Permanently")).map_err(|e| match e {}).boxed())
-                            .unwrap();
-                        return Ok::<_, hyper::Error>(resp);
+                        let path = req.uri().path();
+                        let skip_redirect = path == "/healthz"
+                            || path == "/metrics"
+                            || path.starts_with("/.well-known/");
+                        if !skip_redirect {
+                            let host = req.headers().get("host")
+                                .and_then(|v| v.to_str().ok())
+                                .unwrap_or("localhost");
+                            // IPv6-aware host parsing
+                            let host_no_port = if host.starts_with('[') {
+                                host.split(']').next()
+                                    .map(|s| format!("{}]", s))
+                                    .unwrap_or_else(|| host.to_string())
+                            } else {
+                                host.split(':').next().unwrap_or(host).to_string()
+                            };
+                            let pq = req.uri().path_and_query()
+                                .map(|pq| pq.as_str())
+                                .unwrap_or("/");
+                            let location = if tls_port == 443 {
+                                format!("https://{}{}", host_no_port, pq)
+                            } else {
+                                format!("https://{}:{}{}", host_no_port, tls_port, pq)
+                            };
+                            let resp = hyper::Response::builder()
+                                .status(301)
+                                .header("location", location)
+                                .body(Full::new(Bytes::from("Moved Permanently")).map_err(|e| match e {}).boxed())
+                                .unwrap();
+                            return Ok::<_, hyper::Error>(resp);
+                        }
                     }
 
                     // PH2-3: /metrics endpoint
