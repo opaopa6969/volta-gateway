@@ -10,9 +10,10 @@ auth:
   pool_max_idle: 32
 
 routing:
+  # E2E test: volta-auth-proxy is both auth provider AND backend
   - host: localhost
-    backend: http://localhost:3000
-    app_id: app-default
+    backend: http://localhost:7070
+    app_id: app-volta
 
   - host: console.unlaxer.org
     backend: http://localhost:3001
