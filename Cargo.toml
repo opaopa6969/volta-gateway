@@ -29,6 +29,9 @@ tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 # State machine
 tramli = "0.1"
 
+# IP allowlist (CIDR parsing)
+ipnet = "2"
+
 # Utilities
 uuid = { version = "1", features = ["v4"] }
 

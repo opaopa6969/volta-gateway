@@ -17,6 +17,7 @@ mod state;
 mod auth;
 mod proxy;
 mod flow;
+mod metrics;
 
 use config::GatewayConfig;
 use auth::VoltaAuthClient;
@@ -42,10 +43,18 @@ async fn main() {
             std::process::exit(1);
         });
 
+    // PH2-4: Config validation
+    if let Err(errors) = config.validate() {
+        for e in &errors { error!("config error: {e}"); }
+        error!("config validation failed ({} errors) — exiting", errors.len());
+        std::process::exit(1);
+    }
+
     let addr = SocketAddr::from(([0, 0, 0, 0], config.server.port));
     let routing = Arc::new(config.routing_table());
     let volta = VoltaAuthClient::new(&config.auth);
     let proxy = ProxyService::new(volta.clone(), routing);
+    let metrics = Arc::new(metrics::Metrics::new());
 
     info!(port = config.server.port, "volta-gateway starting");
 
@@ -113,15 +122,30 @@ async fn main() {
         let proxy = proxy.clone();
         let volta_health = volta.clone();
         let in_flight = in_flight.clone();
+        let metrics = metrics.clone();
 
         in_flight.fetch_add(1, Ordering::SeqCst);
+        metrics.active_connections.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         tokio::spawn(async move {
+            let metrics2 = metrics.clone();
             let service = service_fn(move |req: Request<Incoming>| {
                 let proxy = proxy.clone();
                 let volta_health = volta_health.clone();
+                let metrics = metrics2.clone();
                 let addr = remote_addr;
                 async move {
+                    // PH2-3: /metrics endpoint
+                    if req.uri().path() == "/metrics" {
+                        let body = metrics.render();
+                        let resp = hyper::Response::builder()
+                            .status(200)
+                            .header("content-type", "text/plain; version=0.0.4")
+                            .body(Full::new(Bytes::from(body)).map_err(|e| match e {}).boxed())
+                            .unwrap();
+                        return Ok::<_, hyper::Error>(resp);
+                    }
+
                     if req.uri().path() == "/healthz" {
                         let volta_ok = volta_health.health().await;
                         let body = format!(
@@ -158,6 +182,7 @@ async fn main() {
             }
 
             in_flight.fetch_sub(1, Ordering::SeqCst);
+            metrics.active_connections.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         });
     }
 }
