@@ -83,7 +83,26 @@ cp volta-gateway.yaml my-config.yaml
 cargo run -- my-config.yaml
 ```
 
+## 機能一覧 (v0.2.0)
+
+| 機能 | 詳細 |
+|------|------|
+| HTTP/1.1 + HTTP/2 | hyper 1.x 自動ネゴシエーション |
+| WebSocket tunnel | 双方向 TCP tunnel (1024 接続上限) |
+| TLS / Let's Encrypt | rustls-acme, 自動 HTTPS |
+| ロードバランシング | 複数 backend でラウンドロビン |
+| レート制限 | グローバル + per-IP (設定可能) |
+| サーキットブレーカー | 5 failures / 30s recovery, idempotent retry, Retry-After |
+| 圧縮 | text/json/xml/js を gzip (1MB 閾値) |
+| CORS | per-route origins, セキュア・バイ・デフォルト (暗黙の wildcard なし) |
+| カスタムエラーページ | HTML ディレクトリ + JSON fallback |
+| ホットリロード | SIGHUP → ゼロダウンタイム設定スワップ (ArcSwap) |
+| L4 proxy | TCP/UDP ポートフォワーディング |
+| メトリクス | Prometheus /metrics (リクエスト, WS, CB, compression, L4) |
+
 ## 設定
+
+最小構成 (`volta-gateway.minimal.yaml` 参照):
 
 ```yaml
 server:
@@ -97,10 +116,16 @@ routing:
   - host: app.example.com
     backend: http://localhost:3000
     app_id: app-wiki
+    cors_origins:                    # 明示的 CORS (省略 = CORS ヘッダなし)
+      - https://app.example.com
 
   - host: "*.example.com"           # ワイルドカード対応
-    backend: http://localhost:3000
+    backends:                        # ラウンドロビン LB
+      - http://localhost:3000
+      - http://localhost:3001
 ```
+
+全フィールドリファレンス: `volta-gateway.full.yaml`
 
 ## セキュリティ
 
@@ -136,15 +161,25 @@ routing:
 
 SM パターンは [tramli](https://github.com/opaopa6969/tramli) から — 不正な遷移が構造的に存在できない制約付きフローエンジン。
 
-## vs Traefik
+## vs Traefik (実測済み)
+
+同条件ベンチマーク: localhost mock auth + mock backend。Traefik v3.4 (Docker) + ForwardAuth vs volta-gateway (native release)。[詳細結果](benches/e2e_results.md)
+
+| 指標 | volta-gateway | Traefik + ForwardAuth | |
+|------|--------------|----------------------|---|
+| **p50 レイテンシ** | **0.252 ms** | **1.673 ms** | **6.6倍高速** |
+| 平均レイテンシ | 0.395 ms | 1.777 ms | 4.5倍高速 |
+| p99 レイテンシ | 1.235 ms | 2.373 ms | 1.9倍高速 |
+| SM オーバーヘッド | 1.69 μs | — | 全体の約1% |
 
 | | volta-gateway | Traefik |
 |---|---|---|
-| 認証レイテンシ | 0.5-1ms (localhost) | 4-10ms (ForwardAuth, 2往復) |
-| リクエスト可視性 | ステップ別 SM 遷移 | 「入って出た」だけ |
+| 認証モデル | localhost HTTP (コネクションプール) | ForwardAuth ミドルウェア (2ホップ) |
+| リクエスト可視性 | ステップ別 SM 遷移 + μs タイミング | 「入って出た」だけ |
 | 設定 | 1 YAML ファイル | Docker labels + traefik.yml + middleware chain |
-| ルーティング | Host → backend (ワイルドカード) | Labels, file, Consul, etcd, ... |
-| デバッグ | SM state ログで障害点が一目瞭然 | Traefik デバッグログを読む、頑張れ |
+| ルーティング | Host → backend (ワイルドカード, ラウンドロビン) | Labels, file, Consul, etcd, ... |
+| CORS | per-route, セキュア・バイ・デフォルト (DD-001) | ミドルウェアチェーン |
+| デバッグ | SM state ログで障害点が一目瞭然 | Traefik デバッグログを読む |
 
 ## tramli での開発
 

@@ -83,7 +83,26 @@ cp volta-gateway.yaml my-config.yaml
 cargo run -- my-config.yaml
 ```
 
+## Features (v0.2.0)
+
+| Feature | Details |
+|---------|---------|
+| HTTP/1.1 + HTTP/2 | hyper 1.x auto-negotiation |
+| WebSocket tunnel | Bidirectional TCP tunnel (1024 connection limit) |
+| TLS / Let's Encrypt | rustls-acme, automatic HTTPS |
+| Load balancing | Round-robin across multiple backends |
+| Rate limiting | Global + per-IP (configurable) |
+| Circuit breaker | 5 failures / 30s recovery, idempotent retry, Retry-After |
+| Compression | Gzip for text/json/xml/js (1MB threshold) |
+| CORS | Per-route origins, secure-by-default (no implicit wildcard) |
+| Custom error pages | HTML directory with JSON fallback |
+| Hot reload | SIGHUP → zero-downtime config swap (ArcSwap) |
+| L4 proxy | TCP/UDP port forwarding |
+| Metrics | Prometheus /metrics (requests, WS, circuit breaker, compression, L4) |
+
 ## Configuration
+
+Minimal config (see `volta-gateway.minimal.yaml`):
 
 ```yaml
 server:
@@ -97,10 +116,16 @@ routing:
   - host: app.example.com
     backend: http://localhost:3000
     app_id: app-wiki
+    cors_origins:                    # explicit CORS (omit = no CORS headers)
+      - https://app.example.com
 
   - host: "*.example.com"           # wildcard support
-    backend: http://localhost:3000
+    backends:                        # round-robin LB
+      - http://localhost:3000
+      - http://localhost:3001
 ```
+
+Full config reference: `volta-gateway.full.yaml`
 
 ## Security
 
@@ -136,15 +161,25 @@ routing:
 
 The SM pattern comes from [tramli](https://github.com/opaopa6969/tramli) — a constrained flow engine where invalid transitions cannot exist.
 
-## vs Traefik
+## vs Traefik (benchmarked)
+
+Same-condition benchmark: localhost mock auth + mock backend. Traefik v3.4 (Docker) + ForwardAuth vs volta-gateway (native release). [Full results](benches/e2e_results.md)
+
+| Metric | volta-gateway | Traefik + ForwardAuth | |
+|--------|--------------|----------------------|---|
+| **p50 latency** | **0.252 ms** | **1.673 ms** | **6.6x faster** |
+| avg latency | 0.395 ms | 1.777 ms | 4.5x faster |
+| p99 latency | 1.235 ms | 2.373 ms | 1.9x faster |
+| SM overhead | 1.69 μs | — | ~1% of total |
 
 | | volta-gateway | Traefik |
 |---|---|---|
-| Auth latency | 0.5-1ms (localhost) | 4-10ms (ForwardAuth, 2 hops) |
-| Request visibility | Per-step SM transitions | "request in, response out" |
+| Auth model | localhost HTTP (connection-pooled) | ForwardAuth middleware (2 hops) |
+| Request visibility | Per-step SM transitions with μs timing | "request in, response out" |
 | Config | 1 YAML file | Docker labels + traefik.yml + middleware chain |
-| Routing | Host → backend (wildcard) | Labels, file, Consul, etcd, ... |
-| Debug | SM state log shows exact failure point | Read Traefik debug logs, good luck |
+| Routing | Host → backend (wildcard, round-robin) | Labels, file, Consul, etcd, ... |
+| CORS | Per-route, secure-by-default (DD-001) | Middleware chain |
+| Debug | SM state log shows exact failure point | Traefik debug logs |
 
 ## Development with tramli
 
