@@ -5,11 +5,16 @@ use hyper::{Request, Response, StatusCode, Uri};
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::io::copy_bidirectional;
 use tracing::{info, warn, error};
 
 use crate::auth::{AuthResult, VoltaAuthClient};
 use crate::proxy::{BackendSelector, RoutingTable};
+
+/// GW-37: Global WebSocket connection counter + limit
+static WS_CONNECTIONS: AtomicUsize = AtomicUsize::new(0);
+const MAX_WS_CONNECTIONS: usize = 1024;
 
 /// GW-19: WebSocket proxy — upgrade + bidirectional TCP tunnel.
 ///
@@ -27,6 +32,13 @@ pub async fn handle_websocket(
     backend_selector: &BackendSelector,
 ) -> Response<BoxBody<Bytes, hyper::Error>> {
     let request_id = uuid::Uuid::new_v4().to_string();
+
+    // GW-37: WebSocket connection limit
+    let current = WS_CONNECTIONS.load(Ordering::Relaxed);
+    if current >= MAX_WS_CONNECTIONS {
+        warn!(state = "WS_LIMIT", current = current, max = MAX_WS_CONNECTIONS);
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, &request_id);
+    }
 
     // Extract host
     let host = req.headers().get("host")
@@ -170,10 +182,22 @@ pub async fn handle_websocket(
         .body(Empty::<Bytes>::new().map_err(|e| match e {}).boxed())
         .unwrap();
 
+    // GW-37: Track WebSocket connection
+    WS_CONNECTIONS.fetch_add(1, Ordering::Relaxed);
+
     // Spawn TCP tunnel: upgrade both sides and copy bidirectionally
     let req_id = request_id.clone();
     let host_log = host.clone();
     tokio::spawn(async move {
+        // Ensure connection counter is decremented when tunnel ends
+        struct WsGuard;
+        impl Drop for WsGuard {
+            fn drop(&mut self) {
+                WS_CONNECTIONS.fetch_sub(1, Ordering::Relaxed);
+            }
+        }
+        let _guard = WsGuard;
+
         // Upgrade backend connection
         let backend_upgraded = match hyper::upgrade::on(backend_resp).await {
             Ok(u) => u,

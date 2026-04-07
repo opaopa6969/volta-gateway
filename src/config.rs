@@ -176,18 +176,20 @@ impl GatewayConfig {
     }
 
     /// Build routing table: host → (backend_urls, app_id)
+    /// GW-45: host keys are lowercased for consistent lookup
     pub fn routing_table(&self) -> HashMap<String, (Vec<String>, Option<String>)> {
         self.routing
             .iter()
-            .map(|r| (r.host.clone(), (r.all_backends(), r.app_id.clone())))
+            .map(|r| (r.host.to_lowercase(), (r.all_backends(), r.app_id.clone())))
             .collect()
     }
 
-    /// Build CORS origins table: host → allowed origins (empty = wildcard "*")
+    /// Build CORS origins table: host → allowed origins
+    /// GW-44: empty cors_origins = no CORS headers (not wildcard)
     pub fn cors_table(&self) -> HashMap<String, Vec<String>> {
         self.routing.iter()
             .filter(|r| !r.cors_origins.is_empty())
-            .map(|r| (r.host.clone(), r.cors_origins.clone()))
+            .map(|r| (r.host.to_lowercase(), r.cors_origins.clone()))
             .collect()
     }
 
@@ -196,7 +198,7 @@ impl GatewayConfig {
         self.routing.iter()
             .filter(|r| !r.ip_allowlist.is_empty())
             .map(|r| (
-                r.host.clone(),
+                r.host.to_lowercase(),
                 r.ip_allowlist.iter().filter_map(|c| c.parse().ok()).collect(),
             ))
             .collect()

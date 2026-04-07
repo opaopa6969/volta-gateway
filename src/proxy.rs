@@ -282,18 +282,24 @@ impl ProxyService {
         let host = extract_host(&req).unwrap_or_default();
 
         // GW-30: CORS preflight — handle OPTIONS at proxy layer
+        // GW-44: CORS default is "no headers" (not wildcard). Explicit cors_origins required.
         if method == hyper::Method::OPTIONS {
             let cors_origin = match hot.cors.get(&host) {
                 Some(origins) => {
-                    let req_origin = req.headers().get("origin")
-                        .and_then(|v| v.to_str().ok()).unwrap_or("");
-                    if origins.iter().any(|o| o == req_origin) {
-                        req_origin.to_string()
+                    // Check for explicit wildcard
+                    if origins.iter().any(|o| o == "*") {
+                        "*".to_string()
                     } else {
-                        String::new()
+                        let req_origin = req.headers().get("origin")
+                            .and_then(|v| v.to_str().ok()).unwrap_or("");
+                        if origins.iter().any(|o| o == req_origin) {
+                            req_origin.to_string()
+                        } else {
+                            String::new()
+                        }
                     }
                 }
-                None => "*".to_string(),
+                None => String::new(), // GW-44: no config → no CORS headers
             };
             if !cors_origin.is_empty() {
                 let mut resp = Response::builder()
@@ -531,19 +537,21 @@ impl ProxyService {
         }
         headers.insert("x-request-id", request_id.parse().unwrap());
 
-        // GW-21: CORS headers (per-route or wildcard)
+        // GW-21 + GW-44: CORS headers (per-route only, no implicit wildcard)
         let cors_origin = match hot.cors.get(&host) {
             Some(origins) => {
-                // Check if request Origin matches any allowed origin
-                let req_origin = req_origin.as_deref().unwrap_or("");
-                if origins.iter().any(|o| o == req_origin) {
-                    req_origin.to_string()
+                if origins.iter().any(|o| o == "*") {
+                    "*".to_string()
                 } else {
-                    // Origin not allowed — don't set CORS headers
-                    String::new()
+                    let req_origin = req_origin.as_deref().unwrap_or("");
+                    if origins.iter().any(|o| o == req_origin) {
+                        req_origin.to_string()
+                    } else {
+                        String::new()
+                    }
                 }
             }
-            None => "*".to_string(), // No per-route config → wildcard
+            None => String::new(), // GW-44: no config → no CORS headers
         };
         if !cors_origin.is_empty() {
             headers.insert("access-control-allow-origin", cors_origin.parse().unwrap());

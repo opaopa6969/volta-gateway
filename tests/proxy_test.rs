@@ -184,14 +184,24 @@ fn compression_detects_compressible_types() {
 // ─── CORS Tests ────────────────────────────────────────
 
 #[test]
-fn cors_wildcard_when_no_config() {
+fn cors_no_headers_when_no_config() {
+    // GW-44: no cors_origins config → no CORS headers (not wildcard)
     let cors: CorsTable = HashMap::new();
     let host = "app.example.com";
-    let result = match cors.get(host) {
-        Some(_origins) => "per-route",
-        None => "wildcard",
+    let cors_origin = match cors.get(host) {
+        Some(_origins) => "per-route".to_string(),
+        None => String::new(), // GW-44: empty = no CORS
     };
-    assert_eq!(result, "wildcard");
+    assert!(cors_origin.is_empty());
+}
+
+#[test]
+fn cors_explicit_wildcard() {
+    // GW-44: explicit "*" in cors_origins → wildcard
+    let mut cors: CorsTable = HashMap::new();
+    cors.insert("app.example.com".into(), vec!["*".into()]);
+    let origins = cors.get("app.example.com").unwrap();
+    assert!(origins.iter().any(|o| o == "*"));
 }
 
 #[test]
