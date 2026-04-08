@@ -168,6 +168,9 @@ pub struct RouteEntry {
     /// Traffic mirroring — copy requests to shadow backend (fire-and-forget).
     #[serde(default)]
     pub mirror: Option<MirrorConfig>,
+    /// Per-route request timeout in seconds (overrides server.request_timeout_secs).
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
     /// Response cache configuration.
     #[serde(default)]
     pub cache: Option<crate::cache::CacheConfig>,
@@ -346,6 +349,7 @@ impl GatewayConfig {
                 response_headers: r.response_headers.clone(),
                 geo_allowlist: r.geo_allowlist.clone(),
                 geo_denylist: r.geo_denylist.clone(),
+                timeout_secs: r.timeout_secs,
                 cache: r.cache.clone(),
                 backend_tls: r.backend_tls.clone(),
             }))

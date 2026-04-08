@@ -4,7 +4,8 @@ use hyper_util::rt::TokioExecutor;
 use http_body_util::Empty;
 use bytes::Bytes;
 use std::collections::HashMap;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::config::AuthConfig;
 
@@ -22,12 +23,22 @@ pub enum AuthResult {
 }
 
 /// HTTP client for volta /auth/verify. Connection-pooled, fail-closed.
+/// #33: Auth result cache entry.
+#[derive(Clone)]
+struct AuthCacheEntry {
+    result: AuthResult,
+    created: Instant,
+}
+
 #[derive(Clone)]
 pub struct VoltaAuthClient {
     client: Client<hyper_util::client::legacy::connect::HttpConnector, Empty<Bytes>>,
     base_url: String,
     verify_path: String,
     timeout: Duration,
+    /// #33: Short-lived auth cache (cookie hash → result). TTL = 5s.
+    auth_cache: Arc<Mutex<HashMap<u64, AuthCacheEntry>>>,
+    cache_ttl: Duration,
 }
 
 impl VoltaAuthClient {
@@ -41,10 +52,13 @@ impl VoltaAuthClient {
             base_url: config.volta_url.clone(),
             verify_path: config.verify_path.clone(),
             timeout: Duration::from_millis(config.timeout_ms),
+            auth_cache: Arc::new(Mutex::new(HashMap::new())),
+            cache_ttl: Duration::from_secs(5),
         }
     }
 
     /// Call volta /auth/verify with forwarded headers and cookies.
+    /// #33: Results are cached for 5s by cookie hash to skip redundant calls.
     pub async fn check(
         &self,
         host: &str,
@@ -53,6 +67,25 @@ impl VoltaAuthClient {
         cookie: Option<&str>,
         app_id: Option<&str>,
     ) -> AuthResult {
+        // #33: Auth cache lookup
+        let cache_key = {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut h = DefaultHasher::new();
+            cookie.unwrap_or("").hash(&mut h);
+            host.hash(&mut h);
+            app_id.unwrap_or("").hash(&mut h);
+            h.finish()
+        };
+        {
+            let cache = self.auth_cache.lock().unwrap();
+            if let Some(entry) = cache.get(&cache_key) {
+                if entry.created.elapsed() < self.cache_ttl {
+                    return entry.result.clone();
+                }
+            }
+        }
+
         let url = format!("{}{}", self.base_url, self.verify_path);
 
         let mut builder = Request::builder()
@@ -76,7 +109,7 @@ impl VoltaAuthClient {
 
         let result = tokio::time::timeout(self.timeout, self.client.request(req)).await;
 
-        match result {
+        let auth_result = match result {
             Ok(Ok(resp)) => {
                 let status = resp.status().as_u16();
                 match status {
@@ -116,7 +149,22 @@ impl VoltaAuthClient {
             }
             Ok(Err(e)) => AuthResult::Error(format!("volta request failed: {e}")),
             Err(_) => AuthResult::Error("volta auth timeout".into()),
+        };
+
+        // #33: Cache successful auth results (5s TTL)
+        if matches!(auth_result, AuthResult::Authenticated(_)) {
+            let mut cache = self.auth_cache.lock().unwrap();
+            cache.insert(cache_key, AuthCacheEntry {
+                result: auth_result.clone(),
+                created: Instant::now(),
+            });
+            // GC: remove expired entries (simple cap)
+            if cache.len() > 10_000 {
+                cache.retain(|_, e| e.created.elapsed() < self.cache_ttl);
+            }
         }
+
+        auth_result
     }
 
     /// Health check — is volta alive?

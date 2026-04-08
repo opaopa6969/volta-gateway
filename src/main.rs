@@ -44,8 +44,13 @@ async fn main() {
         tracing_subscriber::fmt().with_env_filter(filter).json().init();
     }
 
-    let config_path = std::env::args()
+    // #36: --validate dry-run mode
+    let args: Vec<String> = std::env::args().collect();
+    let validate_only = args.iter().any(|a| a == "--validate");
+    let config_path = args.iter()
+        .filter(|a| !a.starts_with('-'))
         .nth(1)
+        .cloned()
         .unwrap_or_else(|| "volta-gateway.yaml".into());
 
     let config = GatewayConfig::load(Path::new(&config_path))
@@ -59,6 +64,12 @@ async fn main() {
         for e in &errors { error!("config error: {e}"); }
         error!("config validation failed ({} errors) — exiting", errors.len());
         std::process::exit(1);
+    }
+
+    // #36: --validate mode exits after successful validation
+    if validate_only {
+        info!(routes = config.routing.len(), "config valid: {}", config_path);
+        std::process::exit(0);
     }
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.server.port));
@@ -145,6 +156,10 @@ async fn main() {
     // Track in-flight connections
     let in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
+    // #34: Backpressure — global max concurrent requests
+    let max_concurrent = 10_000u32;
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent as usize));
+
     // PROD-1: Backend health checker
     {
         let hot_snapshot = proxy.hot.load();
@@ -209,6 +224,15 @@ async fn main() {
             Err(_) => continue, // timeout — check shutdown flag
         };
 
+        // #34: Backpressure — reject if at capacity
+        let permit = match semaphore.clone().try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => {
+                warn!(state = "BACKPRESSURE", "max concurrent requests reached");
+                continue; // drop connection — client gets TCP RST
+            }
+        };
+
         let proxy = proxy.clone();
         let volta_health = volta.clone();
         let in_flight = in_flight.clone();
@@ -224,6 +248,7 @@ async fn main() {
         metrics.active_connections.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         tokio::spawn(async move {
+            let _permit = permit; // #34: hold semaphore permit until connection ends
             let metrics2 = metrics.clone();
             let hot_admin2 = hot_admin.clone();
             let config_path_admin2 = config_path_admin.clone();
@@ -378,6 +403,36 @@ async fn main() {
                                         return Ok(resp);
                                     }
                                 }
+                            }
+                            "/admin/stats" => {
+                                let m = &metrics;
+                                let stats = serde_json::json!({
+                                    "requests_total": m.requests_total.load(std::sync::atomic::Ordering::Relaxed),
+                                    "status": {
+                                        "2xx": m.requests_200.load(std::sync::atomic::Ordering::Relaxed),
+                                        "4xx": m.requests_400.load(std::sync::atomic::Ordering::Relaxed) + m.requests_403.load(std::sync::atomic::Ordering::Relaxed) + m.requests_429.load(std::sync::atomic::Ordering::Relaxed),
+                                        "5xx": m.requests_502.load(std::sync::atomic::Ordering::Relaxed) + m.requests_504.load(std::sync::atomic::Ordering::Relaxed),
+                                    },
+                                    "websocket": {
+                                        "total": m.ws_connections_total.load(std::sync::atomic::Ordering::Relaxed),
+                                        "active": m.ws_active.load(std::sync::atomic::Ordering::Relaxed),
+                                    },
+                                    "cache": {
+                                        "size": proxy.response_cache.stats().0,
+                                        "fresh": proxy.response_cache.stats().1,
+                                    },
+                                    "mirror": {
+                                        "total": m.mirror_total.load(std::sync::atomic::Ordering::Relaxed),
+                                        "errors": m.mirror_errors.load(std::sync::atomic::Ordering::Relaxed),
+                                    },
+                                });
+                                let body = serde_json::to_string_pretty(&stats).unwrap_or_default();
+                                let resp = hyper::Response::builder()
+                                    .status(200)
+                                    .header("content-type", "application/json")
+                                    .body(Full::new(Bytes::from(body)).map_err(|e| match e {}).boxed())
+                                    .unwrap();
+                                return Ok(resp);
                             }
                             "/admin/drain" if req.method() == hyper::Method::POST => {
                                 info!("drain requested via admin API");

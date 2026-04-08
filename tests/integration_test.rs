@@ -83,7 +83,7 @@ fn make_proxy(auth_addr: SocketAddr, backend_addr: SocketAddr, host: &str) -> Pr
             path_prefix: None, strip_prefix: None, add_prefix: None,
             request_headers: None, response_headers: None,
             geo_allowlist: vec![], geo_denylist: vec![],
-            cache: None, backend_tls: None,
+            timeout_secs: None, cache: None, backend_tls: None,
         },
     );
 
@@ -113,7 +113,7 @@ fn make_proxy_with_cors(auth_addr: SocketAddr, backend_addr: SocketAddr, host: &
             path_prefix: None, strip_prefix: None, add_prefix: None,
             request_headers: None, response_headers: None,
             geo_allowlist: vec![], geo_denylist: vec![],
-            cache: None, backend_tls: None,
+            timeout_secs: None, cache: None, backend_tls: None,
         },
     );
 

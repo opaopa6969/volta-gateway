@@ -114,6 +114,7 @@ impl ServicesJsonSource {
                 public: svc.public.unwrap_or(false),
                 auth_bypass_paths: bypass_paths,
                 mirror: None,
+                timeout_secs: None,
                 cache: None,
                 backend_tls: None,
             });
@@ -210,6 +211,7 @@ impl DockerLabelsSource {
             public,
             auth_bypass_paths: bypass,
             mirror: None,
+            timeout_secs: None,
             cache: None,
             backend_tls: None,
         })

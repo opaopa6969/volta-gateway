@@ -18,7 +18,7 @@ fn test_routing() -> Arc<RoutingTable> {
         path_prefix: None, strip_prefix: None, add_prefix: None,
         request_headers: None, response_headers: None,
         geo_allowlist: vec![], geo_denylist: vec![],
-        cache: None, backend_tls: None,
+        timeout_secs: None, cache: None, backend_tls: None,
     });
     rt.insert("*.example.com".into(), RouteInfo {
         weights: vec![], backends: vec!["http://localhost:3001".into()],
@@ -28,7 +28,7 @@ fn test_routing() -> Arc<RoutingTable> {
         path_prefix: None, strip_prefix: None, add_prefix: None,
         request_headers: None, response_headers: None,
         geo_allowlist: vec![], geo_denylist: vec![],
-        cache: None, backend_tls: None,
+        timeout_secs: None, cache: None, backend_tls: None,
     });
     Arc::new(rt)
 }

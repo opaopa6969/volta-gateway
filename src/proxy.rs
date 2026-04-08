@@ -33,6 +33,7 @@ pub struct RouteInfo {
     pub response_headers: Option<crate::config::HeaderManipulation>,
     pub geo_allowlist: Vec<String>,
     pub geo_denylist: Vec<String>,
+    pub timeout_secs: Option<u64>,
     pub cache: Option<crate::cache::CacheConfig>,
     pub backend_tls: Option<crate::mtls::BackendTlsConfig>,
 }
@@ -765,8 +766,12 @@ impl ProxyService {
             }
         };
 
+        // #35: Per-route timeout (default 30s)
+        let timeout_secs = route_info.as_ref()
+            .and_then(|r| r.timeout_secs)
+            .unwrap_or(30);
         let backend_result = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
+            std::time::Duration::from_secs(timeout_secs),
             self.backend_client.request(backend_req),
         ).await;
 
