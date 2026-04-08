@@ -211,6 +211,103 @@ fn plugin_manager_loads_from_config() {
     assert!(states[0].1.contains("Active"));
 }
 
+// ─── Rate Limit By User Plugin ─────────────────────────
+
+#[test]
+fn plugin_rate_limit_by_user_allows_under_limit() {
+    use volta_gateway::plugin::{Plugin, PluginContext, builtin::RateLimitByUser};
+
+    let plugin = RateLimitByUser::new(5, 60, "x-volta-user-id".into());
+
+    for _ in 0..5 {
+        let mut ctx = PluginContext {
+            method: "GET".into(), host: "test.com".into(), path: "/".into(),
+            headers: {
+                let mut h = HashMap::new();
+                h.insert("x-volta-user-id".into(), "user-1".into());
+                h
+            },
+            client_ip: "1.2.3.4".into(),
+            reject: None, add_headers: HashMap::new(), remove_headers: vec![],
+        };
+        plugin.on_request(&mut ctx).unwrap();
+        assert!(ctx.reject.is_none(), "should allow request #{}", 5);
+    }
+}
+
+#[test]
+fn plugin_rate_limit_by_user_rejects_over_limit() {
+    use volta_gateway::plugin::{Plugin, PluginContext, builtin::RateLimitByUser};
+
+    let plugin = RateLimitByUser::new(3, 60, "x-volta-user-id".into());
+
+    for i in 0..5 {
+        let mut ctx = PluginContext {
+            method: "GET".into(), host: "test.com".into(), path: "/".into(),
+            headers: {
+                let mut h = HashMap::new();
+                h.insert("x-volta-user-id".into(), "user-1".into());
+                h
+            },
+            client_ip: "1.2.3.4".into(),
+            reject: None, add_headers: HashMap::new(), remove_headers: vec![],
+        };
+        plugin.on_request(&mut ctx).unwrap();
+        if i >= 3 {
+            assert!(ctx.reject.is_some(), "should reject request #{}", i + 1);
+            assert_eq!(ctx.reject.unwrap().0, 429);
+        }
+    }
+}
+
+#[test]
+fn plugin_rate_limit_by_user_independent_users() {
+    use volta_gateway::plugin::{Plugin, PluginContext, builtin::RateLimitByUser};
+
+    let plugin = RateLimitByUser::new(2, 60, "x-volta-user-id".into());
+
+    // User A: 3 requests (should hit limit at 3rd)
+    for i in 0..3 {
+        let mut ctx = PluginContext {
+            method: "GET".into(), host: "test.com".into(), path: "/".into(),
+            headers: { let mut h = HashMap::new(); h.insert("x-volta-user-id".into(), "user-a".into()); h },
+            client_ip: "1.2.3.4".into(),
+            reject: None, add_headers: HashMap::new(), remove_headers: vec![],
+        };
+        plugin.on_request(&mut ctx).unwrap();
+        if i >= 2 { assert!(ctx.reject.is_some()); }
+    }
+
+    // User B: should still have full quota
+    let mut ctx = PluginContext {
+        method: "GET".into(), host: "test.com".into(), path: "/".into(),
+        headers: { let mut h = HashMap::new(); h.insert("x-volta-user-id".into(), "user-b".into()); h },
+        client_ip: "1.2.3.4".into(),
+        reject: None, add_headers: HashMap::new(), remove_headers: vec![],
+    };
+    plugin.on_request(&mut ctx).unwrap();
+    assert!(ctx.reject.is_none(), "user-b should not be rate limited");
+}
+
+#[test]
+fn plugin_rate_limit_skips_anonymous() {
+    use volta_gateway::plugin::{Plugin, PluginContext, builtin::RateLimitByUser};
+
+    let plugin = RateLimitByUser::new(1, 60, "x-volta-user-id".into());
+
+    // No user header = anonymous, should always pass
+    for _ in 0..10 {
+        let mut ctx = PluginContext {
+            method: "GET".into(), host: "test.com".into(), path: "/".into(),
+            headers: HashMap::new(),
+            client_ip: "1.2.3.4".into(),
+            reject: None, add_headers: HashMap::new(), remove_headers: vec![],
+        };
+        plugin.on_request(&mut ctx).unwrap();
+        assert!(ctx.reject.is_none());
+    }
+}
+
 // ─── mTLS Config Tests (#9) ────────────────────────────
 
 #[test]

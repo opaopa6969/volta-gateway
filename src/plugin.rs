@@ -68,6 +68,11 @@ pub trait Plugin: Send + Sync {
 }
 
 /// Built-in plugins.
+///
+/// Available plugins:
+/// - `api-key-auth`: API key authentication (request phase)
+/// - `header-injector`: Add/set headers on request/response
+/// - `rate-limit-by-user`: Per-user rate limiting based on X-Volta-User-Id (request phase)
 pub mod builtin {
     use super::*;
 
@@ -92,6 +97,54 @@ pub mod builtin {
                     Ok(())
                 }
             }
+        }
+
+        fn on_response(&self, _ctx: &mut PluginContext) -> Result<(), String> { Ok(()) }
+    }
+
+    /// Per-user rate limiting plugin.
+    /// Uses X-Volta-User-Id from auth response to enforce per-user request limits.
+    /// Useful for SaaS: prevent a single user/tenant from monopolizing resources.
+    pub struct RateLimitByUser {
+        pub max_requests: u64,
+        pub window_secs: u64,
+        pub user_header: String,
+        state: Arc<std::sync::Mutex<HashMap<String, (u64, std::time::Instant)>>>,
+    }
+
+    impl RateLimitByUser {
+        pub fn new(max_requests: u64, window_secs: u64, user_header: String) -> Self {
+            Self {
+                max_requests, window_secs, user_header,
+                state: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            }
+        }
+    }
+
+    impl Plugin for RateLimitByUser {
+        fn name(&self) -> &str { "rate-limit-by-user" }
+
+        fn on_request(&self, ctx: &mut PluginContext) -> Result<(), String> {
+            let user_id = match ctx.headers.get(&self.user_header) {
+                Some(id) => id.clone(),
+                None => return Ok(()), // No user ID = skip (unauthenticated or public route)
+            };
+
+            let mut state = self.state.lock().unwrap();
+            let entry = state.entry(user_id).or_insert((0, std::time::Instant::now()));
+
+            if entry.1.elapsed() >= std::time::Duration::from_secs(self.window_secs) {
+                *entry = (1, std::time::Instant::now());
+            } else {
+                entry.0 += 1;
+                if entry.0 > self.max_requests {
+                    ctx.reject = Some((429, format!(
+                        "User rate limit exceeded ({}/{}s)", self.max_requests, self.window_secs
+                    )));
+                    ctx.add_headers.insert("Retry-After".into(), self.window_secs.to_string());
+                }
+            }
+            Ok(())
         }
 
         fn on_response(&self, _ctx: &mut PluginContext) -> Result<(), String> { Ok(()) }
@@ -155,6 +208,17 @@ impl PluginManager {
                         header,
                         valid_keys: keys,
                     }));
+                }
+                "rate-limit-by-user" => {
+                    let max_req: u64 = config.config.get("max_requests")
+                        .and_then(|s| s.parse().ok()).unwrap_or(100);
+                    let window: u64 = config.config.get("window_secs")
+                        .and_then(|s| s.parse().ok()).unwrap_or(60);
+                    let header = config.config.get("user_header")
+                        .cloned().unwrap_or_else(|| "x-volta-user-id".into());
+                    mgr.register(config.clone(), Arc::new(builtin::RateLimitByUser::new(
+                        max_req, window, header,
+                    )));
                 }
                 "header-injector" => {
                     let mut req_headers = HashMap::new();

@@ -369,10 +369,11 @@ pub struct ProxyService {
     pub backend_selector: BackendSelector,
     circuit_breaker: CircuitBreaker,
     pub metrics: Arc<crate::metrics::Metrics>,
+    pub plugin_manager: Arc<crate::plugin::PluginManager>,
 }
 
 impl ProxyService {
-    pub fn new(volta: VoltaAuthClient, hot: Arc<ArcSwap<HotState>>, metrics: Arc<crate::metrics::Metrics>) -> Self {
+    pub fn new(volta: VoltaAuthClient, hot: Arc<ArcSwap<HotState>>, metrics: Arc<crate::metrics::Metrics>, plugin_manager: Arc<crate::plugin::PluginManager>) -> Self {
         let backend_client = Client::builder(TokioExecutor::new())
             .pool_max_idle_per_host(64)
             .build_http();
@@ -380,7 +381,7 @@ impl ProxyService {
             .pool_max_idle_per_host(64)
             .build_http();
         Self {
-            volta, backend_client, retry_client, hot, metrics,
+            volta, backend_client, retry_client, hot, metrics, plugin_manager,
             rate_limiter: RateLimiter::new(1000, 100),
             backend_selector: BackendSelector::new(),
             circuit_breaker: CircuitBreaker::new(5, 30),
@@ -594,6 +595,33 @@ impl ProxyService {
             if let Err(e) = eng.resume_and_execute(&flow_id, auth_data) {
                 warn!(state = "BAD_GATEWAY", reason = %e, host = %host);
                 return error_response_with_pages(StatusCode::BAD_GATEWAY, &request_id, &hot.error_pages);
+            }
+        }
+
+        // ─── Plugin: request phase ──────────────────────────
+        {
+            let mut plugin_ctx = crate::plugin::PluginContext {
+                method: method.to_string(),
+                host: host.clone(),
+                path: uri_path.clone(),
+                headers: req.headers().iter()
+                    .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.as_str().to_string(), v.to_string())))
+                    .collect(),
+                client_ip: real_client_ip.to_string(),
+                reject: None,
+                add_headers: HashMap::new(),
+                remove_headers: vec![],
+            };
+            if let Some((status, body)) = self.plugin_manager.run_request(&mut plugin_ctx) {
+                let resp_body = Full::new(Bytes::from(
+                    format!(r#"{{"error":{{"code":{},"reason":"{}","request_id":"{}"}}}}"#, status, body, request_id)
+                ));
+                return Response::builder()
+                    .status(StatusCode::from_u16(status).unwrap_or(StatusCode::FORBIDDEN))
+                    .header("content-type", "application/json")
+                    .header("x-request-id", &request_id)
+                    .body(resp_body.map_err(|e| match e {}).boxed())
+                    .unwrap();
             }
         }
 
@@ -879,6 +907,34 @@ impl ProxyService {
                             metrics.mirror_errors.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         }
                     });
+                }
+            }
+        }
+
+        // ─── Plugin: response phase ─────────────────────────
+        {
+            let mut plugin_ctx = crate::plugin::PluginContext {
+                method: method.to_string(),
+                host: host.clone(),
+                path: uri_path.clone(),
+                headers: response.headers().iter()
+                    .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.as_str().to_string(), v.to_string())))
+                    .collect(),
+                client_ip: real_client_ip.to_string(),
+                reject: None,
+                add_headers: HashMap::new(),
+                remove_headers: vec![],
+            };
+            self.plugin_manager.run_response(&mut plugin_ctx);
+            let headers = response.headers_mut();
+            for name in &plugin_ctx.remove_headers {
+                if let Ok(hname) = name.parse::<hyper::header::HeaderName>() {
+                    headers.remove(&hname);
+                }
+            }
+            for (name, value) in &plugin_ctx.add_headers {
+                if let (Ok(hname), Ok(hval)) = (name.parse::<hyper::header::HeaderName>(), value.parse::<hyper::header::HeaderValue>()) {
+                    headers.insert(hname, hval);
                 }
             }
         }

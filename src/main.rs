@@ -71,7 +71,8 @@ async fn main() {
     ));
     let volta = VoltaAuthClient::new(&config.auth);
     let metrics = Arc::new(metrics::Metrics::new());
-    let proxy = ProxyService::new(volta.clone(), hot.clone(), metrics.clone());
+    let plugin_mgr = Arc::new(plugin::PluginManager::load_from_config(&config.plugins));
+    let proxy = ProxyService::new(volta.clone(), hot.clone(), metrics.clone(), plugin_mgr);
 
     info!(port = config.server.port, "volta-gateway starting");
 
