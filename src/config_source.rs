@@ -79,7 +79,7 @@ impl ServicesJsonSource {
         Self { path: path.to_string(), prod_host: prod_host.to_string() }
     }
 
-    fn parse_services(&self, content: &str) -> Result<Vec<RouteEntry>, String> {
+    pub fn parse_services(&self, content: &str) -> Result<Vec<RouteEntry>, String> {
         let services: Vec<ServiceEntry> = serde_json::from_str(content)
             .map_err(|e| format!("services.json parse error: {}", e))?;
 
