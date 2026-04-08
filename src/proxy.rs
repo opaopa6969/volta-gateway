@@ -16,9 +16,18 @@ use crate::auth::{AuthResult, VoltaAuthClient};
 use crate::flow::{self, AuthData, BackendResponse, RequestData, RouteTarget};
 use crate::state::ProxyState;
 
+/// Route info for a host.
+#[derive(Debug, Clone)]
+pub struct RouteInfo {
+    pub backends: Vec<String>,
+    pub app_id: Option<String>,
+    pub public: bool,
+    pub bypass_paths: Vec<crate::config::BypassPath>,
+}
+
 /// GW-23: Routing table with multiple backends for round-robin LB.
-/// host → (backend_urls, app_id)
-pub type RoutingTable = HashMap<String, (Vec<String>, Option<String>)>;
+/// host → RouteInfo
+pub type RoutingTable = HashMap<String, RouteInfo>;
 
 /// Round-robin backend selector with health-aware routing.
 /// Dead backends are skipped. Health is tracked per-backend URL.
@@ -89,8 +98,8 @@ pub fn spawn_health_checker(
 
             // Collect all unique backend URLs
             let mut backends: Vec<String> = Vec::new();
-            for (urls, _) in routing.values() {
-                for url in urls {
+            for info in routing.values() {
+                for url in &info.backends {
                     if !backends.contains(url) {
                         backends.push(url.clone());
                     }
@@ -484,26 +493,47 @@ impl ProxyService {
             }
         };
 
-        // ─── Async I/O: volta auth check ────────────────────
-        let auth_result = self.volta.check(
-            &host, &uri_path, proto,
-            cookie.as_deref(),
-            app_id.as_deref(),
-        ).await;
+        // Check public/bypass status from routing table
+        let route_info = hot.routing.get(&host).or_else(|| {
+            host.splitn(2, '.').nth(1)
+                .and_then(|d| hot.routing.get(&format!("*.{d}")))
+        });
+        let is_public = route_info.map(|r| r.public).unwrap_or(false);
+        let bypass_match = route_info.and_then(|r| {
+            r.bypass_paths.iter().find(|bp| uri_path.starts_with(&bp.prefix))
+        });
+        let skip_auth = is_public || bypass_match.is_some();
 
-        let volta_headers = match auth_result {
-            AuthResult::Authenticated(headers) => headers,
-            AuthResult::Redirect(location) => {
-                info!(state = "REDIRECT", host = %host, path = %uri_path, location = %location);
-                return redirect_response(&location, &request_id);
-            }
-            AuthResult::Denied => {
-                info!(state = "DENIED", host = %host, path = %uri_path);
-                return error_response_with_pages(StatusCode::FORBIDDEN, &request_id, &hot.error_pages);
-            }
-            AuthResult::Error(msg) => {
-                warn!(state = "BAD_GATEWAY", reason = %msg, host = %host);
-                return error_response_with_pages(StatusCode::BAD_GATEWAY, &request_id, &hot.error_pages);
+        // Override backend if bypass_path has a backend override
+        let backend_url = bypass_match
+            .and_then(|bp| bp.backend.clone())
+            .unwrap_or(backend_url);
+
+        // ─── Async I/O: volta auth check ────────────────────
+        let volta_headers = if skip_auth {
+            info!(state = "AUTH_SKIP", host = %host, path = %uri_path, public = is_public);
+            HashMap::new()
+        } else {
+            let auth_result = self.volta.check(
+                &host, &uri_path, proto,
+                cookie.as_deref(),
+                app_id.as_deref(),
+            ).await;
+
+            match auth_result {
+                AuthResult::Authenticated(headers) => headers,
+                AuthResult::Redirect(location) => {
+                    info!(state = "REDIRECT", host = %host, path = %uri_path, location = %location);
+                    return redirect_response(&location, &request_id);
+                }
+                AuthResult::Denied => {
+                    info!(state = "DENIED", host = %host, path = %uri_path);
+                    return error_response_with_pages(StatusCode::FORBIDDEN, &request_id, &hot.error_pages);
+                }
+                AuthResult::Error(msg) => {
+                    warn!(state = "BAD_GATEWAY", reason = %msg, host = %host);
+                    return error_response_with_pages(StatusCode::BAD_GATEWAY, &request_id, &hot.error_pages);
+                }
             }
         };
 

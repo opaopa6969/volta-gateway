@@ -110,7 +110,7 @@ impl StateProcessor<ProxyState> for RoutingResolver {
         let req = ctx.get::<RequestData>()?;
         let host = req.host.clone();
 
-        let (backends, app_id) = self.routing.get(&host)
+        let route_info = self.routing.get(&host)
             .or_else(|| {
                 host.splitn(2, '.').nth(1)
                     .and_then(|domain| self.routing.get(&format!("*.{domain}")))
@@ -118,11 +118,11 @@ impl StateProcessor<ProxyState> for RoutingResolver {
             .ok_or_else(|| FlowError::new("BAD_REQUEST", "No route"))?
             .clone();
 
-        let backend = backends.first()
+        let backend = route_info.backends.first()
             .ok_or_else(|| FlowError::new("BAD_REQUEST", "No backends configured"))?
             .clone();
 
-        ctx.put(RouteTarget { backend_url: backend, backends, app_id });
+        ctx.put(RouteTarget { backend_url: backend, backends: route_info.backends, app_id: route_info.app_id });
         Ok(())
     }
 }

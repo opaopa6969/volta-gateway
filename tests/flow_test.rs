@@ -9,9 +9,20 @@ use volta_gateway::proxy::RoutingTable;
 use volta_gateway::state::ProxyState;
 
 fn test_routing() -> Arc<RoutingTable> {
+    use volta_gateway::proxy::RouteInfo;
     let mut rt = RoutingTable::new();
-    rt.insert("app.example.com".into(), (vec!["http://localhost:3000".into()], Some("app-wiki".into())));
-    rt.insert("*.example.com".into(), (vec!["http://localhost:3001".into()], None));
+    rt.insert("app.example.com".into(), RouteInfo {
+        backends: vec!["http://localhost:3000".into()],
+        app_id: Some("app-wiki".into()),
+        public: false,
+        bypass_paths: vec![],
+    });
+    rt.insert("*.example.com".into(), RouteInfo {
+        backends: vec!["http://localhost:3001".into()],
+        app_id: None,
+        public: false,
+        bypass_paths: vec![],
+    });
     Arc::new(rt)
 }
 

@@ -99,9 +99,23 @@ pub struct RouteEntry {
     pub app_id: Option<String>,
     #[serde(default)]
     pub ip_allowlist: Vec<String>,
-    /// Allowed CORS origins for this route. Empty = wildcard "*".
+    /// Allowed CORS origins for this route. Empty = no CORS headers.
     #[serde(default)]
     pub cors_origins: Vec<String>,
+    /// Skip auth entirely for this route (e.g. auth server itself, public docs).
+    #[serde(default)]
+    pub public: bool,
+    /// Paths that bypass auth (e.g. Slack webhooks). Optional backend override.
+    #[serde(default)]
+    pub auth_bypass_paths: Vec<BypassPath>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BypassPath {
+    pub prefix: String,
+    /// Optional backend override for this bypass path.
+    #[serde(default)]
+    pub backend: Option<String>,
 }
 
 impl RouteEntry {
@@ -219,12 +233,17 @@ impl GatewayConfig {
         if errors.is_empty() { Ok(()) } else { Err(errors) }
     }
 
-    /// Build routing table: host → (backend_urls, app_id)
+    /// Build routing table: host → RouteInfo
     /// GW-45: host keys are lowercased for consistent lookup
-    pub fn routing_table(&self) -> HashMap<String, (Vec<String>, Option<String>)> {
+    pub fn routing_table(&self) -> HashMap<String, crate::proxy::RouteInfo> {
         self.routing
             .iter()
-            .map(|r| (r.host.to_lowercase(), (r.all_backends(), r.app_id.clone())))
+            .map(|r| (r.host.to_lowercase(), crate::proxy::RouteInfo {
+                backends: r.all_backends(),
+                app_id: r.app_id.clone(),
+                public: r.public,
+                bypass_paths: r.auth_bypass_paths.clone(),
+            }))
             .collect()
     }
 

@@ -75,7 +75,12 @@ fn make_proxy(auth_addr: SocketAddr, backend_addr: SocketAddr, host: &str) -> Pr
     let mut routing = RoutingTable::new();
     routing.insert(
         host.to_string(),
-        (vec![format!("http://{}", backend_addr)], Some("test-app".into())),
+        volta_gateway::proxy::RouteInfo {
+            backends: vec![format!("http://{}", backend_addr)],
+            app_id: Some("test-app".into()),
+            public: false,
+            bypass_paths: vec![],
+        },
     );
 
     let hot = Arc::new(ArcSwap::from_pointee(HotState::new(Arc::new(routing))));
@@ -95,7 +100,12 @@ fn make_proxy_with_cors(auth_addr: SocketAddr, backend_addr: SocketAddr, host: &
     let mut routing = RoutingTable::new();
     routing.insert(
         host.to_string(),
-        (vec![format!("http://{}", backend_addr)], Some("test-app".into())),
+        volta_gateway::proxy::RouteInfo {
+            backends: vec![format!("http://{}", backend_addr)],
+            app_id: Some("test-app".into()),
+            public: false,
+            bypass_paths: vec![],
+        },
     );
 
     let mut cors = HashMap::new();

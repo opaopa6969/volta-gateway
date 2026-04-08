@@ -306,8 +306,9 @@ async fn main() {
                             "/admin/routes" => {
                                 let hot = hot_admin.load();
                                 let routes: Vec<_> = hot.routing.iter()
-                                    .map(|(host, (backends, app_id))| {
-                                        format!(r#"{{"host":"{}","backends":{:?},"app_id":{:?}}}"#, host, backends, app_id)
+                                    .map(|(host, info)| {
+                                        format!(r#"{{"host":"{}","backends":{:?},"app_id":{:?},"public":{}}}"#,
+                                            host, info.backends, info.app_id, info.public)
                                     }).collect();
                                 let body = format!("[{}]", routes.join(","));
                                 let resp = hyper::Response::builder()

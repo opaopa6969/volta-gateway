@@ -53,32 +53,44 @@ pub async fn handle_websocket(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
-    let (backends, app_id) = match resolve_backend(routing, &host) {
+    let route = match resolve_route(routing, &host) {
         Some(r) => r,
         None => {
             warn!(state = "WS_BAD_REQUEST", reason = "unknown host", host = %host);
             return error_response(StatusCode::BAD_REQUEST, &request_id);
         }
     };
+    let backends = route.backends;
+    let app_id = route.app_id;
 
-    let auth = volta.check(&host, &uri_path, "https", cookie.as_deref(), app_id.as_deref()).await;
-    match auth {
-        AuthResult::Authenticated(_) => {}
-        AuthResult::Redirect(loc) => {
-            info!(state = "WS_REDIRECT", host = %host);
-            return redirect_response(&loc, &request_id);
-        }
-        AuthResult::Denied => {
-            return error_response(StatusCode::FORBIDDEN, &request_id);
-        }
-        AuthResult::Error(msg) => {
-            warn!(state = "WS_BAD_GATEWAY", reason = %msg);
-            return error_response(StatusCode::BAD_GATEWAY, &request_id);
+    // Public routes skip auth; bypass_paths also skip for matching prefixes
+    let skip_auth = route.public || route.bypass_paths.iter().any(|bp| uri_path.starts_with(&bp.prefix));
+
+    if !skip_auth {
+        let auth = volta.check(&host, &uri_path, "https", cookie.as_deref(), app_id.as_deref()).await;
+        match auth {
+            AuthResult::Authenticated(_) => {}
+            AuthResult::Redirect(loc) => {
+                info!(state = "WS_REDIRECT", host = %host);
+                return redirect_response(&loc, &request_id);
+            }
+            AuthResult::Denied => {
+                return error_response(StatusCode::FORBIDDEN, &request_id);
+            }
+            AuthResult::Error(msg) => {
+                warn!(state = "WS_BAD_GATEWAY", reason = %msg);
+                return error_response(StatusCode::BAD_GATEWAY, &request_id);
+            }
         }
     }
 
-    // Select backend (round-robin)
-    let backend = backend_selector.select(&host, &backends).to_string();
+    // Select backend — check bypass_path backend override first
+    let bypass_backend = route.bypass_paths.iter()
+        .find(|bp| uri_path.starts_with(&bp.prefix))
+        .and_then(|bp| bp.backend.clone());
+
+    // Select backend (round-robin, or bypass override)
+    let backend = bypass_backend.unwrap_or_else(|| backend_selector.select(&host, &backends).to_string());
 
     // Build backend upgrade request
     let backend_uri = format!("{}{}", backend,
@@ -238,7 +250,7 @@ pub async fn handle_websocket(
     client_resp
 }
 
-fn resolve_backend(routing: &RoutingTable, host: &str) -> Option<(Vec<String>, Option<String>)> {
+fn resolve_route(routing: &RoutingTable, host: &str) -> Option<crate::proxy::RouteInfo> {
     routing.get(host).cloned().or_else(|| {
         host.splitn(2, '.').nth(1)
             .and_then(|d| routing.get(&format!("*.{d}")).cloned())
