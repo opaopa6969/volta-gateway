@@ -83,22 +83,39 @@ cp volta-gateway.yaml my-config.yaml
 cargo run -- my-config.yaml
 ```
 
-## 機能一覧 (v0.2.0)
+## 機能一覧
 
 | 機能 | 詳細 |
 |------|------|
 | HTTP/1.1 + HTTP/2 | hyper 1.x 自動ネゴシエーション |
 | WebSocket tunnel | 双方向 TCP tunnel (1024 接続上限) |
 | TLS / Let's Encrypt | rustls-acme, 自動 HTTPS |
-| ロードバランシング | 複数 backend でラウンドロビン |
-| レート制限 | グローバル + per-IP (設定可能) |
+| ロードバランシング | ラウンドロビン + 重み付きルーティング (カナリアデプロイ) |
+| レート制限 | グローバル + per-IP + per-user (プラグイン) |
 | サーキットブレーカー | 5 failures / 30s recovery, idempotent retry, Retry-After |
+| 認証キャッシュ | 5秒 TTL cookie ベース — 重複 volta 呼び出しをスキップ |
 | 圧縮 | text/json/xml/js を gzip (1MB 閾値) |
-| CORS | per-route origins, セキュア・バイ・デフォルト (暗黙の wildcard なし) |
+| CORS | per-route origins, セキュア・バイ・デフォルト |
 | カスタムエラーページ | HTML ディレクトリ + JSON fallback |
-| ホットリロード | SIGHUP → ゼロダウンタイム設定スワップ (ArcSwap) |
+| ホットリロード | SIGHUP + HTTP `/admin/reload` — ゼロダウンタイム (ArcSwap) |
+| パブリックルート | `public: true` で認証スキップ、`auth_bypass_paths` で webhook 対応 |
+| パス書き換え | `strip_prefix`, `add_prefix` で API バージョニング |
+| ヘッダー操作 | ルートごとにリクエスト/レスポンスヘッダーを追加・削除 |
+| トラフィックミラーリング | シャドウ backend (fire-and-forget, sample_rate) |
+| 地理アクセス制御 | `geo_allowlist` / `geo_denylist` (CF-IPCountry) |
+| ルート別タイムアウト | `timeout_secs` — LLM backend 120秒、高速 API 5秒 |
+| Traceparent | W3C Trace Context 伝搬 (OpenTelemetry 互換) |
+| レスポンスキャッシュ | ルート別 LRU + TTL (X-Volta-Cache: HIT/MISS) |
+| プラグインシステム | Native Rust プラグイン (api-key-auth, rate-limit-by-user) |
+| Config Sources | YAML + services.json + Docker labels + HTTP polling |
+| Backend ヘルスチェック | dead backend 自動検出・LB スキップ |
+| mTLS backend | 内部 zero-trust 用 mutual TLS |
+| バックプレッシャー | グローバル最大同時リクエスト数 (Semaphore) |
+| Admin API | /admin/routes, /admin/backends, /admin/stats, /admin/reload, /admin/drain |
+| Config 検証 | `volta-gateway --validate config.yaml` (CI/CD 用) |
 | L4 proxy | TCP/UDP ポートフォワーディング |
-| メトリクス | Prometheus /metrics (リクエスト, WS, CB, compression, L4) |
+| メトリクス | Prometheus /metrics + レイテンシヒストグラム (8 bucket) |
+| Trusted proxies | CF-Connecting-IP / X-Real-IP で real client IP |
 
 ## 設定
 

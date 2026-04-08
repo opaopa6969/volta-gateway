@@ -90,15 +90,32 @@ cargo run -- my-config.yaml
 | HTTP/1.1 + HTTP/2 | hyper 1.x auto-negotiation |
 | WebSocket tunnel | Bidirectional TCP tunnel (1024 connection limit) |
 | TLS / Let's Encrypt | rustls-acme, automatic HTTPS |
-| Load balancing | Round-robin across multiple backends |
-| Rate limiting | Global + per-IP (configurable) |
+| Load balancing | Round-robin + weighted routing (canary deploys) |
+| Rate limiting | Global + per-IP + per-user (plugin) |
 | Circuit breaker | 5 failures / 30s recovery, idempotent retry, Retry-After |
+| Auth cache | 5s TTL cookie-based — skip redundant volta calls |
 | Compression | Gzip for text/json/xml/js (1MB threshold) |
 | CORS | Per-route origins, secure-by-default (no implicit wildcard) |
 | Custom error pages | HTML directory with JSON fallback |
-| Hot reload | SIGHUP → zero-downtime config swap (ArcSwap) |
+| Hot reload | SIGHUP + HTTP `/admin/reload` — zero-downtime (ArcSwap) |
+| Public routes | `public: true` to skip auth; `auth_bypass_paths` for webhooks |
+| Path rewrite | `strip_prefix`, `add_prefix` for API versioning |
+| Header manipulation | Add/remove request and response headers per route |
+| Traffic mirroring | Shadow backend (fire-and-forget, sample_rate) |
+| Geo access control | `geo_allowlist` / `geo_denylist` via CF-IPCountry |
+| Per-route timeout | `timeout_secs` — LLM backends 120s, fast APIs 5s |
+| Traceparent | W3C Trace Context propagation (OpenTelemetry compatible) |
+| Response cache | Per-route LRU with TTL (X-Volta-Cache: HIT/MISS) |
+| Plugin system | Native Rust plugins (api-key-auth, rate-limit-by-user, header-injector) |
+| Config Sources | YAML + services.json + Docker labels + HTTP polling |
+| Backend health check | Auto-detect dead backends, skip in LB |
+| mTLS backend | Mutual TLS for internal zero-trust |
+| Backpressure | Global max concurrent requests (Semaphore) |
+| Admin API | /admin/routes, /admin/backends, /admin/stats, /admin/reload, /admin/drain |
+| Config validation | `volta-gateway --validate config.yaml` for CI/CD |
 | L4 proxy | TCP/UDP port forwarding |
-| Metrics | Prometheus /metrics (requests, WS, circuit breaker, compression, L4) |
+| Metrics | Prometheus /metrics + latency histogram (8 buckets) |
+| Trusted proxies | CF-Connecting-IP / X-Real-IP for real client IP |
 
 ## Configuration
 
