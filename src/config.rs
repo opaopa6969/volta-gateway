@@ -108,6 +108,18 @@ pub struct RouteEntry {
     /// Paths that bypass auth (e.g. Slack webhooks). Optional backend override.
     #[serde(default)]
     pub auth_bypass_paths: Vec<BypassPath>,
+    /// Traffic mirroring — copy requests to shadow backend (fire-and-forget).
+    #[serde(default)]
+    pub mirror: Option<MirrorConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MirrorConfig {
+    /// Shadow backend URL
+    pub backend: String,
+    /// Sample rate 0.0-1.0 (1.0 = mirror all requests)
+    #[serde(default = "default_sample_rate")]
+    pub sample_rate: f64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -243,6 +255,7 @@ impl GatewayConfig {
                 app_id: r.app_id.clone(),
                 public: r.public,
                 bypass_paths: r.auth_bypass_paths.clone(),
+                mirror: r.mirror.clone(),
             }))
             .collect()
     }
@@ -286,6 +299,7 @@ fn default_log_format() -> String { "json".into() }
 fn default_tls_port() -> u16 { 443 }
 fn default_acme_cache() -> String { "./acme-cache".into() }
 fn default_l4_proto() -> String { "tcp".into() }
+fn default_sample_rate() -> f64 { 1.0 }
 
 impl Default for RateLimitConfig {
     fn default() -> Self { Self { requests_per_second: default_rps(), per_ip_rps: default_per_ip_rps() } }

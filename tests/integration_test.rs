@@ -80,6 +80,7 @@ fn make_proxy(auth_addr: SocketAddr, backend_addr: SocketAddr, host: &str) -> Pr
             app_id: Some("test-app".into()),
             public: false,
             bypass_paths: vec![],
+            mirror: None,
         },
     );
 
@@ -105,6 +106,7 @@ fn make_proxy_with_cors(auth_addr: SocketAddr, backend_addr: SocketAddr, host: &
             app_id: Some("test-app".into()),
             public: false,
             bypass_paths: vec![],
+            mirror: None,
         },
     );
 

@@ -23,6 +23,7 @@ pub struct RouteInfo {
     pub app_id: Option<String>,
     pub public: bool,
     pub bypass_paths: Vec<crate::config::BypassPath>,
+    pub mirror: Option<crate::config::MirrorConfig>,
 }
 
 /// GW-23: Routing table with multiple backends for round-robin LB.
@@ -497,10 +498,10 @@ impl ProxyService {
         let route_info = hot.routing.get(&host).or_else(|| {
             host.splitn(2, '.').nth(1)
                 .and_then(|d| hot.routing.get(&format!("*.{d}")))
-        });
-        let is_public = route_info.map(|r| r.public).unwrap_or(false);
-        let bypass_match = route_info.and_then(|r| {
-            r.bypass_paths.iter().find(|bp| uri_path.starts_with(&bp.prefix))
+        }).cloned();
+        let is_public = route_info.as_ref().map(|r| r.public).unwrap_or(false);
+        let bypass_match = route_info.as_ref().and_then(|r| {
+            r.bypass_paths.iter().find(|bp| uri_path.starts_with(&bp.prefix)).cloned()
         });
         let skip_auth = is_public || bypass_match.is_some();
 
@@ -733,6 +734,40 @@ impl ProxyService {
         self.metrics.record_status(response_status);
         self.metrics.record_duration(start);
 
+        // Traffic mirroring — fire-and-forget to shadow backend
+        let mirror_config = route_info.as_ref().and_then(|r| r.mirror.clone());
+        if let Some(mirror) = mirror_config.as_ref() {
+            let should_mirror = mirror.sample_rate >= 1.0
+                || rand_sample() < mirror.sample_rate;
+            if should_mirror {
+                let mirror_uri = format!("{}{}", mirror.backend, path_and_query);
+                let mut mirror_req = Request::builder()
+                    .method(&method)
+                    .uri(mirror_uri.parse::<Uri>().unwrap_or_default())
+                    .header("X-Volta-Mirror", "true")
+                    .header("X-Request-Id", &request_id);
+                for (name, value) in &req_headers {
+                    mirror_req = mirror_req.header(name, value);
+                }
+                for (key, value) in &volta_headers {
+                    mirror_req = mirror_req.header(key.as_str(), value.as_str());
+                }
+                if let Ok(mirror_req) = mirror_req.body(Empty::<Bytes>::new()) {
+                    let metrics = self.metrics.clone();
+                    let retry_client = self.retry_client.clone();
+                    tokio::spawn(async move {
+                        metrics.mirror_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if let Err(_) = tokio::time::timeout(
+                            std::time::Duration::from_secs(10),
+                            retry_client.request(mirror_req),
+                        ).await {
+                            metrics.mirror_errors.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    });
+                }
+            }
+        }
+
         // Compression: gzip text-based responses if client accepts and backend didn't compress
         let already_encoded = response.headers().contains_key("content-encoding");
         let is_compressible = response.headers().get("content-type")
@@ -794,6 +829,16 @@ impl ProxyService {
 
         Response::from(response).map(|b| b.boxed())
     }
+}
+
+/// Simple random sampling (no external crate). Uses thread-local state.
+fn rand_sample() -> f64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    std::time::SystemTime::now().hash(&mut hasher);
+    std::thread::current().id().hash(&mut hasher);
+    (hasher.finish() % 10000) as f64 / 10000.0
 }
 
 /// GW-26: Normalize host header — strip port, handle IPv6, lowercase.

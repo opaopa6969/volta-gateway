@@ -16,12 +16,14 @@ fn test_routing() -> Arc<RoutingTable> {
         app_id: Some("app-wiki".into()),
         public: false,
         bypass_paths: vec![],
+        mirror: None,
     });
     rt.insert("*.example.com".into(), RouteInfo {
         backends: vec!["http://localhost:3001".into()],
         app_id: None,
         public: false,
         bypass_paths: vec![],
+        mirror: None,
     });
     Arc::new(rt)
 }

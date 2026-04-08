@@ -53,6 +53,10 @@ pub struct Metrics {
     pub l4_tcp_active: AtomicU64,
     pub l4_udp_packets_total: AtomicU64,
 
+    // Mirror metrics
+    pub mirror_total: AtomicU64,
+    pub mirror_errors: AtomicU64,
+
     // PROD-5: Latency histogram buckets (μs thresholds)
     // Buckets: ≤1ms, ≤5ms, ≤25ms, ≤100ms, ≤500ms, ≤1s, ≤5s, >5s
     pub latency_bucket_1ms: AtomicU64,
@@ -178,6 +182,12 @@ volta_gateway_l4_tcp_active {l4_tcp_active}
 # HELP volta_gateway_l4_udp_packets_total L4 UDP packets forwarded
 # TYPE volta_gateway_l4_udp_packets_total counter
 volta_gateway_l4_udp_packets_total {l4_udp}
+# HELP volta_gateway_mirror_total Mirrored requests
+# TYPE volta_gateway_mirror_total counter
+volta_gateway_mirror_total {mirror_total}
+# HELP volta_gateway_mirror_errors_total Mirror request failures
+# TYPE volta_gateway_mirror_errors_total counter
+volta_gateway_mirror_errors_total {mirror_errors}
 # HELP volta_gateway_request_duration_ms Latency histogram
 # TYPE volta_gateway_request_duration_ms histogram
 volta_gateway_request_duration_ms_bucket{{le="1"}} {h1}
@@ -216,6 +226,8 @@ volta_gateway_request_duration_ms_bucket{{le="+Inf"}} {hinf}
             l4_tcp = self.l4_tcp_connections_total.load(Ordering::Relaxed),
             l4_tcp_active = self.l4_tcp_active.load(Ordering::Relaxed),
             l4_udp = self.l4_udp_packets_total.load(Ordering::Relaxed),
+            mirror_total = self.mirror_total.load(Ordering::Relaxed),
+            mirror_errors = self.mirror_errors.load(Ordering::Relaxed),
             // PROD-5: Cumulative histogram buckets
             h1 = b1,
             h5 = b1 + b5,
