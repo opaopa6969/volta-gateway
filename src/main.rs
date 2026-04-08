@@ -113,11 +113,13 @@ async fn main() {
                             let new_allowlists = new_config.ip_allowlist_table();
                             let routes = new_config.routing.len();
                             let new_cors = new_config.cors_table();
+                            let new_trusted: Vec<ipnet::IpNet> = new_config.server.trusted_proxies.iter()
+                                .filter_map(|s| s.parse().ok()).collect();
                             hot_reload.store(Arc::new(
-                                HotState::new_with_config(
+                                HotState::new_full(
                                     new_routing, new_allowlists,
                                     new_config.error_pages_dir.as_deref(),
-                                    new_cors,
+                                    new_cors, new_trusted,
                                 ),
                             ));
                             info!(routes = routes,
@@ -311,12 +313,14 @@ async fn main() {
                         match req.uri().path() {
                             "/admin/routes" => {
                                 let hot = hot_admin.load();
-                                let routes: Vec<_> = hot.routing.iter()
-                                    .map(|(host, info)| {
-                                        format!(r#"{{"host":"{}","backends":{:?},"app_id":{:?},"public":{}}}"#,
-                                            host, info.backends, info.app_id, info.public)
-                                    }).collect();
-                                let body = format!("[{}]", routes.join(","));
+                                let routes: Vec<serde_json::Value> = hot.routing.iter()
+                                    .map(|(host, info)| serde_json::json!({
+                                        "host": host,
+                                        "backends": info.backends,
+                                        "app_id": info.app_id,
+                                        "public": info.public,
+                                    })).collect();
+                                let body = serde_json::to_string(&routes).unwrap_or_else(|_| "[]".into());
                                 let resp = hyper::Response::builder()
                                     .status(200)
                                     .header("content-type", "application/json")
@@ -326,10 +330,10 @@ async fn main() {
                             }
                             "/admin/backends" => {
                                 let health = proxy.backend_selector.health_status();
-                                let entries: Vec<_> = health.iter()
-                                    .map(|(url, alive)| format!(r#"{{"url":"{}","alive":{}}}"#, url, alive))
+                                let entries: Vec<serde_json::Value> = health.iter()
+                                    .map(|(url, alive)| serde_json::json!({"url": url, "alive": alive}))
                                     .collect();
-                                let body = format!("[{}]", entries.join(","));
+                                let body = serde_json::to_string(&entries).unwrap_or_else(|_| "[]".into());
                                 let resp = hyper::Response::builder()
                                     .status(200)
                                     .header("content-type", "application/json")

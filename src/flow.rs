@@ -70,7 +70,8 @@ impl StateProcessor<ProxyState> for RequestValidator {
         if req.host.is_empty() {
             return Err(FlowError::new("BAD_REQUEST", "Missing Host header"));
         }
-        if req.path.contains("..") || req.path.contains("//") {
+        // #24: Only reject path traversal (..), not double-slash (//)
+        if req.path.contains("..") {
             return Err(FlowError::new("BAD_REQUEST", "Invalid path"));
         }
 

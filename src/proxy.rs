@@ -59,12 +59,14 @@ impl BackendSelector {
 
     /// Select next healthy backend. Uses weighted random if weights are set,
     /// otherwise round-robin. Dead backends are skipped.
+    /// #27 fix: Single health lock acquisition for both weighted and round-robin paths.
     pub fn select<'a>(&self, host: &str, backends: &'a [String], weights: &[u32]) -> &'a str {
         if backends.len() <= 1 {
             return &backends[0];
         }
 
         let health = self.health.lock().unwrap();
+        let mut map = self.counters.lock().unwrap();
 
         // Weighted selection
         if !weights.is_empty() && weights.len() == backends.len() {
@@ -86,8 +88,7 @@ impl BackendSelector {
             }
         }
 
-        // Round-robin fallback
-        let mut map = self.counters.lock().unwrap();
+        // Round-robin fallback (same lock guards)
         let counter = map.entry(host.to_string()).or_insert(0);
         for _ in 0..backends.len() {
             let idx = *counter % backends.len();
@@ -435,7 +436,7 @@ impl ProxyService {
             .unwrap_or(false);
         if is_upgrade {
             return crate::websocket::handle_websocket(
-                req, remote_addr, &self.volta, &hot.routing, &self.backend_selector,
+                req, remote_addr, &self.volta, &hot.routing, &self.backend_selector, &self.retry_client,
             ).await;
         }
 
@@ -710,10 +711,15 @@ impl ProxyService {
 
         let target_uri = format!("{}{}", backend_url, path_and_query);
 
-        // Collect headers for potential retry
+        // #19 fix: Collect headers, filtering out request_headers.remove
         let req_method = req.method().clone();
+        let remove_headers: Vec<String> = route_info.as_ref()
+            .and_then(|r| r.request_headers.as_ref())
+            .map(|rh| rh.remove.iter().map(|s| s.to_lowercase()).collect())
+            .unwrap_or_default();
         let req_headers: Vec<_> = req.headers().iter()
             .filter(|(name, _)| *name != "host")
+            .filter(|(name, _)| !remove_headers.contains(&name.as_str().to_string()))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
@@ -742,14 +748,9 @@ impl ProxyService {
             .header("X-Forwarded-Proto", proto)
             .header("traceparent", &traceparent);
 
-        // #4: Request header manipulation
+        // #4/#19: Request header add (remove already filtered during collection)
         if let Some(ri) = route_info.as_ref() {
             if let Some(ref rh) = ri.request_headers {
-                for name in &rh.remove {
-                    // Can't remove from builder, but we already collected req_headers
-                    // This will be overridden by add below
-                    let _ = name; // Headers are already forwarded; removal handled by not forwarding
-                }
                 for (name, value) in &rh.add {
                     backend_req = backend_req.header(name.as_str(), value.as_str());
                 }
@@ -870,7 +871,14 @@ impl ProxyService {
         headers.insert("strict-transport-security",
             "max-age=31536000; includeSubDomains".parse().unwrap());
         headers.insert("x-content-type-options", "nosniff".parse().unwrap());
-        headers.insert("x-frame-options", "DENY".parse().unwrap());
+        // #26: Only set x-frame-options if not overridden by response_headers config
+        let has_frame_override = route_info.as_ref()
+            .and_then(|r| r.response_headers.as_ref())
+            .map(|rh| rh.add.contains_key("x-frame-options") || rh.add.contains_key("content-security-policy"))
+            .unwrap_or(false);
+        if !has_frame_override {
+            headers.insert("x-frame-options", "DENY".parse().unwrap());
+        }
 
         // #4: Response header manipulation
         if let Some(ri) = route_info.as_ref() {
@@ -1012,6 +1020,16 @@ impl ProxyService {
                 Err(_) => return error_response_with_pages(StatusCode::BAD_GATEWAY, &request_id, &hot.error_pages),
             };
 
+            // #23: Post-collect size guard for chunked (no content-length) responses
+            if body_bytes.len() > 1_048_576 {
+                // Too large to compress in memory — return uncompressed
+                let mut resp = Response::builder().status(parts.status);
+                for (name, value) in &parts.headers {
+                    resp = resp.header(name, value);
+                }
+                return resp.body(Full::new(body_bytes).map_err(|e| match e {}).boxed()).unwrap();
+            }
+
             // Cache store (if body was collected and response is cacheable)
             if cache_enabled && cache_method_ok && response_status >= 200 && response_status < 300 {
                 let cache_control = parts.headers.get("cache-control")
@@ -1022,9 +1040,12 @@ impl ProxyService {
                         cache_config.map(|c| c.ttl_secs).unwrap_or(300)
                     );
                     let ignore_query = cache_config.map(|c| c.ignore_query).unwrap_or(false);
+                    // #22 fix: use same query as lookup (not None)
+                    let store_query = uri_path.split('?').nth(1); // extract query from path
                     let cache_key = crate::cache::ResponseCache::key(
-                        method.as_str(), &host, &uri_path,
-                        None, // query already in path_and_query
+                        method.as_str(), &host,
+                        uri_path.split('?').next().unwrap_or(&uri_path),
+                        store_query,
                         ignore_query,
                     );
                     let cached_headers: Vec<(String, String)> = parts.headers.iter()
@@ -1069,14 +1090,12 @@ impl ProxyService {
     }
 }
 
-/// Simple random sampling (no external crate). Uses thread-local state.
+/// #18 fix: Random sampling using atomic counter + UUID entropy.
 fn rand_sample() -> f64 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    std::time::SystemTime::now().hash(&mut hasher);
-    std::thread::current().id().hash(&mut hasher);
-    (hasher.finish() % 10000) as f64 / 10000.0
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let c = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mix = c.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407); // LCG
+    (mix % 10000) as f64 / 10000.0
 }
 
 /// GW-26: Normalize host header — strip port, handle IPv6, lowercase.

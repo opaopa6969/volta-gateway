@@ -30,6 +30,7 @@ pub async fn handle_websocket(
     volta: &VoltaAuthClient,
     routing: &Arc<RoutingTable>,
     backend_selector: &BackendSelector,
+    ws_client: &Client<hyper_util::client::legacy::connect::HttpConnector, Empty<Bytes>>,
 ) -> Response<BoxBody<Bytes, hyper::Error>> {
     let request_id = uuid::Uuid::new_v4().to_string();
 
@@ -140,13 +141,10 @@ pub async fn handle_websocket(
         }
     };
 
-    // Send upgrade request to backend
-    let backend_client: Client<_, Empty<Bytes>> = Client::builder(TokioExecutor::new())
-        .build_http();
-
+    // #20 fix: Use shared client instead of per-connection client
     let backend_resp = match tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        backend_client.request(backend_req),
+        ws_client.request(backend_req),
     ).await {
         Ok(Ok(resp)) => resp,
         Ok(Err(e)) => {
