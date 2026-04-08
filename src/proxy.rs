@@ -370,6 +370,7 @@ pub struct ProxyService {
     circuit_breaker: CircuitBreaker,
     pub metrics: Arc<crate::metrics::Metrics>,
     pub plugin_manager: Arc<crate::plugin::PluginManager>,
+    pub response_cache: crate::cache::ResponseCache,
 }
 
 impl ProxyService {
@@ -385,6 +386,7 @@ impl ProxyService {
             rate_limiter: RateLimiter::new(1000, 100),
             backend_selector: BackendSelector::new(),
             circuit_breaker: CircuitBreaker::new(5, 30),
+            response_cache: crate::cache::ResponseCache::new(10_000),
         }
     }
 
@@ -398,8 +400,9 @@ impl ProxyService {
             .map(|s| s.to_string())
             .unwrap_or_else(|| {
                 // Generate: 00-{trace_id}-{span_id}-01
-                let trace_id = format!("{:032x}", uuid::Uuid::new_v4().as_u128());
-                let span_id = format!("{:016x}", &trace_id[..16].parse::<u64>().unwrap_or(0));
+                let id = uuid::Uuid::new_v4();
+                let trace_id = format!("{:032x}", id.as_u128());
+                let span_id = format!("{:016x}", id.as_u128() as u64); // lower 64 bits
                 format!("00-{}-{}-01", trace_id, span_id)
             });
 
@@ -600,13 +603,18 @@ impl ProxyService {
 
         // ─── Plugin: request phase ──────────────────────────
         {
+            // GW-60: Merge volta_headers into plugin context so plugins can access X-Volta-*
+            let mut plugin_headers: HashMap<String, String> = req.headers().iter()
+                .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.as_str().to_string(), v.to_string())))
+                .collect();
+            for (k, v) in &volta_headers {
+                plugin_headers.insert(k.clone(), v.clone());
+            }
             let mut plugin_ctx = crate::plugin::PluginContext {
                 method: method.to_string(),
                 host: host.clone(),
                 path: uri_path.clone(),
-                headers: req.headers().iter()
-                    .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.as_str().to_string(), v.to_string())))
-                    .collect(),
+                headers: plugin_headers,
                 client_ip: real_client_ip.to_string(),
                 reject: None,
                 add_headers: HashMap::new(),
@@ -637,6 +645,35 @@ impl ProxyService {
             if ri.geo_denylist.iter().any(|c| c == country) {
                 info!(state = "GEO_DENIED", host = %host, country = country);
                 return error_response_with_pages(StatusCode::FORBIDDEN, &request_id, &hot.error_pages);
+            }
+        }
+
+        // ─── Cache lookup (#8) ──────────────────────────────
+        let cache_config = route_info.as_ref().and_then(|r| r.cache.as_ref());
+        let cache_enabled = cache_config.map(|c| c.enabled).unwrap_or(false);
+        let cache_method_ok = cache_config
+            .map(|c| c.methods.iter().any(|m| m.eq_ignore_ascii_case(&method.to_string())))
+            .unwrap_or(false);
+
+        if cache_enabled && cache_method_ok {
+            let ignore_query = cache_config.map(|c| c.ignore_query).unwrap_or(false);
+            let query = req.uri().query();
+            let cache_key = crate::cache::ResponseCache::key(
+                method.as_str(), &host, &uri_path, query, ignore_query,
+            );
+            if let Some((status, headers, body)) = self.response_cache.get(&cache_key) {
+                info!(state = "CACHE_HIT", host = %host, path = %uri_path);
+                let mut resp = Response::builder()
+                    .status(StatusCode::from_u16(status).unwrap_or(StatusCode::OK));
+                for (name, value) in &headers {
+                    if let (Ok(hname), Ok(hval)) = (name.parse::<hyper::header::HeaderName>(), value.parse::<hyper::header::HeaderValue>()) {
+                        resp = resp.header(hname, hval);
+                    }
+                }
+                resp = resp
+                    .header("x-volta-cache", "HIT")
+                    .header("x-request-id", &request_id);
+                return resp.body(Full::new(body).map_err(|e| match e {}).boxed()).unwrap();
             }
         }
 
@@ -890,11 +927,12 @@ impl ProxyService {
                     .header("X-Volta-Mirror", "true")
                     .header("X-Request-Id", &request_id);
                 for (name, value) in &req_headers {
-                    mirror_req = mirror_req.header(name, value);
+                    // GW-61: Don't leak X-Volta-* to mirror backend
+                    if !name.as_str().starts_with("x-volta-") {
+                        mirror_req = mirror_req.header(name, value);
+                    }
                 }
-                for (key, value) in &volta_headers {
-                    mirror_req = mirror_req.header(key.as_str(), value.as_str());
-                }
+                // Don't forward volta_headers to mirror (GW-61: user info leak prevention)
                 if let Ok(mirror_req) = mirror_req.body(Empty::<Bytes>::new()) {
                     let metrics = self.metrics.clone();
                     let retry_client = self.retry_client.clone();
@@ -910,6 +948,12 @@ impl ProxyService {
                 }
             }
         }
+
+        // ─── Cache store (#8) ────────────────────────────────
+        // Store response in cache if cacheable (after backend forward, before plugin/compression)
+        // Note: we can only cache if we buffer the body, which we do for compression anyway.
+        // For non-compressed responses, we skip caching to avoid double-buffering.
+        // This is a tradeoff — full caching requires body collection.
 
         // ─── Plugin: response phase ─────────────────────────
         {
@@ -966,6 +1010,28 @@ impl ProxyService {
                 Ok(collected) => collected.to_bytes(),
                 Err(_) => return error_response_with_pages(StatusCode::BAD_GATEWAY, &request_id, &hot.error_pages),
             };
+
+            // Cache store (if body was collected and response is cacheable)
+            if cache_enabled && cache_method_ok && response_status >= 200 && response_status < 300 {
+                let cache_control = parts.headers.get("cache-control")
+                    .and_then(|v| v.to_str().ok());
+                let max_body = cache_config.map(|c| c.max_body_size).unwrap_or(10_485_760);
+                if crate::cache::is_cacheable(cache_control) && body_bytes.len() <= max_body {
+                    let ttl = std::time::Duration::from_secs(
+                        cache_config.map(|c| c.ttl_secs).unwrap_or(300)
+                    );
+                    let ignore_query = cache_config.map(|c| c.ignore_query).unwrap_or(false);
+                    let cache_key = crate::cache::ResponseCache::key(
+                        method.as_str(), &host, &uri_path,
+                        None, // query already in path_and_query
+                        ignore_query,
+                    );
+                    let cached_headers: Vec<(String, String)> = parts.headers.iter()
+                        .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.as_str().to_string(), v.to_string())))
+                        .collect();
+                    self.response_cache.put(cache_key, response_status, cached_headers, body_bytes.clone(), ttl);
+                }
+            }
 
             let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
             if encoder.write_all(&body_bytes).is_ok() {

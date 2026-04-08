@@ -276,7 +276,7 @@ impl GatewayConfig {
         let mut hosts = std::collections::HashSet::new();
         for r in &self.routing {
             if !hosts.insert(&r.host) {
-                errors.push(format!("duplicate routing host: {}", r.host));
+                errors.push(format!("duplicate routing host: {} — path_prefix based routing on same host is not yet supported. Use separate hosts or a single route with auth_bypass_paths.", r.host));
             }
         }
         // Validate IP allowlist entries are valid CIDR
