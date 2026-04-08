@@ -44,6 +44,10 @@ futures = "0.3"
 # Compression
 flate2 = "1"
 
+# mTLS backend (#9)
+hyper-rustls = { version = "0.27", features = ["http1", "http2", "tls12", "ring"] }
+rustls-pemfile = "2"
+
 # Utilities
 uuid = { version = "1", features = ["v4"] }
 

@@ -33,6 +33,8 @@ pub struct RouteInfo {
     pub response_headers: Option<crate::config::HeaderManipulation>,
     pub geo_allowlist: Vec<String>,
     pub geo_denylist: Vec<String>,
+    pub cache: Option<crate::cache::CacheConfig>,
+    pub backend_tls: Option<crate::mtls::BackendTlsConfig>,
 }
 
 /// GW-23: Routing table with multiple backends for round-robin LB.

@@ -18,8 +18,11 @@ mod state;
 mod auth;
 mod proxy;
 mod flow;
+mod cache;
 mod l4_proxy;
 mod metrics;
+mod mtls;
+mod plugin;
 mod tls;
 mod websocket;
 

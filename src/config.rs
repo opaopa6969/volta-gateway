@@ -54,6 +54,9 @@ pub struct GatewayConfig {
     /// L4 (TCP/UDP) proxy entries. Each entry forwards a local port to a backend.
     #[serde(default)]
     pub l4_proxy: Vec<L4ProxyEntry>,
+    /// Plugin configurations.
+    #[serde(default)]
+    pub plugins: Vec<crate::plugin::PluginConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -162,6 +165,12 @@ pub struct RouteEntry {
     /// Traffic mirroring — copy requests to shadow backend (fire-and-forget).
     #[serde(default)]
     pub mirror: Option<MirrorConfig>,
+    /// Response cache configuration.
+    #[serde(default)]
+    pub cache: Option<crate::cache::CacheConfig>,
+    /// mTLS configuration for backend connections.
+    #[serde(default)]
+    pub backend_tls: Option<crate::mtls::BackendTlsConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -334,6 +343,8 @@ impl GatewayConfig {
                 response_headers: r.response_headers.clone(),
                 geo_allowlist: r.geo_allowlist.clone(),
                 geo_denylist: r.geo_denylist.clone(),
+                cache: r.cache.clone(),
+                backend_tls: r.backend_tls.clone(),
             }))
             .collect()
     }
