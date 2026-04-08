@@ -161,6 +161,22 @@ Full config reference: `volta-gateway.full.yaml`
 
 The SM pattern comes from [tramli](https://github.com/opaopa6969/tramli) — a constrained flow engine where invalid transitions cannot exist.
 
+## Why 1 YAML, not Docker labels?
+
+Traefik users ask this first. Here's why:
+
+**Labels shine when** each team independently deploys services in a large org. 3 lines in docker-compose and you're routed.
+
+**Labels hurt when:**
+- Middleware chains grow to 20+ lines per service — unreadable
+- All routes scatter across 10 docker-compose files — no overview
+- Label typos break routing silently (no validation)
+- ForwardAuth + CORS + rate limit + path rewrite in labels = pain
+
+**volta-gateway's choice:** one YAML file, validated at startup. Every route, middleware, and backend in one place. `cargo run -- config.yaml` fails fast on invalid config — no silent misrouting.
+
+For teams that need Docker label discovery: [Config Sources](#config-sources) support services.json, Docker labels, and HTTP polling with live reload.
+
 ## vs Traefik (benchmarked)
 
 Same-condition benchmark: localhost mock auth + mock backend. Traefik v3.4 (Docker) + ForwardAuth vs volta-gateway (native release). [Full results](benches/e2e_results.md)

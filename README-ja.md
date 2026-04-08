@@ -161,6 +161,22 @@ routing:
 
 SM パターンは [tramli](https://github.com/opaopa6969/tramli) から — 不正な遷移が構造的に存在できない制約付きフローエンジン。
 
+## なぜ Docker labels ではなく 1 YAML なのか？
+
+Traefik ユーザーが最初に聞く質問。
+
+**Labels が輝くとき:** 各チームが独立してサービスをデプロイする大規模組織。docker-compose に 3 行追加で OK。
+
+**Labels が辛くなるとき:**
+- middleware chain が 20 行超え → 可読性ゼロ
+- 全ルートが docker-compose 10 ファイルに散在 → 一覧が見えない
+- labels の typo でルーティングが壊れても気づきにくい（検証なし）
+- ForwardAuth + CORS + rate limit + path rewrite を全部 labels で書く地獄
+
+**volta-gateway の選択:** 1 YAML ファイル、起動時に検証。全ルート・ミドルウェア・バックエンドが一箇所に。不正な config は起動時に即エラー。
+
+Docker label 検出が必要なチームは [Config Sources](#config-sources) で services.json / Docker labels / HTTP polling + ライブリロードに対応。
+
 ## vs Traefik (実測済み)
 
 同条件ベンチマーク: localhost mock auth + mock backend。Traefik v3.4 (Docker) + ForwardAuth vs volta-gateway (native release)。[詳細結果](benches/e2e_results.md)

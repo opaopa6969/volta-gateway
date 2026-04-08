@@ -2194,6 +2194,7 @@ name = "volta-gateway"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
+ "async-trait",
  "bytes",
  "criterion",
  "flate2",
@@ -2207,6 +2208,7 @@ dependencies = [
  "rustls-acme",
  "rustls-pemfile",
  "serde",
+ "serde_json",
  "serde_yaml",
  "tokio",
  "tokio-rustls",

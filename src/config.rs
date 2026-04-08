@@ -57,6 +57,9 @@ pub struct GatewayConfig {
     /// Plugin configurations.
     #[serde(default)]
     pub plugins: Vec<crate::plugin::PluginConfig>,
+    /// External config sources (services.json, Docker labels, HTTP polling).
+    #[serde(default)]
+    pub config_sources: Vec<crate::config_source::ConfigSourceEntry>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
