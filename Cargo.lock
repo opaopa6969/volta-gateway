@@ -2138,9 +2138,9 @@ dependencies = [
 
 [[package]]
 name = "tramli"
-version = "1.16.0"
+version = "1.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6f3980188d1658a975b6b74a92b2d5158a67b660fa45b7fd8f57e2710f9a506"
+checksum = "e653af7c44e6755b78d280a0bd2f53d4ea7190c49fa04b1fc1158a9550337ecc"
 
 [[package]]
 name = "try-lock"

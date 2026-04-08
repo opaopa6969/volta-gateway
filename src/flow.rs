@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use tramli::{
     Builder, FlowContext, FlowDefinition, FlowError, GuardOutput,
-    StateProcessor, TransitionGuard, CloneAny, requires,
+    StateProcessor, TransitionGuard, CloneAny, requires, data_types,
 };
 
 use crate::state::ProxyState;
@@ -104,7 +104,7 @@ pub struct RoutingResolver {
 impl StateProcessor<ProxyState> for RoutingResolver {
     fn name(&self) -> &str { "RoutingResolver" }
     fn requires(&self) -> Vec<TypeId> { requires!(RequestData) }
-    fn produces(&self) -> Vec<TypeId> { requires!(RouteTarget) }
+    fn produces(&self) -> Vec<TypeId> { data_types!(RouteTarget) }
 
     fn process(&self, ctx: &mut FlowContext) -> Result<(), FlowError> {
         let req = ctx.get::<RequestData>()?;
@@ -143,7 +143,7 @@ pub struct AuthGuard;
 impl TransitionGuard<ProxyState> for AuthGuard {
     fn name(&self) -> &str { "AuthGuard" }
     fn requires(&self) -> Vec<TypeId> { vec![] }
-    fn produces(&self) -> Vec<TypeId> { requires!(AuthData) }
+    fn produces(&self) -> Vec<TypeId> { data_types!(AuthData) }
 
     fn validate(&self, ctx: &FlowContext) -> GuardOutput {
         match ctx.find::<AuthData>() {
@@ -162,7 +162,7 @@ pub struct ForwardGuard;
 impl TransitionGuard<ProxyState> for ForwardGuard {
     fn name(&self) -> &str { "ForwardGuard" }
     fn requires(&self) -> Vec<TypeId> { requires!(RouteTarget) }
-    fn produces(&self) -> Vec<TypeId> { requires!(BackendResponse) }
+    fn produces(&self) -> Vec<TypeId> { data_types!(BackendResponse) }
 
     fn validate(&self, ctx: &FlowContext) -> GuardOutput {
         match ctx.find::<BackendResponse>() {
