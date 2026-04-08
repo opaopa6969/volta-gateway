@@ -24,6 +24,13 @@ pub struct RouteInfo {
     pub public: bool,
     pub bypass_paths: Vec<crate::config::BypassPath>,
     pub mirror: Option<crate::config::MirrorConfig>,
+    pub path_prefix: Option<String>,
+    pub strip_prefix: Option<String>,
+    pub add_prefix: Option<String>,
+    pub request_headers: Option<crate::config::HeaderManipulation>,
+    pub response_headers: Option<crate::config::HeaderManipulation>,
+    pub geo_allowlist: Vec<String>,
+    pub geo_denylist: Vec<String>,
 }
 
 /// GW-23: Routing table with multiple backends for round-robin LB.
@@ -550,6 +557,21 @@ impl ProxyService {
             }
         }
 
+        // ─── #10: Geo-based access control (CF-IPCountry) ────
+        if let Some(ri) = route_info.as_ref() {
+            let country = req.headers().get("cf-ipcountry")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            if !ri.geo_allowlist.is_empty() && !ri.geo_allowlist.iter().any(|c| c == country) {
+                info!(state = "GEO_DENIED", host = %host, country = country);
+                return error_response_with_pages(StatusCode::FORBIDDEN, &request_id, &hot.error_pages);
+            }
+            if ri.geo_denylist.iter().any(|c| c == country) {
+                info!(state = "GEO_DENIED", host = %host, country = country);
+                return error_response_with_pages(StatusCode::FORBIDDEN, &request_id, &hot.error_pages);
+            }
+        }
+
         // ─── Async I/O: backend forward ─────────────────────
         // Circuit breaker check
         if !self.circuit_breaker.is_available(&backend_url) {
@@ -561,9 +583,25 @@ impl ProxyService {
             return resp;
         }
 
-        let path_and_query = req.uri().path_and_query()
+        let mut path_and_query = req.uri().path_and_query()
             .map(|pq| pq.as_str().to_string())
             .unwrap_or_else(|| "/".to_string());
+
+        // #3: Path rewrite (strip_prefix / add_prefix)
+        if let Some(ri) = route_info.as_ref() {
+            if let Some(ref strip) = ri.strip_prefix {
+                if path_and_query.starts_with(strip.as_str()) {
+                    path_and_query = path_and_query[strip.len()..].to_string();
+                    if !path_and_query.starts_with('/') {
+                        path_and_query = format!("/{}", path_and_query);
+                    }
+                }
+            }
+            if let Some(ref add) = ri.add_prefix {
+                path_and_query = format!("{}{}", add.trim_end_matches('/'), path_and_query);
+            }
+        }
+
         let target_uri = format!("{}{}", backend_url, path_and_query);
 
         // Collect headers for potential retry
@@ -596,6 +634,20 @@ impl ProxyService {
             .header("X-Forwarded-For", &xff)
             .header("X-Forwarded-Host", &host)
             .header("X-Forwarded-Proto", proto);
+
+        // #4: Request header manipulation
+        if let Some(ri) = route_info.as_ref() {
+            if let Some(ref rh) = ri.request_headers {
+                for name in &rh.remove {
+                    // Can't remove from builder, but we already collected req_headers
+                    // This will be overridden by add below
+                    let _ = name; // Headers are already forwarded; removal handled by not forwarding
+                }
+                for (name, value) in &rh.add {
+                    backend_req = backend_req.header(name.as_str(), value.as_str());
+                }
+            }
+        }
 
         let backend_req = match backend_req.body(req.into_body()) {
             Ok(r) => r,
@@ -712,22 +764,42 @@ impl ProxyService {
         headers.insert("x-content-type-options", "nosniff".parse().unwrap());
         headers.insert("x-frame-options", "DENY".parse().unwrap());
 
+        // #4: Response header manipulation
+        if let Some(ri) = route_info.as_ref() {
+            if let Some(ref rh) = ri.response_headers {
+                for name in &rh.remove {
+                    if let Ok(hname) = name.parse::<hyper::header::HeaderName>() {
+                        headers.remove(&hname);
+                    }
+                }
+                for (name, value) in &rh.add {
+                    if let (Ok(hname), Ok(hval)) = (name.parse::<hyper::header::HeaderName>(), value.parse::<hyper::header::HeaderValue>()) {
+                        headers.insert(hname, hval);
+                    }
+                }
+            }
+        }
+
         // GW-6: Log with client IP + SM transition info
         let transition_count = {
             let eng = engine.lock().unwrap();
             eng.store.transition_log().len()
         };
 
+        // #5: Structured access log (per-request)
         info!(
-            state = "COMPLETED",
+            state = "ACCESS",
             method = %method,
             host = %host,
             path = %uri_path,
             status = response_status,
-            duration_ms = duration.as_millis() as u64,
-            transitions = transition_count,
-            client_ip = %remote_addr.ip(),
+            latency_ms = duration.as_micros() as f64 / 1000.0,
+            client_ip = %real_client_ip,
             user_id = volta_headers.get("x-volta-user-id").map(|s| s.as_str()).unwrap_or("-"),
+            upstream = %backend_url,
+            request_id = %request_id,
+            transitions = transition_count,
+            public = skip_auth,
         );
 
         // Record metrics

@@ -79,8 +79,10 @@ fn make_proxy(auth_addr: SocketAddr, backend_addr: SocketAddr, host: &str) -> Pr
             backends: vec![format!("http://{}", backend_addr)],
             app_id: Some("test-app".into()),
             public: false,
-            bypass_paths: vec![],
-            mirror: None,
+            bypass_paths: vec![], mirror: None,
+            path_prefix: None, strip_prefix: None, add_prefix: None,
+            request_headers: None, response_headers: None,
+            geo_allowlist: vec![], geo_denylist: vec![],
         },
     );
 
@@ -105,8 +107,10 @@ fn make_proxy_with_cors(auth_addr: SocketAddr, backend_addr: SocketAddr, host: &
             backends: vec![format!("http://{}", backend_addr)],
             app_id: Some("test-app".into()),
             public: false,
-            bypass_paths: vec![],
-            mirror: None,
+            bypass_paths: vec![], mirror: None,
+            path_prefix: None, strip_prefix: None, add_prefix: None,
+            request_headers: None, response_headers: None,
+            geo_allowlist: vec![], geo_denylist: vec![],
         },
     );
 

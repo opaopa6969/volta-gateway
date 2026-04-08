@@ -14,15 +14,19 @@ fn test_routing() -> Arc<RoutingTable> {
         backends: vec!["http://localhost:3000".into()],
         app_id: Some("app".into()),
         public: false,
-        bypass_paths: vec![],
-        mirror: None,
+        bypass_paths: vec![], mirror: None,
+        path_prefix: None, strip_prefix: None, add_prefix: None,
+        request_headers: None, response_headers: None,
+        geo_allowlist: vec![], geo_denylist: vec![],
     });
     rt.insert("*.example.com".into(), RouteInfo {
         backends: vec!["http://localhost:3001".into()],
         app_id: None,
         public: false,
-        bypass_paths: vec![],
-        mirror: None,
+        bypass_paths: vec![], mirror: None,
+        path_prefix: None, strip_prefix: None, add_prefix: None,
+        request_headers: None, response_headers: None,
+        geo_allowlist: vec![], geo_denylist: vec![],
     });
     Arc::new(rt)
 }

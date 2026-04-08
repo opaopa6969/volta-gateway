@@ -102,6 +102,26 @@ pub struct RouteEntry {
     /// Allowed CORS origins for this route. Empty = no CORS headers.
     #[serde(default)]
     pub cors_origins: Vec<String>,
+    /// Path prefix for route matching (e.g. "/v1/"). Empty = match all paths.
+    #[serde(default)]
+    pub path_prefix: Option<String>,
+    /// Strip this prefix before forwarding to backend (e.g. "/v1" → "/users").
+    #[serde(default)]
+    pub strip_prefix: Option<String>,
+    /// Add this prefix before forwarding to backend (e.g. "/" → "/app/").
+    #[serde(default)]
+    pub add_prefix: Option<String>,
+    /// Request header manipulation.
+    #[serde(default)]
+    pub request_headers: Option<HeaderManipulation>,
+    /// Response header manipulation.
+    #[serde(default)]
+    pub response_headers: Option<HeaderManipulation>,
+    /// Geo-based access control using CF-IPCountry header.
+    #[serde(default)]
+    pub geo_allowlist: Vec<String>,
+    #[serde(default)]
+    pub geo_denylist: Vec<String>,
     /// Skip auth entirely for this route (e.g. auth server itself, public docs).
     #[serde(default)]
     pub public: bool,
@@ -111,6 +131,14 @@ pub struct RouteEntry {
     /// Traffic mirroring — copy requests to shadow backend (fire-and-forget).
     #[serde(default)]
     pub mirror: Option<MirrorConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct HeaderManipulation {
+    #[serde(default)]
+    pub add: HashMap<String, String>,
+    #[serde(default)]
+    pub remove: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -256,6 +284,13 @@ impl GatewayConfig {
                 public: r.public,
                 bypass_paths: r.auth_bypass_paths.clone(),
                 mirror: r.mirror.clone(),
+                path_prefix: r.path_prefix.clone(),
+                strip_prefix: r.strip_prefix.clone(),
+                add_prefix: r.add_prefix.clone(),
+                request_headers: r.request_headers.clone(),
+                response_headers: r.response_headers.clone(),
+                geo_allowlist: r.geo_allowlist.clone(),
+                geo_denylist: r.geo_denylist.clone(),
             }))
             .collect()
     }
