@@ -12,7 +12,7 @@ fn test_routing() -> Arc<RoutingTable> {
     use volta_gateway::proxy::RouteInfo;
     let mut rt = RoutingTable::new();
     rt.insert("app.example.com".into(), RouteInfo {
-        backends: vec!["http://localhost:3000".into()],
+        weights: vec![], backends: vec!["http://localhost:3000".into()],
         app_id: Some("app-wiki".into()),
         public: false,
         bypass_paths: vec![], mirror: None,
@@ -21,7 +21,7 @@ fn test_routing() -> Arc<RoutingTable> {
         geo_allowlist: vec![], geo_denylist: vec![],
     });
     rt.insert("*.example.com".into(), RouteInfo {
-        backends: vec!["http://localhost:3001".into()],
+        weights: vec![], backends: vec!["http://localhost:3001".into()],
         app_id: None,
         public: false,
         bypass_paths: vec![], mirror: None,

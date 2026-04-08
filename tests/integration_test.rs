@@ -76,7 +76,7 @@ fn make_proxy(auth_addr: SocketAddr, backend_addr: SocketAddr, host: &str) -> Pr
     routing.insert(
         host.to_string(),
         volta_gateway::proxy::RouteInfo {
-            backends: vec![format!("http://{}", backend_addr)],
+            weights: vec![], backends: vec![format!("http://{}", backend_addr)],
             app_id: Some("test-app".into()),
             public: false,
             bypass_paths: vec![], mirror: None,
@@ -104,7 +104,7 @@ fn make_proxy_with_cors(auth_addr: SocketAddr, backend_addr: SocketAddr, host: &
     routing.insert(
         host.to_string(),
         volta_gateway::proxy::RouteInfo {
-            backends: vec![format!("http://{}", backend_addr)],
+            weights: vec![], backends: vec![format!("http://{}", backend_addr)],
             app_id: Some("test-app".into()),
             public: false,
             bypass_paths: vec![], mirror: None,

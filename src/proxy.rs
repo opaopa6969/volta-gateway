@@ -20,6 +20,8 @@ use crate::state::ProxyState;
 #[derive(Debug, Clone)]
 pub struct RouteInfo {
     pub backends: Vec<String>,
+    /// Weights for weighted routing (same length as backends). Empty = equal weight.
+    pub weights: Vec<u32>,
     pub app_id: Option<String>,
     pub public: bool,
     pub bypass_paths: Vec<crate::config::BypassPath>,
@@ -53,17 +55,38 @@ impl BackendSelector {
         }
     }
 
-    /// Select next healthy backend (round-robin, skip dead).
-    /// Falls back to any backend if all are dead.
-    pub fn select<'a>(&self, host: &str, backends: &'a [String]) -> &'a str {
+    /// Select next healthy backend. Uses weighted random if weights are set,
+    /// otherwise round-robin. Dead backends are skipped.
+    pub fn select<'a>(&self, host: &str, backends: &'a [String], weights: &[u32]) -> &'a str {
         if backends.len() <= 1 {
             return &backends[0];
         }
+
         let health = self.health.lock().unwrap();
+
+        // Weighted selection
+        if !weights.is_empty() && weights.len() == backends.len() {
+            let total: u32 = weights.iter()
+                .enumerate()
+                .filter(|(i, _)| *health.get(backends[*i].as_str()).unwrap_or(&true))
+                .map(|(_, w)| w)
+                .sum();
+            if total > 0 {
+                let r = (rand_sample() * total as f64) as u32;
+                let mut acc = 0u32;
+                for (i, w) in weights.iter().enumerate() {
+                    if !*health.get(backends[i].as_str()).unwrap_or(&true) { continue; }
+                    acc += w;
+                    if r < acc {
+                        return &backends[i];
+                    }
+                }
+            }
+        }
+
+        // Round-robin fallback
         let mut map = self.counters.lock().unwrap();
         let counter = map.entry(host.to_string()).or_insert(0);
-
-        // Try up to len backends to find a healthy one
         for _ in 0..backends.len() {
             let idx = *counter % backends.len();
             *counter = counter.wrapping_add(1);
@@ -72,7 +95,6 @@ impl BackendSelector {
                 return backend;
             }
         }
-        // All dead — fall back to round-robin anyway
         &backends[*counter % backends.len()]
     }
 
@@ -367,6 +389,17 @@ impl ProxyService {
     pub async fn handle(&self, req: Request<Incoming>, remote_addr: std::net::SocketAddr) -> Response<BoxBody<Bytes, hyper::Error>> {
         let request_id = uuid::Uuid::new_v4().to_string();
 
+        // #7: OpenTelemetry — propagate or generate traceparent (W3C Trace Context)
+        let traceparent = req.headers().get("traceparent")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                // Generate: 00-{trace_id}-{span_id}-01
+                let trace_id = format!("{:032x}", uuid::Uuid::new_v4().as_u128());
+                let span_id = format!("{:016x}", &trace_id[..16].parse::<u64>().unwrap_or(0));
+                format!("00-{}-{}-01", trace_id, span_id)
+            });
+
         // Load current hot state (atomic, lock-free) — needed early for trusted proxy check
         let hot = self.hot.load();
 
@@ -494,7 +527,12 @@ impl ProxyService {
             };
             match flow.context.get::<RouteTarget>() {
                 Ok(rt) => {
-                    let selected = self.backend_selector.select(&host, &rt.backends).to_string();
+                    let route = hot.routing.get(&host).or_else(|| {
+                        host.splitn(2, '.').nth(1)
+                            .and_then(|d| hot.routing.get(&format!("*.{d}")))
+                    });
+                    let weights = route.map(|r| r.weights.as_slice()).unwrap_or(&[]);
+                    let selected = self.backend_selector.select(&host, &rt.backends, weights).to_string();
                     (selected, rt.app_id.clone())
                 }
                 Err(_) => return error_response(StatusCode::BAD_REQUEST, &request_id),
@@ -633,7 +671,8 @@ impl ProxyService {
             .header("X-Request-Id", &request_id)
             .header("X-Forwarded-For", &xff)
             .header("X-Forwarded-Host", &host)
-            .header("X-Forwarded-Proto", proto);
+            .header("X-Forwarded-Proto", proto)
+            .header("traceparent", &traceparent);
 
         // #4: Request header manipulation
         if let Some(ri) = route_info.as_ref() {
@@ -732,6 +771,7 @@ impl ProxyService {
             headers.remove(&key);
         }
         headers.insert("x-request-id", request_id.parse().unwrap());
+        headers.insert("traceparent", traceparent.parse().unwrap());
 
         // GW-21 + GW-44: CORS headers (per-route only, no implicit wildcard)
         let cors_origin = match hot.cors.get(&host) {
@@ -798,6 +838,7 @@ impl ProxyService {
             user_id = volta_headers.get("x-volta-user-id").map(|s| s.as_str()).unwrap_or("-"),
             upstream = %backend_url,
             request_id = %request_id,
+            trace = %traceparent,
             transitions = transition_count,
             public = skip_auth,
         );

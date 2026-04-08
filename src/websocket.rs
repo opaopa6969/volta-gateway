@@ -90,7 +90,8 @@ pub async fn handle_websocket(
         .and_then(|bp| bp.backend.clone());
 
     // Select backend (round-robin, or bypass override)
-    let backend = bypass_backend.unwrap_or_else(|| backend_selector.select(&host, &backends).to_string());
+    let weights = route.weights.as_slice();
+    let backend = bypass_backend.unwrap_or_else(|| backend_selector.select(&host, &backends, weights).to_string());
 
     // Build backend upgrade request
     let backend_uri = format!("{}{}", backend,

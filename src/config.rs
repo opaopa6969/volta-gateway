@@ -1,6 +1,34 @@
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use std::collections::HashMap;
 use std::path::Path;
+
+#[derive(Debug, Clone)]
+pub struct WeightedBackend {
+    pub url: String,
+    pub weight: u32,
+}
+
+// Support both "http://a" and {url: "http://a", weight: 90}
+impl<'de> Deserialize<'de> for WeightedBackend {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum BackendEntry {
+            Simple(String),
+            Weighted { url: String, #[serde(default = "default_weight")] weight: u32 },
+        }
+        match BackendEntry::deserialize(deserializer)? {
+            BackendEntry::Simple(url) => Ok(WeightedBackend { url, weight: 1 }),
+            BackendEntry::Weighted { url, weight } => Ok(WeightedBackend { url, weight }),
+        }
+    }
+}
+
+fn default_weight() -> u32 { 1 }
+
+fn deserialize_backends<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<WeightedBackend>, D::Error> {
+    Vec::<WeightedBackend>::deserialize(deserializer)
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
@@ -92,9 +120,12 @@ pub struct RouteEntry {
     /// Single backend (simple)
     #[serde(default)]
     pub backend: Option<String>,
-    /// Multiple backends for load balancing (round-robin)
-    #[serde(default)]
-    pub backends: Vec<String>,
+    /// Multiple backends for load balancing.
+    /// Supports both simple strings and weighted objects:
+    ///   backends: ["http://a:3000", "http://b:3000"]           # equal weight
+    ///   backends: [{url: "http://a:3000", weight: 90}, ...]    # weighted
+    #[serde(default, deserialize_with = "deserialize_backends")]
+    pub backends: Vec<WeightedBackend>,
     #[serde(default)]
     pub app_id: Option<String>,
     #[serde(default)]
@@ -161,11 +192,22 @@ pub struct BypassPath {
 impl RouteEntry {
     /// Get all backend URLs (merges `backend` and `backends`).
     pub fn all_backends(&self) -> Vec<String> {
-        let mut result: Vec<String> = self.backends.clone();
+        let mut result: Vec<String> = self.backends.iter().map(|b| b.url.clone()).collect();
         if let Some(ref b) = self.backend {
             if !result.contains(b) { result.insert(0, b.clone()); }
         }
         result
+    }
+
+    /// Get weights for backends (same order as all_backends).
+    pub fn all_weights(&self) -> Vec<u32> {
+        let mut weights: Vec<u32> = self.backends.iter().map(|b| b.weight).collect();
+        if let Some(ref b) = self.backend {
+            if !self.backends.iter().any(|wb| wb.url == *b) {
+                weights.insert(0, 1); // single backend gets weight 1
+            }
+        }
+        weights
     }
 }
 
@@ -280,6 +322,7 @@ impl GatewayConfig {
             .iter()
             .map(|r| (r.host.to_lowercase(), crate::proxy::RouteInfo {
                 backends: r.all_backends(),
+                weights: r.all_weights(),
                 app_id: r.app_id.clone(),
                 public: r.public,
                 bypass_paths: r.auth_bypass_paths.clone(),
