@@ -1,100 +1,109 @@
 # volta-gateway Backlog
 
-> Last updated: 2026-04-07
+> Last updated: 2026-04-08
 
-## Completed
+## Completed (Day 1-2)
 
-### Phase 5
-| # | Feature | Description |
-|---|---------|-------------|
-| 1 | WebSocket TCP tunnel | hyper::upgrade 両側 + copy_bidirectional |
-| 2 | Zero-downtime config reload | ArcSwap\<HotState\> SIGHUP 即時反映 |
-| 3 | カスタムエラーページ | error_pages_dir + HTML/JSON fallback |
-| 4 | Per-route CORS config | cors_origins + Origin 照合 + Vary: Origin |
+<details>
+<summary>Phase 5 + Layer 3 (9件)</summary>
 
-### Layer 3
-| # | Feature | Description |
-|---|---------|-------------|
-| 5 | Let's Encrypt ACME | rustls-acme + tokio-rustls, staging 対応 |
-| 6 | Retry + circuit breaker | 5 failures / 30s recovery + idempotent retry |
-| 7 | Compression (gzip) | flate2, into_parts() ヘッダ保持, 1MB 閾値 |
-| 8 | HTTP→HTTPS redirect | force_https, healthz/metrics/.well-known 除外 |
-| 9 | TCP/UDP proxy (L4) | config.l4_proxy ポートフォワーディング |
+| # | Feature |
+|---|---------|
+| 1 | WebSocket TCP tunnel |
+| 2 | Zero-downtime config reload (ArcSwap) |
+| 3 | カスタムエラーページ |
+| 4 | Per-route CORS config |
+| 5 | Let's Encrypt ACME |
+| 6 | Retry + circuit breaker |
+| 7 | Compression (gzip) |
+| 8 | HTTP→HTTPS redirect |
+| 9 | TCP/UDP proxy (L4) |
+</details>
 
-### DGE tribunal 修正 (v0.1.0 blockers)
-| Gap | Description |
-|-----|-------------|
-| GW-36 | compression ヘッダ消失 — into_parts() で修正 |
-| GW-29/38 | force_https 除外パス (healthz, metrics, .well-known) |
-| GW-30 | CORS preflight (OPTIONS) proxy で 204 返却 |
-| GW-44 | CORS デフォルト deny (DD-001) |
-| GW-45 | Host 正規化 to_lowercase() 統一 |
-| GW-37 | WebSocket 1024 接続上限 + RAII guard |
+<details>
+<summary>DGE tribunal fixes (7件)</summary>
 
-### v0.2.0
-| Gap | Description |
-|-----|-------------|
-| GW-27 | metrics 拡充 (WS/CB/compression/L4) |
-| GW-33 | config validation (tls/l4/force_https/backends) |
-| GW-34 | config リファレンス (volta-gateway.full.yaml) |
-| GW-43 | minimal config サンプル |
-| GW-46 | circuit open 時 503 + Retry-After |
-| GW-49 | criterion ベンチマーク基盤 |
-| GW-40 | テスト追加 (22 unit + 8 flow + 5 integration = 35) |
+GW-36 compression ヘッダ消失, GW-29/38 force_https 除外, GW-30 CORS preflight, GW-44 CORS deny-default, GW-45 Host 正規化, GW-37 WebSocket 接続制限
+</details>
 
-### v0.3.0 (Spec ACT + ベンチ)
-| ACT | Description |
-|-----|-------------|
-| ACT-B1 | Integration test 5件 (HTTP through proxy) |
-| ACT-A1 | E2E bench: p50 0.252ms, overhead 40μs |
-| ACT-A2 | Traefik 比較: p50 6.6x faster |
-| ACT-A3 | SM full lifecycle: 1.69μs |
-| ACT-C1/C2 | 論文 scope + 動機修正 |
-| ACT-C3 | 論文にベンチ実測値反映 |
-| GW-47 | dead code warnings 0 |
+<details>
+<summary>v0.2.0 (7件)</summary>
 
-### Code review fixes
-| # | Description |
-|---|-------------|
-| CR-2 | RateLimiter 競合 — Mutex<(u64, Instant)> に統一 |
-| CR-5 | BackendSelector per-host HashMap カウンタ |
-| CR-6 | metrics record_status/record_duration を handle() で呼出 |
-| CR-7 | normalize_host() 共通関数化 (proxy/websocket 重複解消) |
+GW-27 metrics 拡充, GW-33 config validation, GW-34/43 config docs, GW-46 Retry-After, GW-49 benchmark, GW-40 テスト追加
+</details>
 
-## v0.4.0 backlog
+<details>
+<summary>v0.3.0 bench + paper (7件)</summary>
 
-| # | Item | Category | Severity | Description |
-|---|------|----------|----------|-------------|
-| CR-8 | `//` path rejection 緩和 | 互換性 | 🟡 Medium | `/api/v1//users` を弾くのは厳しすぎる。nginx 正規化済みパスへの対応検討 |
-| CR-10 | HTTPS backend 対応 | 機能 | 🟡 Medium | `build_http()` のみ → hyper-rustls で remote HTTPS backend 対応 |
-| GW-39 | proxy.rs 分割 | 保守性 | 🟡 Medium | 700行超 → circuit_breaker.rs, compression.rs, cors.rs |
-| GW-41 | L4 proxy IP 制限 | セキュリティ | 🟡 Medium | DD-002 方針決定済み。config ベースの IP allowlist |
-| GW-53+ | Integration test 拡充 | 品質 | 🟡 Medium | WebSocket tunnel, L4 proxy の integration test |
-| BENCH-1 | Traefik native binary 比較 | 計測 | 🟢 Low | Docker overhead 排除した同条件比較 |
-| BENCH-2 | Caddy/NGINX 同条件比較 | 計測 | 🟢 Low | 競合全プロダクトとの定量比較 |
-| GW-32 | L4 graceful shutdown | 運用 | 🟢 Low | shutdown signal で新規 accept 停止 |
-| GW-35 | service ハンドラ重複 | 保守性 | 🟢 Low | tls.rs / main.rs → proxy.rs 分割時に解消 |
-| GW-42 | URI unwrap_or_default | セキュリティ | 🟢 Low | 不正入力で予想外ルーティングのリスク (低) |
-| GW-54 | SM 遷移ログ活用事例 | DX | 🟢 Low | Grafana ダッシュボード等の実運用例 |
+Integration test 5件, E2E bench (p50 0.252ms), Traefik比較 (6.6x), SM bench (1.69μs), 論文 scope/動機修正, dead code cleanup
+</details>
 
-## v0.5.0 完了 (プロダクト進化)
+<details>
+<summary>Code review fixes (4件)</summary>
 
-| # | Item | Status | Description |
-|---|------|--------|-------------|
-| PROD-1 | Backend health check | ✅ | per-backend alive flag + background ping + dead skip |
-| PROD-2 | Admin API | ✅ | /admin/routes, /admin/backends, /admin/reload, /admin/drain (localhost only) |
-| PROD-3 | HTTP reload endpoint | ✅ | POST /admin/reload — config reload via HTTP |
-| PROD-4 | CF-Connecting-IP trusted proxy | ✅ | server.trusted_proxies + CF-Connecting-IP / X-Real-IP |
-| PROD-5 | Metrics histogram | ✅ | 8 cumulative buckets (1ms-5s-Inf) for Prometheus |
+CR-2 RateLimiter race, CR-5 per-host LB, CR-6 metrics wiring, CR-7 normalize_host
+</details>
 
-## v0.6.0 backlog
+<details>
+<summary>v0.5.0 プロダクト進化 (5件)</summary>
 
-| # | Item | Category | Severity | Description |
-|---|------|----------|----------|-------------|
-| PROD-6 | Chunked body Limited | セキュリティ | 🟡 Medium | `http_body_util::Limited` で body をラップ。chunked 10MB すり抜け対策 |
+PROD-1 health check, PROD-2 admin API, PROD-3 HTTP reload, PROD-4 CF trust, PROD-5 histogram
+</details>
+
+<details>
+<summary>GitHub Issues #1-28 (28件)</summary>
+
+#1 public routes + bypass paths, #2 traffic mirroring, #3 path rewrite, #4 header manipulation, #5 access log, #6 weighted routing, #7 traceparent, #8 response cache, #9 mTLS, #10 geo control, #11 plugin system, #12 README Docker labels section, #13 ConfigSource trait, #14 Middleware Extension, #15 Docker labels source, #16 services.json source, #17 HTTP polling, #18-28 bug fixes (11件)
+</details>
+
+<details>
+<summary>GitHub Issues #33-38 (5件)</summary>
+
+#33 auth cache, #34 backpressure semaphore, #35 per-route timeout, #36 --validate, #38 /admin/stats
+</details>
+
+**Total completed: ~72 items. 80 tests. 30 features.**
+
+## Open — GitHub Issues
+
+| # | Issue | Category | Priority |
+|---|-------|----------|----------|
+| #37 | Streaming compression (async-compression) | 機能 | 🟡 Medium |
+| #39 | Access log file separation (tracing-appender) | 運用 | 🟡 Medium |
+| #42 | traefik-to-volta config converter (STR-10) | ツール | 🔴 Critical |
+| #43 | ACME DNS-01 + zero-config HTTPS (STR-2/3) | 機能 | 🟠 High |
+| #44 | Docker labels source — full Docker API (STR-4) | 機能 | 🟠 High |
+| #45 | Getting Started guide (STR-7) | DX | 🟠 High |
+| #46 | README messaging rewrite (STR-6) | マーケ | 🟠 High |
+| #47 | Traefik vs volta benchmark article (STR-11) | マーケ | 🟠 High |
+
+## Open — Technical Debt (v0.4.0)
+
+| # | Item | Severity |
+|---|------|----------|
+| CR-8 | // path rejection 緩和 | ✅ 済 (#24) |
+| CR-10 | HTTPS backend (mTLS module ready) | 🟡 Medium |
+| GW-39 | proxy.rs 分割 (1,100行超) | 🟡 Medium |
+| GW-41 | L4 proxy IP 制限 | 🟡 Medium |
+| PROD-6 | Chunked body Limited | 🟡 Medium |
+
+## Open — Strategic (DD-004/005)
+
+| # | Item | Phase | Priority |
+|---|------|-------|----------|
+| MIG-1 | Auth verify in-process (JWT in gateway) | DD-005 Ph0 | 🔴 最優先 |
+| MIG-3 | 並行運用戦略 (Rust read + Java write) | DD-005 Ph1 | 🟠 High |
+| STR-5 | docker-compose → services.json 自動生成 | DD-004 | 🟡 Medium |
+| STR-8 | Caddy 差別化 (エコシステム訴求) | DD-004 | 🟡 Medium |
+| STR-9 | volta-console 統合デモ | DD-004 | 🟡 Medium |
+| MIG-2 | SAML: Rust or Java sidecar 判断 | DD-005 Ph3 | 🟡 Medium |
+| MIG-4 | volta single binary vision | DD-005 Ph4 | 🟢 Low |
+| Wasm | Plugin system Wasm runtime (wasmtime) | — | 🟢 Low |
 
 ## Design Decisions
 
 - [DD-001](../dge/decisions/DD-001-cors-default-deny.md) — CORS デフォルトを deny に変更
 - [DD-002](../dge/decisions/DD-002-l4-proxy-scope.md) — L4 proxy は認証対象外
 - [DD-003](../dge/decisions/DD-003-accept-criteria.md) — v0.1.0 Accept 基準
+- [DD-004](../dge/decisions/DD-004-traefik-user-acquisition.md) — Traefik ユーザー獲得戦略
+- [DD-005](../dge/decisions/DD-005-java-to-rust-migration.md) — volta-auth-proxy Java→Rust 段階的移行
