@@ -508,7 +508,8 @@ impl ProxyService {
 
         // ─── SM Phase 1: start_flow (sync) ──────────────────
         // RECEIVED → VALIDATED → ROUTED (auto-chain, stops at External)
-        let engine = Mutex::new(FlowEngine::new(InMemoryFlowStore::new()));
+        // tramli 1.16: strict_mode validates processor produces() at runtime
+        let engine = Mutex::new(FlowEngine::with_strict_mode(InMemoryFlowStore::new()));
         let flow_id = {
             let mut eng = engine.lock().unwrap();
             let initial_data: Vec<(TypeId, Box<dyn CloneAny>)> = vec![

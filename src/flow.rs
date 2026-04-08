@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use tramli::{
     Builder, FlowContext, FlowDefinition, FlowError, GuardOutput,
-    StateProcessor, TransitionGuard, CloneAny,
+    StateProcessor, TransitionGuard, CloneAny, requires,
 };
 
 use crate::state::ProxyState;
@@ -53,7 +53,7 @@ pub struct RequestValidator {
 
 impl StateProcessor<ProxyState> for RequestValidator {
     fn name(&self) -> &str { "RequestValidator" }
-    fn requires(&self) -> Vec<TypeId> { vec![TypeId::of::<RequestData>()] }
+    fn requires(&self) -> Vec<TypeId> { requires!(RequestData) }
     fn produces(&self) -> Vec<TypeId> { vec![] }
 
     fn process(&self, ctx: &mut FlowContext) -> Result<(), FlowError> {
@@ -103,8 +103,8 @@ pub struct RoutingResolver {
 
 impl StateProcessor<ProxyState> for RoutingResolver {
     fn name(&self) -> &str { "RoutingResolver" }
-    fn requires(&self) -> Vec<TypeId> { vec![TypeId::of::<RequestData>()] }
-    fn produces(&self) -> Vec<TypeId> { vec![TypeId::of::<RouteTarget>()] }
+    fn requires(&self) -> Vec<TypeId> { requires!(RequestData) }
+    fn produces(&self) -> Vec<TypeId> { requires!(RouteTarget) }
 
     fn process(&self, ctx: &mut FlowContext) -> Result<(), FlowError> {
         let req = ctx.get::<RequestData>()?;
@@ -131,7 +131,7 @@ pub struct CompletionProcessor;
 
 impl StateProcessor<ProxyState> for CompletionProcessor {
     fn name(&self) -> &str { "CompletionProcessor" }
-    fn requires(&self) -> Vec<TypeId> { vec![TypeId::of::<BackendResponse>()] }
+    fn requires(&self) -> Vec<TypeId> { requires!(BackendResponse) }
     fn produces(&self) -> Vec<TypeId> { vec![] }
     fn process(&self, _ctx: &mut FlowContext) -> Result<(), FlowError> { Ok(()) }
 }
@@ -143,7 +143,7 @@ pub struct AuthGuard;
 impl TransitionGuard<ProxyState> for AuthGuard {
     fn name(&self) -> &str { "AuthGuard" }
     fn requires(&self) -> Vec<TypeId> { vec![] }
-    fn produces(&self) -> Vec<TypeId> { vec![TypeId::of::<AuthData>()] }
+    fn produces(&self) -> Vec<TypeId> { requires!(AuthData) }
 
     fn validate(&self, ctx: &FlowContext) -> GuardOutput {
         match ctx.find::<AuthData>() {
@@ -161,8 +161,8 @@ pub struct ForwardGuard;
 
 impl TransitionGuard<ProxyState> for ForwardGuard {
     fn name(&self) -> &str { "ForwardGuard" }
-    fn requires(&self) -> Vec<TypeId> { vec![TypeId::of::<RouteTarget>()] }
-    fn produces(&self) -> Vec<TypeId> { vec![TypeId::of::<BackendResponse>()] }
+    fn requires(&self) -> Vec<TypeId> { requires!(RouteTarget) }
+    fn produces(&self) -> Vec<TypeId> { requires!(BackendResponse) }
 
     fn validate(&self, ctx: &FlowContext) -> GuardOutput {
         match ctx.find::<BackendResponse>() {
@@ -192,7 +192,7 @@ pub fn build_proxy_flow_with_allowlist(
     Arc::new(
         Builder::new("proxy")
             .ttl(Duration::from_secs(30))
-            .initially_available(vec![TypeId::of::<RequestData>()])
+            .initially_available(requires!(RequestData))
 
             .from(Received).auto(Validated, RequestValidator { routing: routing.clone(), ip_allowlists })
             .from(Validated).auto(Routed, RoutingResolver { routing })
