@@ -190,7 +190,7 @@ pub fn build_proxy_flow_with_allowlist(
 ) -> Arc<FlowDefinition<ProxyState>> {
     use ProxyState::*;
 
-    Arc::new(
+    let def = Arc::new(
         Builder::new("proxy")
             .ttl(Duration::from_secs(30))
             .initially_available(requires!(RequestData))
@@ -205,5 +205,37 @@ pub fn build_proxy_flow_with_allowlist(
 
             .build()
             .expect("Proxy flow definition is invalid")
-    )
+    );
+
+    // tramli-plugins 3.2: lint the flow definition at startup
+    let mut lint_report = tramli_plugins::api::PluginReport::new();
+    for policy in tramli_plugins::lint::default_policies::<ProxyState>() {
+        policy(&def, &mut lint_report);
+    }
+    let findings = lint_report.findings();
+    if !findings.is_empty() {
+        for finding in findings {
+            tracing::warn!(plugin = "lint", severity = %finding.severity, "{}", finding.message);
+        }
+    }
+
+    def
+}
+
+/// Generate diagram bundle (Mermaid + data-flow JSON + markdown summary).
+#[allow(dead_code)]
+pub fn generate_diagrams(def: &FlowDefinition<ProxyState>) -> tramli_plugins::diagram::DiagramBundle {
+    tramli_plugins::diagram::DiagramPlugin::generate(def)
+}
+
+/// Generate flow documentation as markdown.
+#[allow(dead_code)]
+pub fn generate_docs(def: &FlowDefinition<ProxyState>) -> String {
+    tramli_plugins::docs::DocumentationPlugin::to_markdown(def)
+}
+
+/// Generate BDD test scenarios from flow definition.
+#[allow(dead_code)]
+pub fn generate_test_plan(def: &FlowDefinition<ProxyState>) -> tramli_plugins::testing::FlowTestPlan {
+    tramli_plugins::testing::ScenarioTestPlugin::generate(def)
 }

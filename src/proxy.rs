@@ -510,8 +510,21 @@ impl ProxyService {
 
         // ─── SM Phase 1: start_flow (sync) ──────────────────
         // RECEIVED → VALIDATED → ROUTED (auto-chain, stops at External)
-        // tramli 1.16: strict_mode validates processor produces() at runtime
-        let engine = Mutex::new(FlowEngine::with_strict_mode(InMemoryFlowStore::new()));
+        // tramli 3.2: strict_mode + transition logger for observability
+        // tramli 3.2: strict_mode + transition logger for observability
+        let mut eng = FlowEngine::with_strict_mode(InMemoryFlowStore::new());
+        let req_id_for_log = request_id.clone();
+        eng.set_transition_logger(move |entry| {
+            tracing::trace!(
+                request_id = %req_id_for_log,
+                flow = %entry.flow_name,
+                from = %entry.from,
+                to = %entry.to,
+                trigger = %entry.trigger,
+                "SM transition"
+            );
+        });
+        let engine = Mutex::new(eng);
         let flow_id = {
             let mut eng = engine.lock().unwrap();
             let initial_data: Vec<(TypeId, Box<dyn CloneAny>)> = vec![

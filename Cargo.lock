@@ -1938,9 +1938,9 @@ dependencies = [
 
 [[package]]
 name = "tokio"
-version = "1.51.0"
+version = "1.51.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2bd1c4c0fc4a7ab90fc15ef6daaa3ec3b893f004f915f2392557ed23237820cd"
+checksum = "f66bf9585cda4b724d3e78ab34b73fb2bbaba9011b9bfdf69dc836382ea13b8c"
 dependencies = [
  "bytes",
  "libc",
@@ -2138,9 +2138,18 @@ dependencies = [
 
 [[package]]
 name = "tramli"
-version = "1.17.0"
+version = "3.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e653af7c44e6755b78d280a0bd2f53d4ea7190c49fa04b1fc1158a9550337ecc"
+checksum = "4624369af58d14c9ed92b36b211dc3f5245ad59208d321e025d5d3bad1977153"
+
+[[package]]
+name = "tramli-plugins"
+version = "3.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3cb5297ecb1e978110ea5c9ee05ee0f9d401ba09d062568cc743843597c1bf1d"
+dependencies = [
+ "tramli",
+]
 
 [[package]]
 name = "try-lock"
@@ -2218,6 +2227,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tramli",
+ "tramli-plugins",
  "uuid",
 ]
 
