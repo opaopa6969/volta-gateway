@@ -2,7 +2,7 @@
 name = "volta-auth-core"
 version = "0.1.0"
 edition = "2021"
-description = "Auth core library — session verification, JWT, policy engine"
+description = "Auth core library — session verification, JWT, policy engine, OIDC/MFA/Passkey flows"
 
 [dependencies]
 # JWT
@@ -13,12 +13,31 @@ serde_json = "1"
 # Crypto
 ring = "0.17"
 
+# OIDC / OAuth2
+openidconnect = "4"
+
+# TOTP (MFA)
+totp-lite = "2"
+
+# HTTP client (for IdP communication)
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
+# Async
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+
 # Time
 chrono = { version = "0.4", features = ["serde"] }
 
-# State machine (for future OIDC/MFA flows)
+# State machine
 tramli = "3.6.1"
 tramli-plugins = "3.6.1"
+
+# UUID
+uuid = { version = "1", features = ["v4"] }
+
+# URL
+url = "2"
 
 # Logging
 tracing = "0.1"
