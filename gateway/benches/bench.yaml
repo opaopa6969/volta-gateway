@@ -1,0 +1,17 @@
+server:
+  port: 18080
+
+auth:
+  volta_url: http://127.0.0.1:17070
+  verify_path: /auth/verify
+  timeout_ms: 500
+  pool_max_idle: 64
+
+routing:
+  - host: bench.local
+    backend: http://127.0.0.1:19001
+    app_id: bench-app
+
+rate_limit:
+  requests_per_second: 999999
+  per_ip_rps: 999999

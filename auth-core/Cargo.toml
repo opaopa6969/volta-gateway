@@ -1,0 +1,24 @@
+[package]
+name = "volta-auth-core"
+version = "0.1.0"
+edition = "2021"
+description = "Auth core library — session verification, JWT, policy engine"
+
+[dependencies]
+# JWT
+jsonwebtoken = "9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Crypto
+ring = "0.17"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# State machine (for future OIDC/MFA flows)
+tramli = "3.5"
+tramli-plugins = "3.5"
+
+# Logging
+tracing = "0.1"
