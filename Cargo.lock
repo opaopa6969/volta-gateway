@@ -2138,15 +2138,15 @@ dependencies = [
 
 [[package]]
 name = "tramli"
-version = "3.4.0"
+version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "069c09864c251503026fb35970b20eddb9008013f73d1c2e83697b263ce7372b"
+checksum = "ec34e6ac44311d90528fbac1002dc76a414664e26f32529d96d92594f5a03f45"
 
 [[package]]
 name = "tramli-plugins"
-version = "3.4.0"
+version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a1c69bfdf1e870a35c505f8399b7190fef4fb85753247271c6a327ed748ae19"
+checksum = "a22e9050a1f5b4d8103a96c9b9ece1f6dc600c321445c2e5316a024ff02cd973"
 dependencies = [
  "tramli",
 ]
