@@ -40,6 +40,8 @@ arc-swap = "1"
 tokio-rustls = "0.26"
 rustls = "0.23"
 rustls-acme = { version = "0.12", features = ["axum"] }
+instant-acme = "0.8"
+rcgen = "0.13"
 futures = "0.3"
 
 # Compression
@@ -57,6 +59,12 @@ serde_json = "1"
 
 # Auth core (in-process JWT verify)
 volta-auth-core = { path = "../auth-core" }
+
+# Docker API (for Docker labels config source)
+bollard = "0.18"
+
+# HTTP client (for DNS-01 provider API, config source HTTP polling)
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 
 # Utilities
 uuid = { version = "1", features = ["v4"] }

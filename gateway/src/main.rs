@@ -26,6 +26,7 @@ mod metrics;
 mod mtls;
 mod plugin;
 mod tls;
+mod dns01;
 mod websocket;
 
 use config::GatewayConfig;
@@ -187,6 +188,13 @@ async fn main() {
     if !config.l4_proxy.is_empty() {
         info!(count = config.l4_proxy.len(), "starting L4 proxy listeners");
         l4_proxy::spawn_l4_proxies(&config.l4_proxy);
+    }
+
+    // Config source watchers (Docker labels, services.json, HTTP polling → ArcSwap hot reload)
+    if !config.config_sources.is_empty() {
+        let sources = config_source::create_sources(&config.config_sources);
+        info!(count = sources.len(), "starting config source watchers");
+        config_source::spawn_watchers(sources, hot.clone(), &config);
     }
 
     let mut drain_deadline: Option<tokio::time::Instant> = None;

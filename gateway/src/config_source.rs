@@ -223,17 +223,115 @@ impl ConfigSource for DockerLabelsSource {
     fn name(&self) -> &str { "docker-labels" }
 
     fn load(&self) -> Result<Vec<RouteEntry>, String> {
-        // Docker API via Unix socket — list containers with volta.host label
-        // For now, return empty (full Docker API client would require hyper unix socket)
-        warn!("Docker labels source: initial load requires Docker API client (not yet implemented). Use services.json for now.");
-        Ok(vec![])
+        // Synchronous initial load — use tokio block_on for Docker API call.
+        // This runs once at startup before the async runtime is fully active for this source.
+        let socket = self.socket.clone();
+        let rt = tokio::runtime::Handle::try_current();
+        match rt {
+            Ok(handle) => {
+                // We're already in a tokio context — spawn blocking to avoid nested runtime.
+                let routes = std::thread::scope(|_| {
+                    let docker = bollard::Docker::connect_with_socket(&socket, 120, bollard::API_DEFAULT_VERSION)
+                        .map_err(|e| format!("docker connect: {}", e))?;
+                    handle.block_on(Self::load_from_docker(&docker))
+                });
+                routes
+            }
+            Err(_) => {
+                warn!("Docker labels source: no tokio runtime for initial load, returning empty.");
+                Ok(vec![])
+            }
+        }
     }
 
     async fn watch(&self, tx: mpsc::Sender<Vec<RouteEntry>>) {
-        // Docker events API: GET /events?filters={"type":["container"],"event":["start","stop","die"]}
-        warn!("Docker labels watch: Docker events API not yet implemented. Use services.json with watch: true.");
-        // Keep task alive
-        loop { tokio::time::sleep(std::time::Duration::from_secs(3600)).await; }
+        use bollard::system::EventsOptions;
+        use futures::StreamExt;
+
+        let docker = match bollard::Docker::connect_with_socket(&self.socket, 120, bollard::API_DEFAULT_VERSION) {
+            Ok(d) => d,
+            Err(e) => {
+                error!(source = "docker-labels", error = %e, "failed to connect to Docker");
+                return;
+            }
+        };
+
+        info!(source = "docker-labels", socket = %self.socket, "watching Docker events");
+
+        // Filter for container start/stop/die events
+        let mut filters = HashMap::new();
+        filters.insert("type", vec!["container"]);
+        filters.insert("event", vec!["start", "stop", "die"]);
+        let options = EventsOptions { filters, ..Default::default() };
+
+        let mut stream = docker.events(Some(options));
+
+        while let Some(event) = stream.next().await {
+            match event {
+                Ok(ev) => {
+                    info!(
+                        source = "docker-labels",
+                        action = ev.action.as_deref().unwrap_or("?"),
+                        "container event — reloading routes"
+                    );
+                    match Self::load_from_docker(&docker).await {
+                        Ok(routes) => {
+                            if tx.send(routes).await.is_err() { break; }
+                        }
+                        Err(e) => warn!(source = "docker-labels", error = %e, "reload failed"),
+                    }
+                }
+                Err(e) => {
+                    warn!(source = "docker-labels", error = %e, "event stream error");
+                    // Reconnect delay
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                }
+            }
+        }
+    }
+}
+
+impl DockerLabelsSource {
+    /// Load routes from Docker API — list running containers with `volta.host` label.
+    async fn load_from_docker(docker: &bollard::Docker) -> Result<Vec<RouteEntry>, String> {
+        use bollard::container::ListContainersOptions;
+
+        let mut filters = HashMap::new();
+        filters.insert("status", vec!["running"]);
+        filters.insert("label", vec!["volta.host"]);
+
+        let options = ListContainersOptions { filters, ..Default::default() };
+
+        let containers = docker.list_containers(Some(options)).await
+            .map_err(|e| format!("docker list: {}", e))?;
+
+        let mut routes = Vec::new();
+        for c in &containers {
+            let labels = match &c.labels {
+                Some(l) => l.clone(),
+                None => continue,
+            };
+
+            // Get container IP from first network, or fall back to container name
+            let ip = c.network_settings.as_ref()
+                .and_then(|ns| ns.networks.as_ref())
+                .and_then(|nets| nets.values().next())
+                .and_then(|net| net.ip_address.as_deref())
+                .unwrap_or("127.0.0.1");
+
+            if let Some(route) = Self::parse_labels(&labels, ip) {
+                info!(
+                    source = "docker-labels",
+                    host = %route.host,
+                    backend = route.backend.as_deref().unwrap_or("?"),
+                    "discovered route"
+                );
+                routes.push(route);
+            }
+        }
+
+        info!(source = "docker-labels", count = routes.len(), "loaded routes from Docker");
+        Ok(routes)
     }
 }
 
@@ -308,6 +406,91 @@ impl ConfigSource for HttpPollingSource {
 }
 
 // ─── Config Source Manager ──────────────────────────────
+
+/// Spawn config source watchers and merge dynamic routes into ArcSwap<HotState>.
+///
+/// Each source's watch() sends Vec<RouteEntry> on change.
+/// The watcher merges dynamic routes with static YAML routes and updates HotState.
+pub fn spawn_watchers(
+    sources: Vec<Box<dyn ConfigSource>>,
+    hot: Arc<arc_swap::ArcSwap<crate::proxy::HotState>>,
+    config: &crate::config::GatewayConfig,
+) {
+    use crate::proxy::HotState;
+
+    let static_routing = Arc::new(config.routing_table());
+    let static_allowlists = config.ip_allowlist_table();
+    let static_cors = config.cors_table();
+    let trusted_proxies: Vec<ipnet::IpNet> = config.server.trusted_proxies.iter()
+        .filter_map(|s| s.parse().ok())
+        .collect();
+    let error_pages_dir = config.error_pages_dir.clone();
+
+    for source in sources {
+        let (tx, mut rx) = mpsc::channel::<Vec<RouteEntry>>(16);
+        let name = source.name().to_string();
+
+        // Spawn the source's watch task
+        tokio::spawn(async move {
+            source.watch(tx).await;
+        });
+
+        // Spawn the merge task
+        let hot = hot.clone();
+        let static_routing = static_routing.clone();
+        let static_allowlists = static_allowlists.clone();
+        let static_cors = static_cors.clone();
+        let trusted_proxies = trusted_proxies.clone();
+        let error_pages_dir = error_pages_dir.clone();
+
+        tokio::spawn(async move {
+            while let Some(dynamic_routes) = rx.recv().await {
+                // Start from static routes
+                let mut merged = (*static_routing).clone();
+
+                // Merge dynamic routes (dynamic overwrites static on host conflict)
+                for route in &dynamic_routes {
+                    let info = crate::proxy::RouteInfo {
+                        backends: route.all_backends(),
+                        weights: route.all_weights(),
+                        app_id: route.app_id.clone(),
+                        public: route.public,
+                        bypass_paths: route.auth_bypass_paths.clone(),
+                        mirror: route.mirror.clone(),
+                        path_prefix: route.path_prefix.clone(),
+                        strip_prefix: route.strip_prefix.clone(),
+                        add_prefix: route.add_prefix.clone(),
+                        request_headers: route.request_headers.clone(),
+                        response_headers: route.response_headers.clone(),
+                        geo_allowlist: route.geo_allowlist.clone(),
+                        geo_denylist: route.geo_denylist.clone(),
+                        timeout_secs: route.timeout_secs,
+                        cache: route.cache.clone(),
+                        backend_tls: route.backend_tls.clone(),
+                    };
+                    merged.insert(route.host.to_lowercase(), info);
+                }
+
+                let route_count = merged.len();
+                let new_hot = HotState::new_full(
+                    Arc::new(merged),
+                    static_allowlists.clone(),
+                    error_pages_dir.as_deref(),
+                    static_cors.clone(),
+                    trusted_proxies.clone(),
+                );
+                hot.store(Arc::new(new_hot));
+
+                info!(
+                    source = %name,
+                    dynamic = dynamic_routes.len(),
+                    total = route_count,
+                    "routes merged from config source"
+                );
+            }
+        });
+    }
+}
 
 /// Manages multiple config sources and merges routes.
 pub fn create_sources(entries: &[ConfigSourceEntry]) -> Vec<Box<dyn ConfigSource>> {

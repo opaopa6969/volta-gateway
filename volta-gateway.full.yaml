@@ -57,6 +57,25 @@ tls:
   port: 443                      # HTTPS listen port
   cache_dir: ./acme-cache        # ACME certificate cache
   staging: false                 # Use Let's Encrypt staging (for testing)
+  # DNS-01 challenge (for wildcard certs like *.example.com)
+  # challenge: dns-01            # "http-01" (default) or "dns-01"
+  # dns_provider: cloudflare     # DNS provider
+  # dns_api_token: "cf-token"    # or env: CF_DNS_API_TOKEN
+  # dns_zone_id: "zone-id"       # or env: CF_ZONE_ID
+
+# SAML sidecar routing (DD-005: keep Java volta-auth-proxy for SAML)
+# SAML endpoints are forwarded to the Java sidecar. No Rust SAML impl needed.
+# routing:
+#   - host: auth.example.com
+#     path_prefix: /saml/
+#     backend: http://localhost:7070   # volta-auth-proxy (Java)
+#     public: true                      # SAML endpoints are pre-auth
+#     app_id: saml-sidecar
+#   - host: auth.example.com
+#     path_prefix: /auth/saml/
+#     backend: http://localhost:7070
+#     public: true
+#     app_id: saml-sidecar
 
 # L4 TCP/UDP proxy (optional, no auth — use ip_allowlist for protection)
 l4_proxy:

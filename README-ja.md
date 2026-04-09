@@ -269,10 +269,50 @@ SM はブロックしない。I/O は SM に入らない。きれいな分離。
 
 詳細は [tramli ドキュメント](https://github.com/opaopa6969/tramli)。このプロキシを作った実体験は[ユーザーレビュー](https://github.com/opaopa6969/tramli/blob/main/docs/review-volta-gateway-ja.md)を参照。
 
+## ワークスペース構成
+
+```
+volta-gateway/
+  Cargo.toml              ワークスペースルート
+  gateway/                HTTP リバースプロキシ (30+ 機能)
+  auth-core/              認証ライブラリ — JWT, セッション, OIDC/MFA/Passkey フロー
+  volta-bin/              統合バイナリ (gateway + auth in-process)
+  tools/traefik-to-volta/ 設定変換 CLI
+```
+
+### auth-core
+
+in-process 認証ライブラリ。auth-proxy への HTTP ラウンドトリップ不要。
+
+| モジュール | 用途 |
+|-----------|------|
+| `jwt` | JWT 検証 + 発行 (HS256, RSA) |
+| `session` | Cookie → JWT 検証 → X-Volta-* ヘッダー |
+| `store` | DAO trait (User, Tenant, Membership, Invitation, Session, Flow) |
+| `store::pg` | PostgreSQL 実装 (sqlx, `postgres` feature) |
+| `policy` | RBAC ポリシーエンジン |
+| `flow` | tramli SM フロー (OIDC, MFA, Passkey, Invite) |
+| `service` | async オーケストレーター (IdP/Store/JWT で SM を駆動) |
+| `idp` | OAuth2/OIDC クライアント (Google, GitHub, Microsoft, LinkedIn, Apple) |
+| `totp` | MFA 用 TOTP 検証 |
+| `passkey` | WebAuthn/Passkey サービス (webauthn-rs, `webauthn` feature) |
+
+```bash
+# PostgreSQL サポート付きビルド
+cargo build -p volta-auth-core --features postgres
+
+# テスト (ユニット)
+cargo test -p volta-auth-core
+
+# インテグレーションテスト (Docker 必要)
+cargo test -p volta-auth-core --features postgres -- --ignored
+```
+
 ## 要件
 
 - Rust 1.75+ (edition 2021)
-- volta-auth-proxy が動作中（認証チェック用）
+- PostgreSQL 13+ (auth-core `postgres` feature 使用時)
+- Docker (インテグレーションテスト用)
 - バックエンド App が動作中
 
 ## ライセンス

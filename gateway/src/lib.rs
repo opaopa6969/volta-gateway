@@ -11,4 +11,5 @@ pub mod middleware_ext;
 pub mod mtls;
 pub mod plugin;
 pub mod tls;
+pub mod dns01;
 pub mod websocket;

@@ -2,74 +2,127 @@
 
 > Last updated: 2026-04-09
 
-## Completed (Day 1-3)
+## Completed
 
 <details>
-<summary>~90 items completed (click to expand)</summary>
+<summary>~110 items completed (click to expand)</summary>
 
-Phase 5 (4), Layer 3 (5), tribunal fixes (7), v0.2.0 (7), v0.3.0 bench (7),
-code review (4), v0.5.0 PROD (5), GitHub issues #1-28 (28), #33-38 (5),
-#40-41 (2), Cargo workspace (1), tramli 3.6.1 upgrade, auth-core Phase 0.
+**Day 1-3:** ~90 items (gateway features, tramli upgrade, auth-core Phase 0)
 
-**Tests: 90** (gateway 80 + auth-core 10)
-**Features: 30+**
-**Crates: 3** (gateway, auth-core, volta-bin)
+**Day 3+ (Java→Rust migration):**
+- auth-core SqlStore (7 record types, 6 store traits, PgStore, 7 migrations)
+- Processor DB 配線 (JwtIssuer, AuthService orchestrator)
+- Integration test (testcontainers + PostgreSQL, 9 tests)
+- FlowPersistence (auth_flows + transitions, optimistic lock)
+- WebAuthn/Passkey (PasskeyService, webauthn-rs)
+- Docker labels config source (bollard)
+- Config source hot reload 統合 (ArcSwap merge)
+- ACME DNS-01 (instant-acme + Cloudflare provider)
+- SAML sidecar routing config
+- E2E テスト追加 (gateway 8 integration tests)
+- Benchmark 記事, Getting Started, README 更新
+
+**Tests: 63** (auth-core 55 + gateway 8)
+**Crates: 4** (gateway, auth-core, volta-bin, traefik-to-volta)
 </details>
 
-## auth-core Roadmap (DD-005)
+---
 
-| Phase | Item | Status | Description |
-|-------|------|--------|-------------|
-| **0** | **JWT verify in-process** | **✅ Done** | auth-core crate + gateway 統合。250µs → ~1µs |
-| 1 | Session store + policy engine | 📋 Next | SessionStore trait, PolicyEngine (role/tenant check) |
-| 1.5 | Token refresh + revocation | 📋 | refresh token rotation, revocation list |
-| 2 | OIDC flow (tramli SM) | 📋 | OidcFlowDef → Rust tramli。Google/GitHub/Microsoft IdP |
-| 2.5 | MFA flow (tramli SM) | 📋 | TOTP + email code。MfaFlowDef → Rust |
-| 3 | Passkey flow (tramli SM) | 📋 | WebAuthn registration + authentication |
-| 3.5 | Invite flow | 📋 | Email invite → accept → join tenant |
-| 4 | SAML | 📋 | DD-005: Rust (samael) or Java sidecar 判断 |
-| 5 | volta single binary | 📋 | volta-bin = gateway + auth-core in-process |
+## Java 置き換えロードマップ
 
-### Phase 1 詳細 (Next)
+> Ref: [Gap Analysis](gap-analysis-java-rust.md) | [DD-005](../dge/decisions/DD-005-java-to-rust-migration.md)
 
-```
-auth-core/src/
-  jwt.rs         ✅ Done — JwtVerifier (HS256/RS256)
-  session.rs     ✅ Done — SessionVerifier (cookie → JWT → headers)
-  store.rs       📋 — SessionStore trait (in-memory + SqlFlowStore via tramli FlowStore trait)
-  policy.rs      📋 — PolicyEngine (role check, tenant isolation, IP restrict)
-  token.rs       📋 — Token refresh, rotation, revocation
-  config.rs      📋 — AuthCoreConfig (from volta-auth-proxy's VoltaConfig)
-```
+### Phase 1: auth-server crate (HTTP API 基盤) 🔴 Critical
 
-### Phase 2 詳細
+**目標:** gateway が Java auth-proxy の代わりに Rust auth-server を使えるようにする
 
-```
-auth-core/src/flow/
-  oidc/
-    state.rs     📋 — OidcFlowState enum (tramli FlowState)
-    def.rs       📋 — OidcFlowDef (Builder, 1:1 from Java)
-    processors/  📋 — OidcInitProcessor, TokenExchangeProcessor, etc.
-  mfa/
-    state.rs     📋 — MfaFlowState
-    def.rs       📋 — MfaFlowDef
-  passkey/
-    state.rs     📋 — PasskeyFlowState
-    def.rs       📋 — PasskeyFlowDef
-```
+| # | Item | エンドポイント | 依存 |
+|---|------|--------------|------|
+| P1-1 | auth-server crate 新設 (Axum) | — | — |
+| P1-2 | /auth/verify エンドポイント | GET /auth/verify | SessionStore |
+| P1-3 | OIDC login + callback | GET /login, GET /callback, POST /auth/callback/complete | AuthService.oidc_* |
+| P1-4 | Logout | GET/POST /auth/logout | SessionStore.revoke |
+| P1-5 | Token refresh | POST /auth/refresh | AuthService.token_refresh |
+| P1-6 | Session API | GET/DELETE /api/me/sessions, DELETE /api/me/sessions/{id} | SessionStore |
+| P1-7 | User profile | GET /api/v1/users/me, GET /api/v1/users/me/tenants | UserStore, TenantStore |
+| P1-8 | JWKS | GET /.well-known/jwks.json | 署名鍵 |
+| P1-9 | Health check | GET /healthz | — |
+| P1-10 | sessions テーブル migration | — | SessionStore PG 実装 |
+
+**完了条件:** `volta-gateway --auth-mode=rust` で Java auth-proxy なしで OIDC ログイン完了
+
+### Phase 2: MFA + Magic Link + 署名鍵 🟠 High
+
+| # | Item | エンドポイント | 依存 |
+|---|------|--------------|------|
+| P2-1 | MFA セットアップ (TOTP) | POST /api/v1/users/{id}/mfa/totp/setup, /verify | user_mfa テーブル |
+| P2-2 | MFA リカバリコード | POST /regenerate, DELETE /totp | mfa_recovery_codes テーブル |
+| P2-3 | MFA テナントポリシー + 猶予期間 | — | tenants.mfa_required, mfa_grace_until |
+| P2-4 | MFA challenge + verify エンドポイント | GET /mfa/challenge, POST /auth/mfa/verify | — |
+| P2-5 | Magic Link | POST /auth/magic-link/send, GET /verify | magic_links テーブル |
+| P2-6 | 署名鍵 DB 保存 + ローテーション | POST /admin/keys/rotate, /revoke | signing_keys テーブル |
+| P2-7 | Switch account/tenant | POST /auth/switch-account, /switch-tenant | — |
+
+### Phase 3: マルチ IdP + M2M + Passkey DB 🟠 High
+
+| # | Item | エンドポイント | 依存 |
+|---|------|--------------|------|
+| P3-1 | IdP 設定 DB 保存 | GET/POST /api/v1/tenants/{id}/idp-configs | idp_configs テーブル |
+| P3-2 | マルチ IdP ルーティング (Google/GitHub/Microsoft) | /login?provider=github | IdpConfig → IdpClient |
+| P3-3 | M2M クライアント | GET/POST /api/v1/tenants/{id}/m2m-clients | m2m_clients テーブル |
+| P3-4 | OAuth2 token endpoint (M2M) | POST /oauth/token | client_credentials grant |
+| P3-5 | Passkey DB 永続化 | CRUD /api/v1/users/{id}/passkeys | user_passkeys テーブル |
+| P3-6 | Passkey 認証フロー endpoint | POST /auth/passkey/start, /finish | PasskeyService |
+| P3-7 | User 管理 API | PATCH /api/v1/users/{id}, DELETE | — |
+| P3-8 | Tenant 管理 API | POST /api/v1/tenants, PATCH, transfer-ownership | — |
+| P3-9 | Member 管理 API | GET/PATCH/DELETE /api/v1/tenants/{id}/members/{id} | — |
+| P3-10 | Invitation API | POST/GET/DELETE /api/v1/tenants/{id}/invitations | — |
+
+### Phase 4: Webhook + Audit + GDPR 🟡 Medium
+
+| # | Item | エンドポイント | 依存 |
+|---|------|--------------|------|
+| P4-1 | Webhook CRUD | GET/POST/PATCH/DELETE /api/v1/tenants/{id}/webhooks | webhook_subscriptions テーブル |
+| P4-2 | Outbox パターン + Worker | POST /admin/outbox/flush | outbox_events テーブル |
+| P4-3 | Webhook 配信 + リトライ | — | webhook_deliveries テーブル |
+| P4-4 | Audit ログ (insert + list) | GET /api/v1/admin/audit | audit_logs テーブル |
+| P4-5 | GDPR データエクスポート | POST /api/v1/users/me/data-export | — |
+| P4-6 | GDPR hard delete + anonymize | DELETE /api/v1/users/{id}/data | audit anonymize |
+| P4-7 | Device Trust | GET/DELETE /api/v1/users/me/devices | known_devices, trusted_devices テーブル |
+| P4-8 | Security Policy (per-tenant) | — | tenant_security_policies テーブル |
+
+### Phase 5: SCIM + Billing + Admin UI 🟢 Low
+
+| # | Item | エンドポイント | 依存 |
+|---|------|--------------|------|
+| P5-1 | SCIM 2.0 Users | GET/POST/PUT/PATCH/DELETE /scim/v2/Users | — |
+| P5-2 | SCIM 2.0 Groups | GET/POST /scim/v2/Groups | — |
+| P5-3 | Plans + Subscriptions | GET /billing, POST /subscription | plans, subscriptions テーブル |
+| P5-4 | Stripe Webhook | POST /api/v1/billing/stripe/webhook | — |
+| P5-5 | Policy engine (DB) | GET/POST /api/v1/tenants/{id}/policies, /evaluate | policies テーブル |
+| P5-6 | Admin HTML pages | GET /admin/{members,tenants,users,...} | テンプレートエンジン |
+| P5-7 | Admin API (system) | GET /api/v1/admin/{tenants,users} | — |
+
+### SAML (別トラック — DD-005)
+
+DD-005 決定: SAML は Java sidecar (volta-auth-proxy) に維持。
+gateway の `path_prefix: /saml/` + `public: true` で Java に転送。
+
+将来的に samael (Rust) が成熟したら Rust ネイティブに移行検討。
+
+---
 
 ## Open — GitHub Issues
 
-| # | Issue | Category | Priority |
-|---|-------|----------|----------|
-| #37 | Streaming compression (async-compression) | 機能 | 🟡 Medium |
-| #39 | Access log file separation (tracing-appender) | 運用 | 🟡 Medium |
-| #42 | traefik-to-volta config converter (STR-10) | ツール | 🔴 Critical |
-| #43 | ACME DNS-01 + zero-config HTTPS (STR-2/3) | 機能 | 🟠 High |
-| #44 | Docker labels source — full Docker API (STR-4) | 機能 | 🟠 High |
-| #45 | Getting Started guide (STR-7) | DX | 🟠 High |
-| #46 | README messaging rewrite (STR-6) | マーケ | 🟠 High |
-| #47 | Traefik vs volta benchmark article (STR-11) | マーケ | 🟠 High |
+| # | Issue | Status |
+|---|-------|--------|
+| #37 | Streaming compression | 🟡 Open |
+| #39 | Access log file separation | 🟡 Open |
+| #43 | ACME DNS-01 | ✅ Done (Phase 1+2) |
+| #44 | Docker labels source | ✅ Done |
+| #45 | Getting Started guide | ✅ Done |
+| #46 | README messaging rewrite | ✅ Done |
+| #47 | Benchmark article | ✅ Done |
 
 ## Open — Technical Debt
 
@@ -78,25 +131,12 @@ auth-core/src/flow/
 | CR-10 | HTTPS backend (mTLS module ready) | 🟡 Medium |
 | GW-39 | proxy.rs 分割 (1,100行超) | 🟡 Medium |
 | GW-41 | L4 proxy IP 制限 | 🟡 Medium |
-| PROD-6 | Chunked body Limited | 🟡 Medium |
-
-## Open — Strategic
-
-| # | Item | Phase | Priority |
-|---|------|-------|----------|
-| MIG-3 | 並行運用戦略 (Rust read + Java write) | DD-005 Ph1 | 🟠 High |
-| STR-5 | docker-compose → services.json 自動生成 | DD-004 | 🟡 Medium |
-| STR-8 | Caddy 差別化 (エコシステム訴求) | DD-004 | 🟡 Medium |
-| STR-9 | volta-console 統合デモ | DD-004 | 🟡 Medium |
-| MIG-2 | SAML: Rust or Java sidecar 判断 | DD-005 Ph4 | 🟡 Medium |
-| MIG-4 | volta single binary vision | DD-005 Ph5 | 🟢 Low |
-| Wasm | Plugin system Wasm runtime | — | 🟢 Low |
 
 ## Design Decisions
 
-- [DD-001](../dge/decisions/DD-001-cors-default-deny.md) — CORS デフォルトを deny に変更
+- [DD-001](../dge/decisions/DD-001-cors-default-deny.md) — CORS デフォルトを deny に
 - [DD-002](../dge/decisions/DD-002-l4-proxy-scope.md) — L4 proxy は認証対象外
 - [DD-003](../dge/decisions/DD-003-accept-criteria.md) — v0.1.0 Accept 基準
 - [DD-004](../dge/decisions/DD-004-traefik-user-acquisition.md) — Traefik ユーザー獲得戦略
-- [DD-005](../dge/decisions/DD-005-java-to-rust-migration.md) — volta-auth-proxy Java→Rust 段階的移行
-- [DD-006](../dge/decisions/DD-006-auth-proxy-rs-repo.md) — auth-proxy-rs は Cargo workspace で gateway と同居
+- [DD-005](../dge/decisions/DD-005-java-to-rust-migration.md) — Java→Rust 段階的移行
+- [DD-006](../dge/decisions/DD-006-auth-proxy-rs-repo.md) — auth-proxy-rs は Cargo workspace で同居

@@ -88,7 +88,18 @@ pub struct TlsConfig {
     /// Use Let's Encrypt staging (default: false). Set to true for testing.
     #[serde(default)]
     pub staging: bool,
+    /// ACME challenge type: "http-01" (default) or "dns-01".
+    #[serde(default = "default_challenge")]
+    pub challenge: String,
+    /// DNS provider for DNS-01 challenge (e.g. "cloudflare").
+    pub dns_provider: Option<String>,
+    /// DNS provider API token (or use env: CF_DNS_API_TOKEN).
+    pub dns_api_token: Option<String>,
+    /// DNS zone ID for Cloudflare (or use env: CF_ZONE_ID).
+    pub dns_zone_id: Option<String>,
 }
+
+fn default_challenge() -> String { "http-01".into() }
 
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]

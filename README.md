@@ -295,10 +295,61 @@ impl StateProcessor<ProxyState> for MyRateLimiter {
 
 See [tramli docs](https://github.com/opaopa6969/tramli) for the full API. The [user review](https://github.com/opaopa6969/tramli/blob/main/docs/review-volta-gateway.md) covers real-world experience building this proxy.
 
+## Workspace Structure
+
+```
+volta-gateway/
+  Cargo.toml              Workspace root
+  gateway/                HTTP reverse proxy (30+ features)
+  auth-core/              Auth library — JWT, session, OIDC/MFA/Passkey flows
+  volta-bin/              Unified binary (gateway + auth in-process)
+  tools/traefik-to-volta/ Config converter CLI
+```
+
+### auth-core
+
+In-process auth library — no HTTP roundtrip to auth-proxy needed.
+
+| Module | Purpose |
+|--------|---------|
+| `jwt` | JWT verification + issuance (HS256, RSA) |
+| `session` | Cookie extraction → JWT verify → X-Volta-* headers |
+| `store` | DAO traits (User, Tenant, Membership, Invitation, Session, Flow) |
+| `store::pg` | PostgreSQL implementation (sqlx, `postgres` feature) |
+| `policy` | RBAC policy engine |
+| `flow` | tramli SM flows (OIDC, MFA, Passkey, Invite) |
+| `service` | Async orchestrator (drives SM with real IdP/Store/JWT) |
+| `idp` | OAuth2/OIDC client (Google, GitHub, Microsoft, LinkedIn, Apple) |
+| `totp` | TOTP verification for MFA |
+| `passkey` | WebAuthn/Passkey service (webauthn-rs, `webauthn` feature) |
+
+```bash
+# Build with PostgreSQL support
+cargo build -p volta-auth-core --features postgres
+
+# Build with WebAuthn support
+cargo build -p volta-auth-core --features webauthn
+
+# Run tests (unit)
+cargo test -p volta-auth-core
+
+# Run integration tests (requires Docker)
+cargo test -p volta-auth-core --features postgres -- --ignored
+```
+
+### Unified binary (volta-bin)
+
+Single binary combining gateway + auth-core. Auth checks run in-process (~1μs) instead of HTTP roundtrip (~250μs).
+
+```bash
+cargo run -p volta-bin -- config.yaml
+```
+
 ## Requirements
 
 - Rust 1.75+ (edition 2021)
-- volta-auth-proxy running (for auth checks)
+- PostgreSQL 13+ (for auth-core with `postgres` feature)
+- Docker (for integration tests)
 - Backend apps running
 
 ## License

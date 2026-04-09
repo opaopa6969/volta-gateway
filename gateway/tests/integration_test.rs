@@ -406,3 +406,215 @@ async fn proxy_rate_limit_returns_429() {
 
     server.abort();
 }
+
+fn make_proxy_public(backend_addr: SocketAddr, host: &str) -> ProxyService {
+    // Public route — auth is skipped, volta_url points to non-existent server
+    let auth_config = AuthConfig {
+        volta_url: "http://127.0.0.1:1".into(), // intentionally unreachable
+        verify_path: "/auth/verify".into(),
+        timeout_ms: 100,
+        pool_max_idle: 1,
+        jwt_secret: None,
+        cookie_name: None,
+    };
+    let volta = VoltaAuthClient::new(&auth_config);
+
+    let mut routing = RoutingTable::new();
+    routing.insert(
+        host.to_string(),
+        volta_gateway::proxy::RouteInfo {
+            weights: vec![], backends: vec![format!("http://{}", backend_addr)],
+            app_id: Some("public-app".into()),
+            public: true,
+            bypass_paths: vec![], mirror: None,
+            path_prefix: None, strip_prefix: None, add_prefix: None,
+            request_headers: None, response_headers: None,
+            geo_allowlist: vec![], geo_denylist: vec![],
+            timeout_secs: None, cache: None, backend_tls: None,
+        },
+    );
+
+    let hot = Arc::new(ArcSwap::from_pointee(HotState::new(Arc::new(routing))));
+    let metrics = Arc::new(volta_gateway::metrics::Metrics::new());
+    let plugins = Arc::new(volta_gateway::plugin::PluginManager::new());
+    ProxyService::new(volta, hot, metrics, plugins)
+}
+
+fn make_proxy_with_bypass(auth_addr: SocketAddr, backend_addr: SocketAddr, host: &str) -> ProxyService {
+    let auth_config = AuthConfig {
+        volta_url: format!("http://{}", auth_addr),
+        verify_path: "/auth/verify".into(),
+        timeout_ms: 2000,
+        pool_max_idle: 4,
+        jwt_secret: None,
+        cookie_name: None,
+    };
+    let volta = VoltaAuthClient::new(&auth_config);
+
+    let mut routing = RoutingTable::new();
+    routing.insert(
+        host.to_string(),
+        volta_gateway::proxy::RouteInfo {
+            weights: vec![], backends: vec![format!("http://{}", backend_addr)],
+            app_id: Some("bypass-app".into()),
+            public: false,
+            bypass_paths: vec![volta_gateway::config::BypassPath {
+                prefix: "/webhooks/".into(),
+                backend: None,
+            }],
+            mirror: None,
+            path_prefix: None, strip_prefix: None, add_prefix: None,
+            request_headers: None, response_headers: None,
+            geo_allowlist: vec![], geo_denylist: vec![],
+            timeout_secs: None, cache: None, backend_tls: None,
+        },
+    );
+
+    let hot = Arc::new(ArcSwap::from_pointee(HotState::new(Arc::new(routing))));
+    let metrics = Arc::new(volta_gateway::metrics::Metrics::new());
+    let plugins = Arc::new(volta_gateway::plugin::PluginManager::new());
+    ProxyService::new(volta, hot, metrics, plugins)
+}
+
+#[tokio::test]
+async fn proxy_public_route_skips_auth() {
+    let (backend_addr, _bh) = mock_server(|_req| {
+        Response::builder()
+            .status(200)
+            .body(full_body(Bytes::from(r#"{"public":true}"#)))
+            .unwrap()
+    }).await;
+
+    // Auth is unreachable — but public route should skip it
+    let proxy = make_proxy_public(backend_addr, "public.test.com");
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = listener.local_addr().unwrap();
+
+    let proxy_clone = proxy.clone();
+    let server = tokio::spawn(async move {
+        let (stream, remote_addr) = listener.accept().await.unwrap();
+        let service = service_fn(move |req: Request<Incoming>| {
+            let proxy = proxy_clone.clone();
+            let addr = remote_addr;
+            async move { Ok::<_, hyper::Error>(proxy.handle(req, addr).await) }
+        });
+        let _ = auto::Builder::new(TokioExecutor::new())
+            .serve_connection(TokioIo::new(stream), service)
+            .await;
+    });
+
+    let client: hyper_util::client::legacy::Client<_, Empty<Bytes>> =
+        hyper_util::client::legacy::Client::builder(TokioExecutor::new()).build_http();
+
+    let req = Request::builder()
+        .uri(format!("http://{}/api/data", proxy_addr))
+        .header("host", "public.test.com")
+        .body(Empty::new())
+        .unwrap();
+
+    let resp = client.request(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body, r#"{"public":true}"#);
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn proxy_unknown_host_returns_error() {
+    let (backend_addr, _bh) = mock_server(|_req| {
+        Response::builder().status(200).body(empty_body()).unwrap()
+    }).await;
+
+    let (auth_addr, _ah) = mock_server(|_req| {
+        Response::builder().status(200).body(empty_body()).unwrap()
+    }).await;
+
+    // Proxy is configured for "known.test.com" only
+    let proxy = make_proxy(auth_addr, backend_addr, "known.test.com");
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = listener.local_addr().unwrap();
+
+    let proxy_clone = proxy.clone();
+    let server = tokio::spawn(async move {
+        let (stream, remote_addr) = listener.accept().await.unwrap();
+        let service = service_fn(move |req: Request<Incoming>| {
+            let proxy = proxy_clone.clone();
+            let addr = remote_addr;
+            async move { Ok::<_, hyper::Error>(proxy.handle(req, addr).await) }
+        });
+        let _ = auto::Builder::new(TokioExecutor::new())
+            .serve_connection(TokioIo::new(stream), service)
+            .await;
+    });
+
+    let client: hyper_util::client::legacy::Client<_, Empty<Bytes>> =
+        hyper_util::client::legacy::Client::builder(TokioExecutor::new()).build_http();
+
+    // Request with unknown host
+    let req = Request::builder()
+        .uri(format!("http://{}/api/test", proxy_addr))
+        .header("host", "unknown.test.com")
+        .body(Empty::new())
+        .unwrap();
+
+    let resp = client.request(req).await.unwrap();
+    // Unknown host should return 400 or 502 (depends on SM error handling)
+    assert!(resp.status().is_client_error() || resp.status().is_server_error());
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn proxy_auth_bypass_path() {
+    let (backend_addr, _bh) = mock_server(|_req| {
+        Response::builder()
+            .status(200)
+            .body(full_body(Bytes::from(r#"{"webhook":"received"}"#)))
+            .unwrap()
+    }).await;
+
+    // Auth denies everything — but bypass path should skip auth
+    let (auth_addr, _ah) = mock_server(|_req| {
+        Response::builder().status(403).body(empty_body()).unwrap()
+    }).await;
+
+    let proxy = make_proxy_with_bypass(auth_addr, backend_addr, "app.test.com");
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = listener.local_addr().unwrap();
+
+    let proxy_clone = proxy.clone();
+    let server = tokio::spawn(async move {
+        let (stream, remote_addr) = listener.accept().await.unwrap();
+        let service = service_fn(move |req: Request<Incoming>| {
+            let proxy = proxy_clone.clone();
+            let addr = remote_addr;
+            async move { Ok::<_, hyper::Error>(proxy.handle(req, addr).await) }
+        });
+        let _ = auto::Builder::new(TokioExecutor::new())
+            .serve_connection(TokioIo::new(stream), service)
+            .await;
+    });
+
+    let client: hyper_util::client::legacy::Client<_, Empty<Bytes>> =
+        hyper_util::client::legacy::Client::builder(TokioExecutor::new()).build_http();
+
+    // Request to bypass path — should reach backend despite auth denying
+    let req = Request::builder()
+        .uri(format!("http://{}/webhooks/stripe", proxy_addr))
+        .header("host", "app.test.com")
+        .body(Empty::new())
+        .unwrap();
+
+    let resp = client.request(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body, r#"{"webhook":"received"}"#);
+
+    server.abort();
+}
