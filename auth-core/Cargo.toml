@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 description = "Auth core library — session verification, JWT, policy engine, OIDC/MFA/Passkey flows"
 
+[features]
+default = []
+postgres = ["sqlx"]
+webauthn = ["webauthn-rs"]
+
 [dependencies]
 # JWT
 jsonwebtoken = "9"
@@ -41,3 +46,13 @@ url = "2"
 
 # Logging
 tracing = "0.1"
+
+# Database (optional — enable with `features = ["postgres"]`)
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono"], optional = true }
+
+# WebAuthn/Passkey (optional — enable with `features = ["webauthn"]`)
+webauthn-rs = { version = "0.6.0-dev", features = ["danger-allow-state-serialisation"], optional = true }
+
+[dev-dependencies]
+testcontainers = "0.23"
+testcontainers-modules = { version = "0.11", features = ["postgres"] }

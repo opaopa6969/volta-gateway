@@ -3,7 +3,7 @@
 //! This replaces the HTTP call to volta-auth-proxy /auth/verify for
 //! session cookie validation (read path).
 
-use jsonwebtoken::{decode, DecodingKey, Validation, Algorithm};
+use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation, Algorithm};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -138,5 +138,55 @@ impl JwtVerifier {
     pub fn verify_to_headers(&self, token: &str) -> Result<HashMap<String, String>, JwtError> {
         let claims = self.verify(token)?;
         Ok(claims.to_volta_headers())
+    }
+}
+
+/// JWT issuer — creates signed session JWTs.
+#[derive(Clone)]
+pub struct JwtIssuer {
+    encoding_key: EncodingKey,
+    algorithm: Algorithm,
+    ttl_secs: u64,
+}
+
+impl JwtIssuer {
+    /// Create an issuer with HMAC-SHA256 secret.
+    pub fn new_hs256(secret: &[u8], ttl_secs: u64) -> Self {
+        Self {
+            encoding_key: EncodingKey::from_secret(secret),
+            algorithm: Algorithm::HS256,
+            ttl_secs,
+        }
+    }
+
+    /// Create an issuer with RSA private key (PEM).
+    pub fn new_rsa(pem: &[u8], ttl_secs: u64) -> Result<Self, String> {
+        let key = EncodingKey::from_rsa_pem(pem)
+            .map_err(|e| format!("invalid RSA PEM: {}", e))?;
+        Ok(Self {
+            encoding_key: key,
+            algorithm: Algorithm::RS256,
+            ttl_secs,
+        })
+    }
+
+    pub fn ttl_secs(&self) -> u64 {
+        self.ttl_secs
+    }
+
+    /// Issue a signed JWT from claims. Sets `iat` and `exp` automatically.
+    pub fn issue(&self, claims: &VoltaClaims) -> Result<String, JwtError> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let mut c = claims.clone();
+        c.iat = Some(now);
+        c.exp = Some(now + self.ttl_secs);
+
+        let header = Header::new(self.algorithm);
+        encode(&header, &c, &self.encoding_key)
+            .map_err(|e| JwtError::InvalidToken(format!("encoding failed: {}", e)))
     }
 }

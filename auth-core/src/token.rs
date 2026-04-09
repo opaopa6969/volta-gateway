@@ -73,20 +73,23 @@ impl StateProcessor<TokenState> for TokenValidator {
 
     fn process(&self, ctx: &mut FlowContext) -> Result<(), FlowError> {
         let req = ctx.get::<TokenRequest>()?;
-        // Validation: refresh_token must not be empty
         if req.refresh_token.is_empty() {
             return Err(FlowError::new("DENIED", "empty refresh token"));
         }
         if req.session_id.is_empty() {
             return Err(FlowError::new("DENIED", "empty session_id"));
         }
-        // Placeholder validation — real implementation checks session store
-        ctx.put(TokenValidation {
-            user_id: String::new(), // filled by external data
-            tenant_id: String::new(),
-            roles: vec![],
-            valid: true,
-        });
+        // TokenValidation is provided externally by AuthService
+        // after verifying the session in the store.
+        // If not present yet, put a placeholder for the Validated state.
+        if ctx.find::<TokenValidation>().is_none() {
+            ctx.put(TokenValidation {
+                user_id: String::new(),
+                tenant_id: String::new(),
+                roles: vec![],
+                valid: true,
+            });
+        }
         Ok(())
     }
 }
@@ -103,12 +106,15 @@ impl StateProcessor<TokenState> for TokenIssuer {
         if !validation.valid {
             return Err(FlowError::new("DENIED", "invalid token"));
         }
-        // Placeholder — real implementation uses JwtVerifier to issue
-        ctx.put(NewTokens {
-            jwt: String::new(),
-            refresh_token: String::new(),
-            expires_at: 0,
-        });
+        // NewTokens is provided externally by AuthService after issuing JWT.
+        // If not present yet, put a placeholder for the Issued state.
+        if ctx.find::<NewTokens>().is_none() {
+            ctx.put(NewTokens {
+                jwt: String::new(),
+                refresh_token: String::new(),
+                expires_at: 0,
+            });
+        }
         Ok(())
     }
 }

@@ -104,12 +104,19 @@ impl StateProcessor<OidcState> for TokenExchangeProcessor {
     fn process(&self, ctx: &mut FlowContext) -> Result<(), FlowError> {
         let cb = ctx.get::<OidcCallbackData>()?;
         if cb.code.is_empty() { return Err(FlowError::new("CALLBACK", "code required")); }
-        // Placeholder — real impl exchanges code for tokens via IdP
-        ctx.put(OidcTokenData {
-            access_token: format!("at-{}", cb.code),
-            id_token: None,
-            refresh_token: None,
-        });
+        // If AuthService pre-filled real token data, validate it.
+        // Otherwise produce placeholder (for unit tests / standalone SM runs).
+        if let Some(token) = ctx.find::<OidcTokenData>() {
+            if token.access_token.is_empty() {
+                return Err(FlowError::new("TOKEN_EXCHANGE", "access_token is empty"));
+            }
+        } else {
+            ctx.put(OidcTokenData {
+                access_token: format!("at-{}", cb.code),
+                id_token: None,
+                refresh_token: None,
+            });
+        }
         Ok(())
     }
 }
@@ -121,11 +128,21 @@ impl StateProcessor<OidcState> for UserResolveProcessor {
     fn produces(&self) -> Vec<TypeId> { data_types!(OidcUserData) }
     fn process(&self, ctx: &mut FlowContext) -> Result<(), FlowError> {
         let _token = ctx.get::<OidcTokenData>()?;
-        // Placeholder — real impl fetches userinfo from IdP
-        ctx.put(OidcUserData {
-            user_id: String::new(), email: String::new(), display_name: String::new(),
-            tenant_id: String::new(), roles: vec![], is_new_user: false,
-        });
+        // If AuthService pre-filled real user data, validate it.
+        // Otherwise produce placeholder (for unit tests / standalone SM runs).
+        if let Some(user) = ctx.find::<OidcUserData>() {
+            if user.email.is_empty() {
+                return Err(FlowError::new("USER_RESOLVE", "email is required"));
+            }
+            if user.user_id.is_empty() {
+                return Err(FlowError::new("USER_RESOLVE", "user_id is required"));
+            }
+        } else {
+            ctx.put(OidcUserData {
+                user_id: String::new(), email: String::new(), display_name: String::new(),
+                tenant_id: String::new(), roles: vec![], is_new_user: false,
+            });
+        }
         Ok(())
     }
 }
