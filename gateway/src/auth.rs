@@ -39,6 +39,8 @@ pub struct VoltaAuthClient {
     /// #33: Short-lived auth cache (cookie hash → result). TTL = 5s.
     auth_cache: Arc<Mutex<HashMap<u64, AuthCacheEntry>>>,
     cache_ttl: Duration,
+    /// DD-005 Phase 0: In-process JWT session verifier (optional).
+    session_verifier: Option<volta_auth_core::session::SessionVerifier>,
 }
 
 impl VoltaAuthClient {
@@ -47,6 +49,14 @@ impl VoltaAuthClient {
             .pool_max_idle_per_host(config.pool_max_idle)
             .build_http();
 
+        // DD-005 Phase 0: Build in-process JWT verifier if secret is configured
+        let session_verifier = config.jwt_secret.as_ref().map(|secret| {
+            let jwt = volta_auth_core::jwt::JwtVerifier::new_hs256(secret.as_bytes());
+            let cookie_name = config.cookie_name.as_deref().unwrap_or("__volta_session");
+            tracing::info!("in-process JWT verify enabled (cookie: {})", cookie_name);
+            volta_auth_core::session::SessionVerifier::new(jwt, cookie_name)
+        });
+
         Self {
             client,
             base_url: config.volta_url.clone(),
@@ -54,6 +64,7 @@ impl VoltaAuthClient {
             timeout: Duration::from_millis(config.timeout_ms),
             auth_cache: Arc::new(Mutex::new(HashMap::new())),
             cache_ttl: Duration::from_secs(5),
+            session_verifier,
         }
     }
 
@@ -67,6 +78,27 @@ impl VoltaAuthClient {
         cookie: Option<&str>,
         app_id: Option<&str>,
     ) -> AuthResult {
+        // DD-005 Phase 0: In-process JWT verify (skip HTTP roundtrip)
+        if let Some(ref verifier) = self.session_verifier {
+            use volta_auth_core::session::SessionResult;
+            match verifier.verify_cookie(cookie) {
+                SessionResult::Valid(headers) => {
+                    tracing::trace!(host = %host, "auth: in-process JWT verify OK");
+                    return AuthResult::Authenticated(headers);
+                }
+                SessionResult::Expired => {
+                    return AuthResult::Redirect("/login".into());
+                }
+                SessionResult::Invalid(e) => {
+                    tracing::debug!(host = %host, error = %e, "auth: JWT invalid, falling back to HTTP");
+                    // Fall through to HTTP verify — token may be in a format auth-core doesn't handle
+                }
+                SessionResult::NoSession => {
+                    // No session cookie — fall through to HTTP verify (may redirect to login)
+                }
+            }
+        }
+
         // #33: Auth cache lookup
         let cache_key = {
             use std::collections::hash_map::DefaultHasher;

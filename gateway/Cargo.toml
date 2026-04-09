@@ -55,6 +55,9 @@ async-trait = "0.1"
 # JSON (for config sources)
 serde_json = "1"
 
+# Auth core (in-process JWT verify)
+volta-auth-core = { path = "../auth-core" }
+
 # Utilities
 uuid = { version = "1", features = ["v4"] }
 

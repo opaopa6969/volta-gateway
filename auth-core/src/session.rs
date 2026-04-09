@@ -20,6 +20,7 @@ pub enum SessionResult {
 }
 
 /// Session verifier — extracts volta session cookie and verifies JWT.
+#[derive(Clone)]
 pub struct SessionVerifier {
     jwt: JwtVerifier,
     cookie_name: String,

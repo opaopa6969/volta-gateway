@@ -118,6 +118,13 @@ pub struct AuthConfig {
     pub timeout_ms: u64,
     #[serde(default = "default_pool_max_idle")]
     pub pool_max_idle: usize,
+    /// JWT secret for in-process session verification (DD-005 Phase 0).
+    /// If set, gateway verifies session JWT locally before falling back to HTTP.
+    #[serde(default)]
+    pub jwt_secret: Option<String>,
+    /// Session cookie name (default: __volta_session).
+    #[serde(default = "default_cookie_name")]
+    pub cookie_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -384,6 +391,7 @@ fn default_volta_url() -> String { "http://localhost:7070".into() }
 fn default_verify_path() -> String { "/auth/verify".into() }
 fn default_auth_timeout() -> u64 { 500 }
 fn default_pool_max_idle() -> usize { 32 }
+fn default_cookie_name() -> Option<String> { Some("__volta_session".into()) }
 fn default_rps() -> u32 { 1000 }
 fn default_per_ip_rps() -> u32 { 100 }
 fn default_pool_idle() -> usize { 64 }

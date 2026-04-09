@@ -69,6 +69,8 @@ fn make_proxy(auth_addr: SocketAddr, backend_addr: SocketAddr, host: &str) -> Pr
         verify_path: "/auth/verify".into(),
         timeout_ms: 2000,
         pool_max_idle: 4,
+        jwt_secret: None,
+        cookie_name: None,
     };
     let volta = VoltaAuthClient::new(&auth_config);
 
@@ -99,6 +101,8 @@ fn make_proxy_with_cors(auth_addr: SocketAddr, backend_addr: SocketAddr, host: &
         verify_path: "/auth/verify".into(),
         timeout_ms: 2000,
         pool_max_idle: 4,
+        jwt_secret: None,
+        cookie_name: None,
     };
     let volta = VoltaAuthClient::new(&auth_config);
 

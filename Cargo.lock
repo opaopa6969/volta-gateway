@@ -2285,6 +2285,7 @@ dependencies = [
  "tramli",
  "tramli-plugins",
  "uuid",
+ "volta-auth-core",
 ]
 
 [[package]]
