@@ -193,8 +193,9 @@ pub fn build_proxy_flow_with_allowlist(
     let def = Arc::new(
         Builder::new("proxy")
             .ttl(Duration::from_secs(30))
+            .strict_mode()  // tramli 3.6: definition-level strict (replaces engine-level)
             .initially_available(requires!(RequestData))
-            .externally_provided(data_types!(AuthData, BackendResponse))  // tramli 3.4: declare external data
+            .externally_provided(data_types!(AuthData, BackendResponse))
 
             .from(Received).auto(Validated, RequestValidator { routing: routing.clone(), ip_allowlists })
             .from(Validated).auto(Routed, RoutingResolver { routing })

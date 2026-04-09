@@ -17,8 +17,8 @@ ring = "0.17"
 chrono = { version = "0.4", features = ["serde"] }
 
 # State machine (for future OIDC/MFA flows)
-tramli = "3.5"
-tramli-plugins = "3.5"
+tramli = "3.6"
+tramli-plugins = "3.6"
 
 # Logging
 tracing = "0.1"

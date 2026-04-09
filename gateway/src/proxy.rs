@@ -565,8 +565,8 @@ impl ProxyService {
 
         // ─── SM Phase 1: start_flow (sync) ──────────────────
         // RECEIVED → VALIDATED → ROUTED (auto-chain, stops at External)
-        // tramli 3.5: strict_mode + ObservabilityPlugin (chain mode) for telemetry
-        let mut eng = FlowEngine::with_strict_mode(InMemoryFlowStore::new());
+        // tramli 3.6: strict_mode is now in FlowDefinition (Builder::strict_mode())
+        let mut eng = FlowEngine::new(InMemoryFlowStore::new());
         let sink = Arc::new(TracingTelemetrySink::new(&request_id));
         let obs = ObservabilityPlugin::new(sink);
         obs.install_with_options(&mut eng, true);  // append=true: chain with any existing loggers
