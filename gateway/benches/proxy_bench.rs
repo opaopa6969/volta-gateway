@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tramli::{FlowEngine, InMemoryFlowStore, CloneAny};
+use tramli_plugins::observability::{ObservabilityPlugin, NoopTelemetrySink};
 use volta_gateway::flow::{self, RequestData};
 use volta_gateway::proxy::RoutingTable;
 
@@ -99,6 +100,52 @@ fn bench_sm_full_lifecycle(c: &mut Criterion) {
     });
 }
 
+fn bench_sm_with_noop_sink(c: &mut Criterion) {
+    let routing = test_routing();
+    let flow_def = flow::build_proxy_flow(routing);
+
+    c.bench_function("sm_full_lifecycle_noop_sink", |b| {
+        b.iter(|| {
+            let mut engine = FlowEngine::new(InMemoryFlowStore::new());
+            // NoopTelemetrySink: zero overhead baseline
+            let sink = std::sync::Arc::new(tramli_plugins::observability::NoopTelemetrySink);
+            let obs = tramli_plugins::observability::ObservabilityPlugin::new(sink);
+            obs.install(&mut engine);
+
+            let req = RequestData {
+                host: "app.example.com".into(),
+                path: "/api/v1/users".into(),
+                method: "GET".into(),
+                header_size: 512,
+                content_length: None,
+                client_ip: Some("127.0.0.1".parse().unwrap()),
+            };
+            let data: Vec<(TypeId, Box<dyn CloneAny>)> = vec![
+                (TypeId::of::<RequestData>(), Box::new(req)),
+            ];
+            let flow_id = engine.start_flow(flow_def.clone(), "bench-req", data).unwrap();
+
+            use volta_gateway::flow::AuthData;
+            let auth_data: Vec<(TypeId, Box<dyn CloneAny>)> = vec![
+                (TypeId::of::<AuthData>(), Box::new(AuthData {
+                    volta_headers: {
+                        let mut h = HashMap::new();
+                        h.insert("x-volta-user-id".into(), "bench-user".into());
+                        h
+                    },
+                })),
+            ];
+            engine.resume_and_execute(&flow_id, auth_data).unwrap();
+
+            use volta_gateway::flow::BackendResponse;
+            let resp_data: Vec<(TypeId, Box<dyn CloneAny>)> = vec![
+                (TypeId::of::<BackendResponse>(), Box::new(BackendResponse { status: 200 })),
+            ];
+            engine.resume_and_execute(&flow_id, resp_data).unwrap();
+        })
+    });
+}
+
 fn bench_routing_lookup(c: &mut Criterion) {
     let routing = test_routing();
 
@@ -128,5 +175,31 @@ fn bench_compression_check(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_sm_start_flow, bench_sm_full_lifecycle, bench_routing_lookup, bench_compression_check);
+// tramli 3.6.1: NoopTelemetrySink for measuring pure SM overhead vs observability overhead
+fn bench_sm_with_noop_telemetry(c: &mut Criterion) {
+    let routing = test_routing();
+    let flow_def = flow::build_proxy_flow(routing);
+
+    c.bench_function("sm_start_flow_with_noop_telemetry", |b| {
+        b.iter(|| {
+            let mut engine = FlowEngine::new(InMemoryFlowStore::new());
+            let obs = ObservabilityPlugin::new(Arc::new(NoopTelemetrySink));
+            obs.install(&mut engine);
+            let req = RequestData {
+                host: "app.example.com".into(),
+                path: "/api/v1/users".into(),
+                method: "GET".into(),
+                header_size: 512,
+                content_length: None,
+                client_ip: Some("127.0.0.1".parse().unwrap()),
+            };
+            let data: Vec<(TypeId, Box<dyn CloneAny>)> = vec![
+                (TypeId::of::<RequestData>(), Box::new(req)),
+            ];
+            engine.start_flow(flow_def.clone(), "bench-req", data).unwrap();
+        })
+    });
+}
+
+criterion_group!(benches, bench_sm_start_flow, bench_sm_full_lifecycle, bench_sm_with_noop_telemetry, bench_routing_lookup, bench_compression_check);
 criterion_main!(benches);
