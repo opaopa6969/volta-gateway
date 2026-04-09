@@ -7,5 +7,6 @@ description = "Unified volta binary — gateway + auth (in-process)"
 [dependencies]
 volta-gateway = { path = "../gateway" }
 volta-auth-core = { path = "../auth-core" }
+tramli = "3.6"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
