@@ -194,6 +194,7 @@ pub fn build_proxy_flow_with_allowlist(
         Builder::new("proxy")
             .ttl(Duration::from_secs(30))
             .initially_available(requires!(RequestData))
+            .externally_provided(data_types!(AuthData, BackendResponse))  // tramli 3.4: declare external data
 
             .from(Received).auto(Validated, RequestValidator { routing: routing.clone(), ip_allowlists })
             .from(Validated).auto(Routed, RoutingResolver { routing })
