@@ -11,10 +11,45 @@ use std::time::Instant;
 use tracing::{info, warn};
 
 use tramli::{FlowDefinition, FlowEngine, InMemoryFlowStore, CloneAny};
+use tramli_plugins::observability::{ObservabilityPlugin, TelemetrySink, TelemetryEvent, InMemoryTelemetrySink};
 
 use crate::auth::{AuthResult, VoltaAuthClient};
 use crate::flow::{self, AuthData, BackendResponse, RequestData, RouteTarget};
 use crate::state::ProxyState;
+
+/// Tracing-based telemetry sink for tramli observability plugin.
+struct TracingTelemetrySink {
+    request_id: String,
+}
+
+impl TracingTelemetrySink {
+    fn new(request_id: &str) -> Self {
+        Self { request_id: request_id.to_string() }
+    }
+}
+
+impl TelemetrySink for TracingTelemetrySink {
+    fn emit(&self, event: TelemetryEvent) {
+        match event.event_type {
+            tramli_plugins::observability::TelemetryType::Transition => {
+                tracing::trace!(request_id = %self.request_id, "SM transition: {}", event.data);
+            }
+            tramli_plugins::observability::TelemetryType::Error => {
+                tracing::warn!(request_id = %self.request_id, "SM error: {}", event.data);
+            }
+            tramli_plugins::observability::TelemetryType::Guard => {
+                tracing::trace!(request_id = %self.request_id, "SM guard: {}", event.data);
+            }
+            tramli_plugins::observability::TelemetryType::State => {
+                tracing::trace!(request_id = %self.request_id, "SM state: {}", event.data);
+            }
+        }
+    }
+
+    fn events(&self) -> Vec<TelemetryEvent> {
+        vec![] // tracing handles persistence, no need to buffer
+    }
+}
 
 /// Route info for a host.
 #[derive(Debug, Clone)]
@@ -510,21 +545,11 @@ impl ProxyService {
 
         // ─── SM Phase 1: start_flow (sync) ──────────────────
         // RECEIVED → VALIDATED → ROUTED (auto-chain, stops at External)
-        // tramli 3.2: strict_mode + transition logger for observability
-        // tramli 3.2: strict_mode + transition logger for observability
+        // tramli 3.3: strict_mode + ObservabilityPlugin for telemetry
         let mut eng = FlowEngine::with_strict_mode(InMemoryFlowStore::new());
-        let req_id_for_log = request_id.clone();
-        eng.set_transition_logger(move |entry| {
-            tracing::trace!(
-                request_id = %req_id_for_log,
-                flow = %entry.flow_name,
-                from = %entry.from,
-                to = %entry.to,
-                trigger = %entry.trigger,
-                duration_us = entry.duration_micros,
-                "SM transition"
-            );
-        });
+        let sink = Arc::new(TracingTelemetrySink::new(&request_id));
+        let obs = ObservabilityPlugin::new(sink);
+        obs.install(&mut eng);
         let engine = Mutex::new(eng);
         let flow_id = {
             let mut eng = engine.lock().unwrap();
