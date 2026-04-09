@@ -201,5 +201,5 @@ fn bench_sm_with_noop_telemetry(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_sm_start_flow, bench_sm_full_lifecycle, bench_sm_with_noop_telemetry, bench_routing_lookup, bench_compression_check);
+criterion_group!(benches, bench_sm_start_flow, bench_sm_full_lifecycle, bench_sm_with_noop_sink, bench_routing_lookup, bench_compression_check);
 criterion_main!(benches);
