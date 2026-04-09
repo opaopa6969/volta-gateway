@@ -1,3 +1,3 @@
 [workspace]
-members = ["gateway", "auth-core", "volta-bin", "tools/traefik-to-volta"]
+members = ["gateway", "auth-core", "auth-server", "volta-bin", "tools/traefik-to-volta"]
 resolver = "2"
