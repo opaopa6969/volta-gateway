@@ -27,8 +27,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 
 # State machine
-tramli = "3.2"
-tramli-plugins = "3.2"
+tramli = "3.3"
+tramli-plugins = "3.3"
 
 # IP allowlist (CIDR parsing)
 ipnet = "2"

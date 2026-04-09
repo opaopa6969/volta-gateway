@@ -521,6 +521,7 @@ impl ProxyService {
                 from = %entry.from,
                 to = %entry.to,
                 trigger = %entry.trigger,
+                duration_us = entry.duration_micros,
                 "SM transition"
             );
         });
