@@ -193,18 +193,29 @@ pub mod builtin {
             }
         }
 
+        const MAX_CACHE_ENTRIES: usize = 10_000;
+
         fn get_cached(&self, user_id: &str) -> Option<MonetizerBilling> {
-            let cache = self.cache.lock().unwrap();
+            let mut cache = self.cache.lock().unwrap();
             if let Some((billing, ts)) = cache.get(user_id) {
                 if ts.elapsed() < std::time::Duration::from_secs(self.cache_ttl_secs) {
                     return Some(billing.clone());
                 }
+                // 期限切れエントリを即削除
+                let key = user_id.to_string();
+                drop(cache);
+                self.cache.lock().unwrap().remove(&key);
+                return None;
             }
             None
         }
 
         fn set_cached(&self, user_id: &str, billing: MonetizerBilling) {
             let mut cache = self.cache.lock().unwrap();
+            // 安全弁: 上限超過で全クリア (TTL 5秒で自然に再構築)
+            if cache.len() >= Self::MAX_CACHE_ENTRIES {
+                cache.clear();
+            }
             cache.insert(user_id.to_string(), (billing, std::time::Instant::now()));
         }
 
