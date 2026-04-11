@@ -164,7 +164,8 @@ impl VoltaAuthClient {
                             .and_then(|v| v.to_str().ok())
                             .unwrap_or("/login")
                             .to_string();
-                        AuthResult::Redirect(location)
+                        // #51: Validate redirect destination (open redirect prevention)
+                        AuthResult::Redirect(sanitize_redirect(&location))
                     }
                     302 => {
                         let location = resp
@@ -173,7 +174,7 @@ impl VoltaAuthClient {
                             .and_then(|v| v.to_str().ok())
                             .unwrap_or("/login")
                             .to_string();
-                        AuthResult::Redirect(location)
+                        AuthResult::Redirect(sanitize_redirect(&location))
                     }
                     403 => AuthResult::Denied,
                     _ => AuthResult::Error(format!("volta returned {status}")),
@@ -217,4 +218,15 @@ impl VoltaAuthClient {
             Err(_) => false,
         }
     }
+}
+
+/// #51: Sanitize redirect URL — only allow relative paths or same-origin.
+/// Prevents open redirect attacks via compromised auth-proxy responses.
+fn sanitize_redirect(url: &str) -> String {
+    // Relative paths are always safe
+    if url.starts_with('/') && !url.starts_with("//") {
+        return url.to_string();
+    }
+    // Reject anything that doesn't start with / (absolute URLs to external sites)
+    "/login".to_string()
 }

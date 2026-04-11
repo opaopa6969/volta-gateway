@@ -493,6 +493,7 @@ impl ProxyService {
         if is_upgrade {
             return crate::websocket::handle_websocket(
                 req, remote_addr, &self.volta, &hot.routing, &self.backend_selector, &self.retry_client,
+                &hot.trusted_proxies,
             ).await;
         }
 
@@ -777,16 +778,30 @@ impl ProxyService {
             .and_then(|r| r.request_headers.as_ref())
             .map(|rh| rh.remove.iter().map(|s| s.to_lowercase()).collect())
             .unwrap_or_default();
+        // #48: Strip client X-Volta-* (forgery prevention) + #53: hop-by-hop headers
+        const HOP_BY_HOP: &[&str] = &[
+            "connection", "keep-alive", "proxy-authenticate",
+            "proxy-authorization", "te", "trailer", "transfer-encoding",
+        ];
         let req_headers: Vec<_> = req.headers().iter()
             .filter(|(name, _)| *name != "host")
+            .filter(|(name, _)| !name.as_str().starts_with("x-volta-"))
+            .filter(|(name, _)| !HOP_BY_HOP.contains(&name.as_str()))
             .filter(|(name, _)| !remove_headers.contains(&name.as_str().to_string()))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
-        let client_ip = remote_addr.ip().to_string();
-        let xff = match req.headers().get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
-            Some(existing) => format!("{}, {}", existing, client_ip),
-            None => client_ip,
+        // #49: Only preserve client XFF if from trusted proxy
+        let client_ip = real_client_ip.to_string();
+        let is_from_trusted = !hot.trusted_proxies.is_empty()
+            && hot.trusted_proxies.iter().any(|net| net.contains(&remote_addr.ip()));
+        let xff = if is_from_trusted {
+            match req.headers().get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+                Some(existing) => format!("{}, {}", existing, client_ip),
+                None => client_ip,
+            }
+        } else {
+            client_ip // ignore client-supplied XFF
         };
 
         let is_idempotent = matches!(req_method.as_str(), "GET" | "HEAD" | "OPTIONS");
@@ -1001,7 +1016,11 @@ impl ProxyService {
                     .header("X-Request-Id", &request_id);
                 for (name, value) in &req_headers {
                     // GW-61: Don't leak X-Volta-* to mirror backend
-                    if !name.as_str().starts_with("x-volta-") {
+                    // #54: Don't leak Cookie/Authorization to mirror
+                    let key = name.as_str();
+                    if !key.starts_with("x-volta-")
+                        && key != "cookie"
+                        && key != "authorization" {
                         mirror_req = mirror_req.header(name, value);
                     }
                 }

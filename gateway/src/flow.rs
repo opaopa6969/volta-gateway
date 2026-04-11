@@ -70,9 +70,14 @@ impl StateProcessor<ProxyState> for RequestValidator {
         if req.host.is_empty() {
             return Err(FlowError::new("BAD_REQUEST", "Missing Host header"));
         }
-        // #24: Only reject path traversal (..), not double-slash (//)
+        // #24 + #52: Reject path traversal (literal and URL-encoded)
         if req.path.contains("..") {
             return Err(FlowError::new("BAD_REQUEST", "Invalid path"));
+        }
+        // #52: Check URL-decoded variants (%2e%2e, %252e%252e)
+        let decoded = urlencoding_decode(&req.path);
+        if decoded.contains("..") {
+            return Err(FlowError::new("BAD_REQUEST", "Invalid path (encoded traversal)"));
         }
 
         let known = self.routing.contains_key(&req.host) || {
@@ -240,4 +245,40 @@ pub fn generate_docs(def: &FlowDefinition<ProxyState>) -> String {
 #[allow(dead_code)]
 pub fn generate_test_plan(def: &FlowDefinition<ProxyState>) -> tramli_plugins::testing::FlowTestPlan {
     tramli_plugins::testing::ScenarioTestPlugin::generate(def)
+}
+
+/// #52: Decode percent-encoded path (handles %2e → . , %252e → %2e → . double-encoding)
+fn urlencoding_decode(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (
+                hex_val(bytes[i + 1]),
+                hex_val(bytes[i + 2]),
+            ) {
+                result.push((hi << 4 | lo) as char);
+                i += 3;
+                continue;
+            }
+        }
+        result.push(bytes[i] as char);
+        i += 1;
+    }
+    // Second pass for double-encoding (%252e → %2e → .)
+    if result.contains('%') && result != input {
+        let second = urlencoding_decode(&result);
+        if second != result { return second; }
+    }
+    result
+}
+
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }

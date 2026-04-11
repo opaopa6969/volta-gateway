@@ -31,6 +31,7 @@ pub async fn handle_websocket(
     routing: &Arc<RoutingTable>,
     backend_selector: &BackendSelector,
     ws_client: &Client<hyper_util::client::legacy::connect::HttpConnector, Empty<Bytes>>,
+    trusted_proxies: &[ipnet::IpNet],
 ) -> Response<BoxBody<Bytes, hyper::Error>> {
     let request_id = uuid::Uuid::new_v4().to_string();
 
@@ -111,11 +112,25 @@ pub async fn handle_websocket(
         .method("GET")
         .uri(backend_uri.parse::<Uri>().unwrap_or_default());
 
-    // Forward relevant headers
+    // #50: Resolve real client IP (same as proxy.rs PROD-4)
+    let real_client_ip = if !trusted_proxies.is_empty()
+        && trusted_proxies.iter().any(|net| net.contains(&remote_addr.ip()))
+    {
+        req.headers().get("cf-connecting-ip")
+            .or_else(|| req.headers().get("x-real-ip"))
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<std::net::IpAddr>().ok())
+            .unwrap_or(remote_addr.ip())
+    } else {
+        remote_addr.ip()
+    };
+
+    // Forward relevant headers (#48: strip X-Volta-* from client)
     for (name, value) in req.headers() {
         let key = name.as_str();
         match key {
-            "host" => {} // skip — backend gets its own host
+            "host" => {}
+            _ if key.starts_with("x-volta-") => {} // #48: strip client X-Volta-*
             "upgrade" | "connection" | "sec-websocket-key"
             | "sec-websocket-version" | "sec-websocket-protocol"
             | "sec-websocket-extensions" | "cookie" | "authorization" => {
@@ -129,7 +144,7 @@ pub async fn handle_websocket(
     }
     backend_req = backend_req
         .header("X-Request-Id", &request_id)
-        .header("X-Forwarded-For", remote_addr.ip().to_string())
+        .header("X-Forwarded-For", real_client_ip.to_string())
         .header("X-Forwarded-Host", &host)
         .header("X-Forwarded-Proto", "https");
 
