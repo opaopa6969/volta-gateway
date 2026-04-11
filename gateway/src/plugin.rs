@@ -150,6 +150,121 @@ pub mod builtin {
         fn on_response(&self, _ctx: &mut PluginContext) -> Result<(), String> { Ok(()) }
     }
 
+    /// Monetizer plugin — enriches requests with billing headers (X-Monetizer-*).
+    /// Calls monetizer service /verify endpoint, caches responses in-memory.
+    ///
+    /// Config:
+    ///   verify_url: "http://monetizer:3001/__monetizer/verify"
+    ///   config_id: monetizer config UUID for this tenant
+    ///   cache_ttl_secs: "5" (default)
+    ///   user_header: "x-volta-user-id" (default)
+    pub struct Monetizer {
+        pub verify_url: String,
+        pub config_id: String,
+        pub cache_ttl_secs: u64,
+        pub user_header: String,
+        cache: Arc<Mutex<HashMap<String, (MonetizerBilling, std::time::Instant)>>>,
+        http: reqwest::Client,
+    }
+
+    #[derive(Debug, Clone, serde::Deserialize)]
+    struct MonetizerBilling {
+        plan: String,
+        status: String,
+        features: String,
+        #[serde(rename = "showAds")]
+        show_ads: String,
+        #[serde(rename = "trialEnd")]
+        trial_end: String,
+    }
+
+    impl Monetizer {
+        pub fn new(verify_url: String, config_id: String, cache_ttl_secs: u64, user_header: String) -> Self {
+            Self {
+                verify_url,
+                config_id,
+                cache_ttl_secs,
+                user_header,
+                cache: Arc::new(Mutex::new(HashMap::new())),
+                http: reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(2))
+                    .build()
+                    .unwrap(),
+            }
+        }
+
+        fn get_cached(&self, user_id: &str) -> Option<MonetizerBilling> {
+            let cache = self.cache.lock().unwrap();
+            if let Some((billing, ts)) = cache.get(user_id) {
+                if ts.elapsed() < std::time::Duration::from_secs(self.cache_ttl_secs) {
+                    return Some(billing.clone());
+                }
+            }
+            None
+        }
+
+        fn set_cached(&self, user_id: &str, billing: MonetizerBilling) {
+            let mut cache = self.cache.lock().unwrap();
+            cache.insert(user_id.to_string(), (billing, std::time::Instant::now()));
+        }
+
+        fn fetch_billing(&self, user_id: &str) -> Result<MonetizerBilling, String> {
+            let url = format!("{}?user={}&config={}", self.verify_url, user_id, self.config_id);
+            let handle = tokio::runtime::Handle::current();
+            let http = self.http.clone();
+            tokio::task::block_in_place(|| {
+                handle.block_on(async {
+                    let resp = http.get(&url).send().await
+                        .map_err(|e| format!("monetizer verify request failed: {}", e))?;
+                    if !resp.status().is_success() {
+                        return Err(format!("monetizer verify returned {}", resp.status()));
+                    }
+                    resp.json::<MonetizerBilling>().await
+                        .map_err(|e| format!("monetizer verify parse failed: {}", e))
+                })
+            })
+        }
+    }
+
+    impl Plugin for Monetizer {
+        fn name(&self) -> &str { "monetizer" }
+
+        fn on_request(&self, ctx: &mut PluginContext) -> Result<(), String> {
+            let user_id = match ctx.headers.get(&self.user_header) {
+                Some(id) => id.clone(),
+                None => {
+                    // 認証なしユーザー → free プランのデフォルトヘッダー
+                    ctx.add_headers.insert("X-Monetizer-Plan".into(), "free".into());
+                    ctx.add_headers.insert("X-Monetizer-Status".into(), "none".into());
+                    ctx.add_headers.insert("X-Monetizer-Features".into(), "".into());
+                    ctx.add_headers.insert("X-Monetizer-Show-Ads".into(), "true".into());
+                    return Ok(());
+                }
+            };
+
+            let billing = match self.get_cached(&user_id) {
+                Some(b) => b,
+                None => {
+                    let b = self.fetch_billing(&user_id)?;
+                    self.set_cached(&user_id, b.clone());
+                    b
+                }
+            };
+
+            ctx.add_headers.insert("X-Monetizer-Plan".into(), billing.plan);
+            ctx.add_headers.insert("X-Monetizer-Status".into(), billing.status);
+            ctx.add_headers.insert("X-Monetizer-Features".into(), billing.features);
+            ctx.add_headers.insert("X-Monetizer-Show-Ads".into(), billing.show_ads);
+            if !billing.trial_end.is_empty() {
+                ctx.add_headers.insert("X-Monetizer-Trial-End".into(), billing.trial_end);
+            }
+
+            Ok(())
+        }
+
+        fn on_response(&self, _ctx: &mut PluginContext) -> Result<(), String> { Ok(()) }
+    }
+
     /// Request/response header injection plugin.
     pub struct HeaderInjector {
         pub request_headers: HashMap<String, String>,
@@ -218,6 +333,19 @@ impl PluginManager {
                         .cloned().unwrap_or_else(|| "x-volta-user-id".into());
                     mgr.register(config.clone(), Arc::new(builtin::RateLimitByUser::new(
                         max_req, window, header,
+                    )));
+                }
+                "monetizer" => {
+                    let verify_url = config.config.get("verify_url").cloned()
+                        .unwrap_or_else(|| "http://monetizer:3001/__monetizer/verify".into());
+                    let config_id = config.config.get("config_id").cloned()
+                        .unwrap_or_default();
+                    let cache_ttl: u64 = config.config.get("cache_ttl_secs")
+                        .and_then(|s| s.parse().ok()).unwrap_or(5);
+                    let user_header = config.config.get("user_header")
+                        .cloned().unwrap_or_else(|| "x-volta-user-id".into());
+                    mgr.register(config.clone(), Arc::new(builtin::Monetizer::new(
+                        verify_url, config_id, cache_ttl, user_header,
                     )));
                 }
                 "header-injector" => {
