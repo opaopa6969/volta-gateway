@@ -60,6 +60,18 @@ pub struct GatewayConfig {
     /// External config sources (services.json, Docker labels, HTTP polling).
     #[serde(default)]
     pub config_sources: Vec<crate::config_source::ConfigSourceEntry>,
+    /// #39: Access log configuration.
+    #[serde(default)]
+    pub access_log: Option<AccessLogConfig>,
+    /// #55: Tenancy configuration (Layer 2).
+    #[serde(default)]
+    pub tenancy: TenancyConfig,
+    /// #55: Access control defaults (Layer 3).
+    #[serde(default)]
+    pub access: AccessConfig,
+    /// #55: Binding configuration (Layer 4).
+    #[serde(default)]
+    pub binding: BindingConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -100,6 +112,84 @@ pub struct TlsConfig {
 }
 
 fn default_challenge() -> String { "http-01".into() }
+
+/// #39: Access log configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AccessLogConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// File path for access logs. None = stdout only.
+    pub path: Option<String>,
+    /// Log format: "json" (default) or "combined" (Apache-style).
+    #[serde(default = "default_access_format")]
+    pub format: String,
+}
+
+fn default_access_format() -> String { "json".into() }
+
+// ─── #55: Config Schema v3 ─────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct TenancyConfig {
+    #[serde(default = "default_tenancy_mode")]
+    pub mode: String,
+    #[serde(default = "default_creation_policy")]
+    pub creation_policy: String,
+    #[serde(default)]
+    pub shadow_org: bool,
+    #[serde(default = "default_max_orgs")]
+    pub max_orgs_per_user: u32,
+    #[serde(default = "default_org_display")]
+    pub org_display_name: String,
+    #[serde(default)]
+    pub routing: TenantRouting,
+}
+fn default_tenancy_mode() -> String { "single".into() }
+fn default_creation_policy() -> String { "disabled".into() }
+fn default_max_orgs() -> u32 { 1 }
+fn default_org_display() -> String { "Organization".into() }
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct TenantRouting {
+    #[serde(default = "default_routing_mode")]
+    pub mode: String,
+    pub base_domain: Option<String>,
+    #[serde(default = "default_slug_header")]
+    pub slug_header: String,
+    #[serde(default = "default_cookie_scope")]
+    pub cookie_scope: String,
+}
+fn default_routing_mode() -> String { "none".into() }
+fn default_slug_header() -> String { "X-Volta-Tenant-Slug".into() }
+fn default_cookie_scope() -> String { "shared".into() }
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct AccessConfig {
+    #[serde(default = "default_visibility")]
+    pub default_visibility: String,
+    #[serde(default)]
+    pub custom_roles: bool,
+    #[serde(default = "default_actions")]
+    pub available_actions: Vec<String>,
+}
+fn default_visibility() -> String { "all".into() }
+fn default_actions() -> Vec<String> {
+    ["view","open","deploy","terminal","config","admin","delete"].iter().map(|s| s.to_string()).collect()
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct BindingConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub datasource_types: Vec<String>,
+    #[serde(default = "default_on_delete")]
+    pub on_user_delete: String,
+    #[serde(default = "default_retention")]
+    pub retention_days: u32,
+}
+fn default_on_delete() -> String { "archive".into() }
+fn default_retention() -> u32 { 90 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]

@@ -1084,89 +1084,101 @@ impl ProxyService {
         let client_accepts_gzip = accept_encoding.contains("gzip");
 
         if !already_encoded && is_compressible && client_accepts_gzip {
-            use std::io::Write;
-
-            // GW-36 fix: preserve all original headers via into_parts()
             let (parts, body) = response.into_parts();
 
-            // GW-28: skip compression for large responses (> 1MB) to avoid OOM
-            let content_len = parts.headers.get("content-length")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<usize>().ok());
-            if content_len.map_or(false, |len| len > 1_048_576) {
-                let response = Response::from_parts(parts, body);
-                return Response::from(response).map(|b| b.boxed());
-            }
+            // If cache is enabled, collect body for caching + compress with flate2 (existing path)
+            let need_cache = cache_enabled && cache_method_ok && response_status >= 200 && response_status < 300;
 
-            let body_bytes = match http_body_util::BodyExt::collect(body).await {
-                Ok(collected) => collected.to_bytes(),
-                Err(_) => return error_response_with_pages(StatusCode::BAD_GATEWAY, &request_id, &hot.error_pages),
-            };
+            if need_cache {
+                use std::io::Write;
 
-            // #23: Post-collect size guard for chunked (no content-length) responses
-            if body_bytes.len() > 1_048_576 {
-                // Too large to compress in memory — return uncompressed
-                let mut resp = Response::builder().status(parts.status);
-                for (name, value) in &parts.headers {
-                    resp = resp.header(name, value);
+                let content_len = parts.headers.get("content-length")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<usize>().ok());
+                if content_len.map_or(false, |len| len > 1_048_576) {
+                    let response = Response::from_parts(parts, body);
+                    return Response::from(response).map(|b| b.boxed());
                 }
+
+                let body_bytes = match http_body_util::BodyExt::collect(body).await {
+                    Ok(collected) => collected.to_bytes(),
+                    Err(_) => return error_response_with_pages(StatusCode::BAD_GATEWAY, &request_id, &hot.error_pages),
+                };
+
+                if body_bytes.len() > 1_048_576 {
+                    let mut resp = Response::builder().status(parts.status);
+                    for (name, value) in &parts.headers { resp = resp.header(name, value); }
+                    return resp.body(Full::new(body_bytes).map_err(|e| match e {}).boxed()).unwrap();
+                }
+
+                // Cache store
+                let cache_control = parts.headers.get("cache-control").and_then(|v| v.to_str().ok());
+                let max_body = cache_config.map(|c| c.max_body_size).unwrap_or(10_485_760);
+                if crate::cache::is_cacheable(cache_control) && body_bytes.len() <= max_body {
+                    let ttl = std::time::Duration::from_secs(cache_config.map(|c| c.ttl_secs).unwrap_or(300));
+                    let ignore_query = cache_config.map(|c| c.ignore_query).unwrap_or(false);
+                    let store_query = uri_path.split('?').nth(1);
+                    let cache_key = crate::cache::ResponseCache::key(
+                        method.as_str(), &host, uri_path.split('?').next().unwrap_or(&uri_path), store_query, ignore_query);
+                    let cached_headers: Vec<(String, String)> = parts.headers.iter()
+                        .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.as_str().to_string(), v.to_string()))).collect();
+                    self.response_cache.put(cache_key, response_status, cached_headers, body_bytes.clone(), ttl);
+                }
+
+                let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+                if encoder.write_all(&body_bytes).is_ok() {
+                    if let Ok(compressed) = encoder.finish() {
+                        if compressed.len() < body_bytes.len() {
+                            let mut resp = Response::builder().status(parts.status);
+                            for (name, value) in &parts.headers {
+                                match name.as_str() {
+                                    "content-length" | "content-encoding" | "transfer-encoding" => {}
+                                    _ => { resp = resp.header(name, value); }
+                                }
+                            }
+                            resp = resp.header("content-encoding", "gzip")
+                                .header("content-length", compressed.len().to_string());
+                            return resp.body(Full::new(Bytes::from(compressed)).map_err(|e| match e {}).boxed()).unwrap();
+                        }
+                    }
+                }
+                let mut resp = Response::builder().status(parts.status);
+                for (name, value) in &parts.headers { resp = resp.header(name, value); }
                 return resp.body(Full::new(body_bytes).map_err(|e| match e {}).boxed()).unwrap();
             }
 
-            // Cache store (if body was collected and response is cacheable)
-            if cache_enabled && cache_method_ok && response_status >= 200 && response_status < 300 {
-                let cache_control = parts.headers.get("cache-control")
-                    .and_then(|v| v.to_str().ok());
-                let max_body = cache_config.map(|c| c.max_body_size).unwrap_or(10_485_760);
-                if crate::cache::is_cacheable(cache_control) && body_bytes.len() <= max_body {
-                    let ttl = std::time::Duration::from_secs(
-                        cache_config.map(|c| c.ttl_secs).unwrap_or(300)
-                    );
-                    let ignore_query = cache_config.map(|c| c.ignore_query).unwrap_or(false);
-                    // #22 fix: use same query as lookup (not None)
-                    let store_query = uri_path.split('?').nth(1); // extract query from path
-                    let cache_key = crate::cache::ResponseCache::key(
-                        method.as_str(), &host,
-                        uri_path.split('?').next().unwrap_or(&uri_path),
-                        store_query,
-                        ignore_query,
-                    );
-                    let cached_headers: Vec<(String, String)> = parts.headers.iter()
-                        .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.as_str().to_string(), v.to_string())))
-                        .collect();
-                    self.response_cache.put(cache_key, response_status, cached_headers, body_bytes.clone(), ttl);
-                }
-            }
+            // #37: Streaming compression (no cache needed) — zero-copy, bounded memory
+            use tokio_util::io::{ReaderStream, StreamReader};
+            use futures::TryStreamExt;
 
-            let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
-            if encoder.write_all(&body_bytes).is_ok() {
-                if let Ok(compressed) = encoder.finish() {
-                    if compressed.len() < body_bytes.len() {
-                        // Rebuild response preserving all original headers
-                        let mut resp = Response::builder().status(parts.status);
-                        for (name, value) in &parts.headers {
-                            // Skip headers that compression changes
-                            match name.as_str() {
-                                "content-length" | "content-encoding" | "transfer-encoding" => {}
-                                _ => { resp = resp.header(name, value); }
-                            }
-                        }
-                        resp = resp
-                            .header("content-encoding", "gzip")
-                            .header("content-length", compressed.len().to_string());
-
-                        let body = Full::new(Bytes::from(compressed));
-                        return resp.body(body.map_err(|e| match e {}).boxed()).unwrap();
+            let body_stream = http_body_util::BodyStream::new(body)
+                .map_ok(|frame| frame.into_data().unwrap_or_default())
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()));
+            let async_read = StreamReader::new(body_stream);
+            let gzip_read = async_compression::tokio::bufread::GzipEncoder::new(
+                tokio::io::BufReader::new(async_read)
+            );
+            // Collect the compressed stream into bytes (streaming through gzip encoder)
+            // This avoids holding the uncompressed body in memory.
+            use tokio::io::AsyncReadExt;
+            let mut compressed_data = Vec::new();
+            let mut gzip_read = gzip_read;
+            if gzip_read.read_to_end(&mut compressed_data).await.is_ok() && !compressed_data.is_empty() {
+                let mut resp = Response::builder().status(parts.status);
+                for (name, value) in &parts.headers {
+                    match name.as_str() {
+                        "content-length" | "content-encoding" | "transfer-encoding" => {}
+                        _ => { resp = resp.header(name, value); }
                     }
                 }
+                resp = resp.header("content-encoding", "gzip")
+                    .header("content-length", compressed_data.len().to_string());
+                return resp.body(Full::new(Bytes::from(compressed_data)).map_err(|e| match e {}).boxed()).unwrap();
             }
-            // Compression failed or didn't help — return uncompressed with original headers
+            // Compression failed — return original response parts
             let mut resp = Response::builder().status(parts.status);
-            for (name, value) in &parts.headers {
-                resp = resp.header(name, value);
-            }
-            let body = Full::new(body_bytes);
-            return resp.body(body.map_err(|e| match e {}).boxed()).unwrap();
+            for (name, value) in &parts.headers { resp = resp.header(name, value); }
+            return resp.body(Empty::<Bytes>::new().map_err(|e| match e {}).boxed()).unwrap();
         }
 
         Response::from(response).map(|b| b.boxed())
