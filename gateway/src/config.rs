@@ -226,6 +226,10 @@ pub struct AuthConfig {
     /// Session cookie name (default: __volta_session).
     #[serde(default = "default_cookie_name")]
     pub cookie_name: Option<String>,
+    /// Public-facing base URL of the auth proxy (e.g. https://auth.example.com).
+    /// Redirects from auth-proxy to this origin are allowed through sanitize_redirect.
+    #[serde(default)]
+    pub auth_public_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

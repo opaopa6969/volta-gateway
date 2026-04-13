@@ -41,6 +41,8 @@ pub struct VoltaAuthClient {
     cache_ttl: Duration,
     /// DD-005 Phase 0: In-process JWT session verifier (optional).
     session_verifier: Option<volta_auth_core::session::SessionVerifier>,
+    /// #51: Public-facing auth URL for redirect allowlist (e.g. https://auth.example.com).
+    auth_public_url: Option<String>,
 }
 
 impl VoltaAuthClient {
@@ -65,6 +67,7 @@ impl VoltaAuthClient {
             auth_cache: Arc::new(Mutex::new(HashMap::new())),
             cache_ttl: Duration::from_secs(5),
             session_verifier,
+            auth_public_url: config.auth_public_url.clone(),
         }
     }
 
@@ -171,7 +174,7 @@ impl VoltaAuthClient {
                             .unwrap_or("/login")
                             .to_string();
                         // #51: Validate redirect destination (open redirect prevention)
-                        AuthResult::Redirect(sanitize_redirect(&location))
+                        AuthResult::Redirect(sanitize_redirect(&location, self.auth_public_url.as_deref()))
                     }
                     302 => {
                         let location = resp
@@ -180,7 +183,7 @@ impl VoltaAuthClient {
                             .and_then(|v| v.to_str().ok())
                             .unwrap_or("/login")
                             .to_string();
-                        AuthResult::Redirect(sanitize_redirect(&location))
+                        AuthResult::Redirect(sanitize_redirect(&location, self.auth_public_url.as_deref()))
                     }
                     403 => AuthResult::Denied,
                     _ => AuthResult::Error(format!("volta returned {status}")),
@@ -226,13 +229,20 @@ impl VoltaAuthClient {
     }
 }
 
-/// #51: Sanitize redirect URL — only allow relative paths or same-origin.
+/// #51: Sanitize redirect URL — only allow relative paths or auth-proxy origin.
 /// Prevents open redirect attacks via compromised auth-proxy responses.
-fn sanitize_redirect(url: &str) -> String {
+fn sanitize_redirect(url: &str, auth_public_url: Option<&str>) -> String {
     // Relative paths are always safe
     if url.starts_with('/') && !url.starts_with("//") {
         return url.to_string();
     }
-    // Reject anything that doesn't start with / (absolute URLs to external sites)
+    // Allow absolute redirects to the configured auth public URL (e.g. https://auth.example.com)
+    if let Some(base) = auth_public_url {
+        let base = base.trim_end_matches('/');
+        if !base.is_empty() && url.starts_with(base) {
+            return url.to_string();
+        }
+    }
+    // Reject everything else (external sites)
     "/login".to_string()
 }
