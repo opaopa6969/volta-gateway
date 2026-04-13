@@ -629,10 +629,12 @@ impl ProxyService {
             info!(state = "AUTH_SKIP", host = %host, path = %uri_path, public = is_public);
             HashMap::new()
         } else {
+            let client_ip_str = real_client_ip.to_string();
             let auth_result = self.volta.check(
                 &host, &uri_path, proto,
                 cookie.as_deref(),
                 app_id.as_deref(),
+                Some(&client_ip_str),
             ).await;
 
             match auth_result {

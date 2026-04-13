@@ -69,7 +69,19 @@ pub async fn handle_websocket(
     let skip_auth = route.public || route.bypass_paths.iter().any(|bp| uri_path.starts_with(&bp.prefix));
 
     if !skip_auth {
-        let auth = volta.check(&host, &uri_path, "https", cookie.as_deref(), app_id.as_deref()).await;
+        let real_client_ip = if !trusted_proxies.is_empty()
+            && trusted_proxies.iter().any(|net| net.contains(&remote_addr.ip()))
+        {
+            req.headers().get("cf-connecting-ip")
+                .or_else(|| req.headers().get("x-real-ip"))
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<std::net::IpAddr>().ok())
+                .unwrap_or(remote_addr.ip())
+        } else {
+            remote_addr.ip()
+        };
+        let client_ip_str = real_client_ip.to_string();
+        let auth = volta.check(&host, &uri_path, "https", cookie.as_deref(), app_id.as_deref(), Some(&client_ip_str)).await;
         match auth {
             AuthResult::Authenticated(_) => {}
             AuthResult::Redirect(loc) => {

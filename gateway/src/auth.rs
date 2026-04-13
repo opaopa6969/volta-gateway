@@ -70,6 +70,8 @@ impl VoltaAuthClient {
 
     /// Call volta /auth/verify with forwarded headers and cookies.
     /// #33: Results are cached for 5s by cookie hash to skip redundant calls.
+    /// `client_ip` is the resolved real client IP, forwarded as X-Real-IP so
+    /// the auth proxy can apply IP-based rules (e.g. local network bypass).
     pub async fn check(
         &self,
         host: &str,
@@ -77,6 +79,7 @@ impl VoltaAuthClient {
         proto: &str,
         cookie: Option<&str>,
         app_id: Option<&str>,
+        client_ip: Option<&str>,
     ) -> AuthResult {
         // DD-005 Phase 0: In-process JWT verify (skip HTTP roundtrip)
         if let Some(ref verifier) = self.session_verifier {
@@ -132,6 +135,9 @@ impl VoltaAuthClient {
         }
         if let Some(id) = app_id {
             builder = builder.header("X-Volta-App-Id", id);
+        }
+        if let Some(ip) = client_ip {
+            builder = builder.header("X-Real-IP", ip);
         }
 
         let req = match builder.body(Empty::<Bytes>::new()) {
