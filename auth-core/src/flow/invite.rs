@@ -4,7 +4,6 @@
 //!   or → ACCOUNT_SWITCHING → [external: accepted] → ACCEPTED → COMPLETE
 
 use std::any::TypeId;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tramli::*;
@@ -71,13 +70,9 @@ impl TransitionGuard<InviteState> for AcceptGuard {
     fn produces(&self) -> Vec<TypeId> { data_types!(InviteAcceptance) }
     fn validate(&self, ctx: &FlowContext) -> GuardOutput {
         match ctx.find::<InviteAcceptance>() {
-            Some(data) if data.accepted => {
-                let mut m = HashMap::new();
-                m.insert(TypeId::of::<InviteAcceptance>(), Box::new(data.clone()) as Box<dyn CloneAny>);
-                GuardOutput::Accepted { data: m }
-            }
-            Some(_) => GuardOutput::Rejected { reason: "invite declined".into() },
-            None => GuardOutput::Rejected { reason: "acceptance not provided".into() },
+            Some(data) if data.accepted => GuardOutput::accept_with(data.clone()),
+            Some(_) => GuardOutput::rejected("invite declined"),
+            None => GuardOutput::rejected("acceptance not provided"),
         }
     }
 }

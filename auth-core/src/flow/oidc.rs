@@ -6,7 +6,6 @@
 //!   Fatal: TERMINAL_ERROR
 
 use std::any::TypeId;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tramli::*;
@@ -187,12 +186,8 @@ impl TransitionGuard<OidcState> for CallbackGuard {
     fn produces(&self) -> Vec<TypeId> { data_types!(OidcCallbackData) }
     fn validate(&self, ctx: &FlowContext) -> GuardOutput {
         match ctx.find::<OidcCallbackData>() {
-            Some(data) => {
-                let mut m = HashMap::new();
-                m.insert(TypeId::of::<OidcCallbackData>(), Box::new(data.clone()) as Box<dyn CloneAny>);
-                GuardOutput::Accepted { data: m }
-            }
-            None => GuardOutput::Rejected { reason: "callback data not provided".into() },
+            Some(data) => GuardOutput::accept_with(data.clone()),
+            None => GuardOutput::rejected("callback data not provided"),
         }
     }
 }

@@ -164,6 +164,64 @@ mod flow_tables {
             Edge { from: "ACCOUNT_SWITCHING", to: "EXPIRED", label: "resume_timeout" },
         ],
     };
+
+    // External (HTTP-guarded) transitions per flow — input to rule #4 of
+    // `auth-core::flow::validate`. We list only the primary "success" edge of
+    // each guard; failure / branch edges ride on the same external input.
+    pub static OIDC_EXTERNAL: [Edge; 1] = [
+        Edge { from: "REDIRECTED", to: "CALLBACK_RECEIVED", label: "OidcCallbackGuard" },
+    ];
+    pub static PASSKEY_EXTERNAL: [Edge; 1] = [
+        Edge { from: "CHALLENGE_ISSUED", to: "ASSERTION_RECEIVED", label: "PasskeyAssertionGuard" },
+    ];
+    pub static MFA_EXTERNAL: [Edge; 1] = [
+        Edge { from: "CHALLENGE_SHOWN", to: "VERIFIED", label: "MfaCodeGuard" },
+    ];
+    pub static INVITE_EXTERNAL: [Edge; 2] = [
+        Edge { from: "CONSENT_SHOWN", to: "ACCEPTED", label: "EmailMatchGuard" },
+        Edge { from: "ACCOUNT_SWITCHING", to: "ACCEPTED", label: "ResumeGuard" },
+    ];
+}
+
+/// Expose the same descriptors to `auth-core::flow::validate` at startup
+/// (backlog P2 #9). Returns one descriptor per flow so `main.rs` can iterate.
+pub fn flow_descriptors() -> [volta_auth_core::flow::validate::FlowDescriptor; 4] {
+    use volta_auth_core::flow::validate::FlowDescriptor;
+    [
+        FlowDescriptor {
+            name: flow_tables::OIDC.name,
+            states: flow_tables::OIDC.states,
+            initial: flow_tables::OIDC.initial,
+            terminals: flow_tables::OIDC.terminals,
+            edges: flow_tables::OIDC.edges,
+            // OIDC has one external guard (REDIRECTED → CALLBACK_RECEIVED).
+            external_edges: &flow_tables::OIDC_EXTERNAL,
+        },
+        FlowDescriptor {
+            name: flow_tables::PASSKEY.name,
+            states: flow_tables::PASSKEY.states,
+            initial: flow_tables::PASSKEY.initial,
+            terminals: flow_tables::PASSKEY.terminals,
+            edges: flow_tables::PASSKEY.edges,
+            external_edges: &flow_tables::PASSKEY_EXTERNAL,
+        },
+        FlowDescriptor {
+            name: flow_tables::MFA.name,
+            states: flow_tables::MFA.states,
+            initial: flow_tables::MFA.initial,
+            terminals: flow_tables::MFA.terminals,
+            edges: flow_tables::MFA.edges,
+            external_edges: &flow_tables::MFA_EXTERNAL,
+        },
+        FlowDescriptor {
+            name: flow_tables::INVITE.name,
+            states: flow_tables::INVITE.states,
+            initial: flow_tables::INVITE.initial,
+            terminals: flow_tables::INVITE.terminals,
+            edges: flow_tables::INVITE.edges,
+            external_edges: &flow_tables::INVITE_EXTERNAL,
+        },
+    ]
 }
 
 #[cfg(test)]

@@ -88,18 +88,24 @@ pub fn parse_identity(
         });
     }
 
-    // Signature validation — backlog P0 #2.
+    // Signature validation — backlog P0 #2 (full).
     //
-    // Structural defences (anti-wrapping, algorithm allow-list, no external
-    // references) run here. Cryptographic verification (C14N + digest + RSA
-    // verify against the IdP cert) is still pending — see
-    // `auth-server/docs/specs/saml-signature-verification.md`.
+    // Two-phase verification:
+    //   1. Structural defences (`saml_sig::check_structure`) — reject
+    //      signature-wrapping patterns before doing any crypto.
+    //   2. Cryptographic (`saml_dsig::verify`) — RSA-SHA256 verify against
+    //      the IdP cert, plus SHA-256 digest compare on the referenced
+    //      Assertion (with enveloped-signature transform applied).
+    //
+    // Canonicalisation is simplified — see `saml_dsig.rs` rationale.
     if !skip_signature {
-        if idp_x509_cert.map(|c| c.is_empty()).unwrap_or(true) {
-            return Err(ApiError::unauthorized("SAML_SIGNATURE_REQUIRED", "IdP certificate is required"));
-        }
+        let cert = idp_x509_cert
+            .filter(|c| !c.is_empty())
+            .ok_or_else(|| ApiError::unauthorized("SAML_SIGNATURE_REQUIRED", "IdP certificate is required"))?;
         crate::saml_sig::check_structure(&xml)
             .map_err(|e| ApiError::unauthorized("SAML_SIGNATURE_REJECTED", &e.to_string()))?;
+        crate::saml_dsig::verify(&xml, cert)
+            .map_err(|e| ApiError::unauthorized("SAML_SIGNATURE_INVALID", &e.to_string()))?;
     }
 
     // Parse XML elements using simple text extraction

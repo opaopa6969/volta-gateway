@@ -14,17 +14,22 @@ use crate::helpers::{extract_session_id, is_json_accept, set_session_cookie, cle
 use crate::state::AppState;
 use volta_auth_core::store::{SessionStore, MembershipStore, TenantStore};
 
-/// Publish a `LOGOUT` auth event for `/viz/auth/stream` (P1.2).
-///
-/// Best-effort: we look up the session to attach user/tenant metadata when
-/// possible, but a missing/expired session still produces an event (the
-/// front-end only filters by event_type).
+/// Publish a `LOGOUT` auth event for `/viz/auth/stream` (P1.2) and persist
+/// it to `audit_logs` (P2 #10). Session lookup is best-effort — a missing
+/// session still produces an event (SSE clients filter by event_type).
 async fn publish_logout_event(state: &AppState, session_id: &str) {
     let mut ev = AuthEvent::now("LOGOUT").with_session(session_id);
     if let Ok(Some(s)) = SessionStore::find(&state.db, session_id).await {
         ev = ev.with_user(s.user_id).with_tenant(s.tenant_id);
     }
-    state.auth_events.publish(ev);
+    state.auth_events.publish_and_audit(
+        ev,
+        &state.db,
+        None,
+        Some("SESSION".into()),
+        Some(session_id.to_string()),
+        None,
+    ).await;
 }
 
 /// GET /auth/verify — ForwardAuth endpoint for gateway.

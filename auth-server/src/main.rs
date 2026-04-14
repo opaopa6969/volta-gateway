@@ -8,6 +8,7 @@ mod outbox_worker;
 pub mod pagination;
 pub mod rate_limit;
 pub mod saml;
+pub mod saml_dsig;
 pub mod saml_sig;
 pub mod security;
 mod state;
@@ -66,6 +67,20 @@ async fn main() {
         userinfo_url: None,
         scopes: vec![],
     });
+
+    // Backlog P2 #9: validate every flow descriptor before serving traffic.
+    // Any violation (unreachable state, cycle in Auto/Branch graph, multi-
+    // external edge, terminal with outgoing) fails the process.
+    for desc in handlers::viz::flow_descriptors() {
+        if let Err(errors) = volta_auth_core::flow::validate::validate(&desc) {
+            for err in &errors {
+                tracing::error!(flow = desc.name, "flow validation failed: {:?}", err);
+            }
+            eprintln!("flow '{}' failed validation with {} error(s)", desc.name, errors.len());
+            std::process::exit(1);
+        }
+    }
+    info!("flow definitions validated");
 
     let local_bypass = Arc::new(local_bypass::LocalNetworkBypass::from_env());
     if local_bypass.is_empty() {

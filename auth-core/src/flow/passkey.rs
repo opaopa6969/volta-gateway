@@ -4,7 +4,6 @@
 //!   → USER_RESOLVED → COMPLETE
 
 use std::any::TypeId;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tramli::*;
@@ -76,12 +75,8 @@ impl TransitionGuard<PasskeyState> for AssertionGuard {
     fn produces(&self) -> Vec<TypeId> { data_types!(PasskeyAssertion) }
     fn validate(&self, ctx: &FlowContext) -> GuardOutput {
         match ctx.find::<PasskeyAssertion>() {
-            Some(data) => {
-                let mut m = HashMap::new();
-                m.insert(TypeId::of::<PasskeyAssertion>(), Box::new(data.clone()) as Box<dyn CloneAny>);
-                GuardOutput::Accepted { data: m }
-            }
-            None => GuardOutput::Rejected { reason: "assertion not provided".into() },
+            Some(data) => GuardOutput::accept_with(data.clone()),
+            None => GuardOutput::rejected("assertion not provided"),
         }
     }
 }

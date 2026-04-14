@@ -341,12 +341,17 @@ async fn complete_oidc(
         display_name: user.display_name,
     }).await.map_err(|e| ApiError::internal(&e.to_string()))?;
 
-    state.auth_events.publish(
+    state.auth_events.publish_and_audit(
         crate::auth_events::AuthEvent::now("LOGIN_SUCCESS")
             .with_user(user.id.to_string())
             .with_tenant(tenant_id_for_event)
             .with_session(session_id.clone()),
-    );
+        &state.db,
+        None,                               // actor_ip: OIDC completion has no direct request headers here
+        Some("SESSION".into()),
+        Some(session_id.clone()),
+        None,
+    ).await;
 
     Ok((session_id, return_to))
 }

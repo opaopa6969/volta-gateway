@@ -6,3 +6,4 @@ pub mod mfa;
 pub mod passkey;
 pub mod invite;
 pub mod mermaid;
+pub mod validate;

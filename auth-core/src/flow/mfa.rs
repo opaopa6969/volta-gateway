@@ -4,7 +4,6 @@
 //! Error: EXPIRED | TERMINAL_ERROR
 
 use std::any::TypeId;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tramli::*;
@@ -44,13 +43,9 @@ impl TransitionGuard<MfaState> for MfaCodeGuard {
     fn produces(&self) -> Vec<TypeId> { data_types!(MfaCode) }
     fn validate(&self, ctx: &FlowContext) -> GuardOutput {
         match ctx.find::<MfaCode>() {
-            Some(data) if data.valid => {
-                let mut m = HashMap::new();
-                m.insert(TypeId::of::<MfaCode>(), Box::new(data.clone()) as Box<dyn CloneAny>);
-                GuardOutput::Accepted { data: m }
-            }
-            Some(_) => GuardOutput::Rejected { reason: "invalid MFA code".into() },
-            None => GuardOutput::Rejected { reason: "MFA code not provided".into() },
+            Some(data) if data.valid => GuardOutput::accept_with(data.clone()),
+            Some(_) => GuardOutput::rejected("invalid MFA code"),
+            None => GuardOutput::rejected("MFA code not provided"),
         }
     }
 }

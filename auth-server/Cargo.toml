@@ -14,6 +14,9 @@ bincode = "1"
 # WebAuthn types surfaced in handler request/response bodies (P1 #5)
 webauthn-rs = { version = "0.6.0-dev", features = ["danger-allow-state-serialisation"] }
 
+# For in-trait async fns in tests that mock auth-core stores (P2 #10)
+async-trait = "0.1"
+
 # Web framework
 axum = { version = "0.8", features = ["macros"] }
 axum-extra = { version = "0.10", features = ["cookie"] }
@@ -74,6 +77,7 @@ redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 
 # SAML (XML parsing + signature verification)
 xmlparser = "0.13"
+quick-xml = "0.36"
 base64 = "0.22"
 x509-cert = { version = "0.2", features = ["pem"] }
 der = "0.7"

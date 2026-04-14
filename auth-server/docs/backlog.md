@@ -11,16 +11,39 @@
 
 ---
 
-## Status (2026-04-14 burst)
+## Status (2026-04-14 burst — final)
 
-Done since initial backlog: #1 (PKCE + KeyCipher), #2 structural defences,
-#3 Bearer M2M, #4 ID token verification, #5 passkey webauthn-rs, #6 tenants
-pagination, #7 Redis SSE, #8 Mermaid. Remaining: #2 cryptographic SAML
-signature verify (spec landed, C14N impl deferred); #9–#12 from the P2
-list.
+**All P0 / P1 / P2 backlog items are landed.**
 
-Each completed item has a spec at `docs/specs/<item>.md` and a design note
-at `docs/arch/<item>.md`. See those for details.
+| # | Title | Status |
+|---|---|---|
+| P0 #1 | PKCE + KeyCipher | ✅ commit `7922046` |
+| P0 #2 | SAML signature verify (structural + cryptographic) | ✅ — `saml_sig` + `saml_dsig` |
+| P0 #3 | Bearer M2M scope | ✅ |
+| P1 #4 | OIDC ID token verification | ✅ |
+| P1 #5 | Passkey webauthn-rs integration | ✅ |
+| P1 #6 | admin_list_tenants pagination | ✅ |
+| P1 #7 | Redis pub/sub SSE bridge | ✅ |
+| P1 #8 | Mermaid flow diagrams | ✅ |
+| P2 #9 | Flow definition validation | ✅ — startup gate in `main.rs` |
+| P2 #10 | Audit DB insert | ✅ — `publish_and_audit` |
+| P2 #11 | admin HTML pagination UI | ⏸ deferred to volta-auth-console (separate repo) |
+| P2 #12 | OIDC state DB-backed | ✅ — landed as part of P0 #1 |
+
+Each item has spec + arch under `docs/specs/<item>.md` /
+`docs/arch/<item>.md`. Test counts: **77 auth-server / 76 auth-core
+green** as of this commit.
+
+Future follow-ups (not in original backlog):
+- exc-c14n full canonicalisation for SAML XML-DSig — current
+  implementation assumes IdP emits canonical form (works with
+  Keycloak / ADFS / Shibboleth defaults). Spec
+  [`saml-signature-verification.md`](specs/saml-signature-verification.md)
+  documents the limit.
+- Outbox fan-out of audit events for external webhook subscribers
+  (see `arch/audit-db-insert.md`).
+- Discoverable-credential passkey flow (currently username-bound only).
+- Multi-RP WebAuthn (single instance serving multiple origins).
 
 ## P0
 

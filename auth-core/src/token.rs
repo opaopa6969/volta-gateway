@@ -5,7 +5,6 @@ use std::any::TypeId;
 use std::sync::Arc;
 use tramli::{Builder, FlowContext, FlowDefinition, FlowError, FlowEngine, InMemoryFlowStore,
              StateProcessor, TransitionGuard, GuardOutput, CloneAny, data_types, requires};
-use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::error::AuthError;
@@ -130,12 +129,8 @@ impl TransitionGuard<TokenState> for RefreshGuard {
 
     fn validate(&self, ctx: &FlowContext) -> GuardOutput {
         match ctx.find::<TokenValidation>() {
-            Some(data) => {
-                let mut m = HashMap::new();
-                m.insert(TypeId::of::<TokenValidation>(), Box::new(data.clone()) as Box<dyn CloneAny>);
-                GuardOutput::Accepted { data: m }
-            }
-            None => GuardOutput::Rejected { reason: "token validation not provided".into() },
+            Some(data) => GuardOutput::accept_with(data.clone()),
+            None => GuardOutput::rejected("token validation not provided"),
         }
     }
 }

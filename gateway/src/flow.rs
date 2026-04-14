@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use tramli::{
     Builder, FlowContext, FlowDefinition, FlowError, GuardOutput,
-    StateProcessor, TransitionGuard, CloneAny, requires, data_types,
+    StateProcessor, TransitionGuard, requires, data_types,
 };
 
 use crate::state::ProxyState;
@@ -153,12 +153,8 @@ impl TransitionGuard<ProxyState> for AuthGuard {
 
     fn validate(&self, ctx: &FlowContext) -> GuardOutput {
         match ctx.find::<AuthData>() {
-            Some(data) => {
-                let mut m = HashMap::new();
-                m.insert(TypeId::of::<AuthData>(), Box::new(data.clone()) as Box<dyn CloneAny>);
-                GuardOutput::Accepted { data: m }
-            }
-            None => GuardOutput::Rejected { reason: "Auth data not provided".into() },
+            Some(data) => GuardOutput::accept_with(data.clone()),
+            None => GuardOutput::rejected("Auth data not provided"),
         }
     }
 }
@@ -172,12 +168,8 @@ impl TransitionGuard<ProxyState> for ForwardGuard {
 
     fn validate(&self, ctx: &FlowContext) -> GuardOutput {
         match ctx.find::<BackendResponse>() {
-            Some(data) => {
-                let mut m = HashMap::new();
-                m.insert(TypeId::of::<BackendResponse>(), Box::new(data.clone()) as Box<dyn CloneAny>);
-                GuardOutput::Accepted { data: m }
-            }
-            None => GuardOutput::Rejected { reason: "Backend response not provided".into() },
+            Some(data) => GuardOutput::accept_with(data.clone()),
+            None => GuardOutput::rejected("Backend response not provided"),
         }
     }
 }

@@ -15,6 +15,10 @@ use std::time::SystemTime;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
+use uuid::Uuid;
+
+use volta_auth_core::record::AuditLogRecord;
+use volta_auth_core::store::AuditStore;
 
 /// Channel capacity — SSE clients that lag beyond this miss messages.
 const CAPACITY: usize = 256;
@@ -123,6 +127,38 @@ impl AuthEventBus {
 
     pub fn subscribe(&self) -> broadcast::Receiver<AuthEvent> {
         self.tx.subscribe()
+    }
+
+    /// Publish + persist to `audit_logs` (backlog P2 #10). DB failure is
+    /// **non-fatal** — the SSE side still fires and the HTTP caller is
+    /// never stalled by an audit outage.
+    pub async fn publish_and_audit<A>(
+        &self,
+        ev: AuthEvent,
+        audit: &A,
+        actor_ip: Option<String>,
+        target_type: Option<String>,
+        target_id: Option<String>,
+        request_id: Option<Uuid>,
+    ) where
+        A: AuditStore + ?Sized,
+    {
+        let record = AuditLogRecord {
+            id: 0, // DB fills via BIGSERIAL
+            timestamp: chrono::Utc::now(),
+            event_type: ev.event_type.clone(),
+            actor_id: ev.user_id.as_deref().and_then(|s| Uuid::parse_str(s).ok()),
+            actor_ip,
+            tenant_id: ev.tenant_id.as_deref().and_then(|s| Uuid::parse_str(s).ok()),
+            target_type,
+            target_id,
+            detail: ev.detail.clone(),
+            request_id: request_id.unwrap_or_else(Uuid::new_v4),
+        };
+        if let Err(e) = audit.insert(record).await {
+            tracing::warn!(event = %ev.event_type, error = %e, "audit_logs insert failed");
+        }
+        self.publish(ev);
     }
 }
 
@@ -246,5 +282,82 @@ mod tests {
     fn bus_without_redis_reports_false() {
         let bus = AuthEventBus::new();
         assert!(!bus.has_redis_bridge());
+    }
+
+    // ── publish_and_audit (P2 #10) ────────────────────────────
+
+    use async_trait::async_trait;
+    use std::sync::{Arc, Mutex};
+    use volta_auth_core::error::AuthError;
+
+    #[derive(Default)]
+    struct MockAudit {
+        inserts: Arc<Mutex<Vec<AuditLogRecord>>>,
+        fail: bool,
+    }
+    #[async_trait]
+    impl AuditStore for MockAudit {
+        async fn insert(&self, r: AuditLogRecord) -> Result<(), AuthError> {
+            if self.fail { return Err(AuthError::Internal("forced".into())); }
+            self.inserts.lock().unwrap().push(r);
+            Ok(())
+        }
+        async fn list(&self, _: uuid::Uuid, _: i64, _: i64) -> Result<Vec<AuditLogRecord>, AuthError> { Ok(vec![]) }
+        async fn anonymize(&self, _: uuid::Uuid) -> Result<(), AuthError> { Ok(()) }
+        async fn delete_flow_transitions_by_user(&self, _: uuid::Uuid) -> Result<(), AuthError> { Ok(()) }
+    }
+
+    #[tokio::test]
+    async fn publish_and_audit_inserts_row() {
+        let bus = AuthEventBus::new();
+        let audit = MockAudit::default();
+        let inserts = audit.inserts.clone();
+        let uid = Uuid::new_v4();
+        let ev = AuthEvent::now("LOGIN_SUCCESS")
+            .with_user(uid.to_string())
+            .with_session("sess-abc");
+        bus.publish_and_audit(
+            ev,
+            &audit,
+            Some("10.0.0.1".into()),
+            Some("SESSION".into()),
+            Some("sess-abc".into()),
+            None,
+        ).await;
+        let rows = inserts.lock().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].event_type, "LOGIN_SUCCESS");
+        assert_eq!(rows[0].actor_id, Some(uid));
+        assert_eq!(rows[0].actor_ip.as_deref(), Some("10.0.0.1"));
+        assert_eq!(rows[0].target_type.as_deref(), Some("SESSION"));
+        assert_eq!(rows[0].target_id.as_deref(), Some("sess-abc"));
+    }
+
+    #[tokio::test]
+    async fn publish_and_audit_db_failure_is_non_fatal() {
+        // Even if AuditStore::insert errors, the broadcast still fires and the
+        // caller returns normally — matches "best-effort" semantics.
+        let bus = AuthEventBus::new();
+        let mut rx = bus.subscribe();
+        let audit = MockAudit { fail: true, ..Default::default() };
+        bus.publish_and_audit(
+            AuthEvent::now("LOGOUT").with_session("sess-xyz"),
+            &audit,
+            None, None, None, None,
+        ).await;
+        let got = rx.recv().await.unwrap();
+        assert_eq!(got.event_type, "LOGOUT");
+    }
+
+    #[tokio::test]
+    async fn publish_and_audit_preserves_detail() {
+        let bus = AuthEventBus::new();
+        let audit = MockAudit::default();
+        let inserts = audit.inserts.clone();
+        let mut ev = AuthEvent::now("TENANT_SWITCH");
+        ev.detail = Some(serde_json::json!({"from": "t1", "to": "t2"}));
+        bus.publish_and_audit(ev, &audit, None, None, None, None).await;
+        let rows = inserts.lock().unwrap();
+        assert_eq!(rows[0].detail.as_ref().unwrap()["to"], "t2");
     }
 }

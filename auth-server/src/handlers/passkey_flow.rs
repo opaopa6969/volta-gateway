@@ -160,11 +160,16 @@ pub async fn auth_finish(
     .await
     .map_err(|e| ApiError::internal(&e.to_string()))?;
 
-    s.auth_events.publish(
+    s.auth_events.publish_and_audit(
         crate::auth_events::AuthEvent::now("LOGIN_SUCCESS")
             .with_user(passkey_row.user_id.to_string())
             .with_session(session_id.clone()),
-    );
+        &s.db,
+        None,
+        Some("SESSION".into()),
+        Some(session_id.clone()),
+        None,
+    ).await;
 
     let mut resp = Json(serde_json::json!({"ok": true})).into_response();
     set_session_cookie(&mut resp, &session_id, &s);
