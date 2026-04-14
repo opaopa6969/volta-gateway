@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use volta_auth_core::crypto::KeyCipher;
 use volta_auth_core::idp::IdpClient;
 use volta_auth_core::jwt::{JwtIssuer, JwtVerifier};
 use volta_auth_core::store::pg::PgStore;
@@ -27,4 +28,7 @@ pub struct AppState {
     pub local_bypass: Arc<LocalNetworkBypass>,
     /// Auth event bus for `/viz/auth/stream` (P1.2, Java `9b4fe2c`).
     pub auth_events: AuthEventBus,
+    /// Symmetric cipher for at-rest secrets (PKCE verifier, IdP client secrets).
+    /// Backlog P0 #1 (Java `KeyCipher`).
+    pub key_cipher: Arc<KeyCipher>,
 }

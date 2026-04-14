@@ -6,6 +6,7 @@ mod invitation;
 mod flow;
 mod mfa;
 mod idp_config;
+mod oidc_flow;
 mod platform;
 
 #[cfg(feature = "postgres")]
@@ -19,6 +20,7 @@ pub use invitation::InvitationStore;
 pub use flow::FlowPersistence;
 pub use mfa::{MfaStore, RecoveryCodeStore, MagicLinkStore, SigningKeyStore};
 pub use idp_config::{IdpConfigStore, M2mClientStore, PasskeyStore};
+pub use oidc_flow::OidcFlowStore;
 pub use platform::{
     WebhookStore, OutboxStore, WebhookDeliveryStore,
     AuditStore, DeviceTrustStore, BillingStore, PolicyStore,

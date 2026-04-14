@@ -85,6 +85,10 @@ async fn main() {
         state_signing_key: state_key.into_bytes(),
         local_bypass,
         auth_events: auth_events::AuthEventBus::new(),
+        // Backlog P0 #1: AES-GCM cipher for PKCE verifier storage. Reuses
+        // JWT_SECRET when KEY_CIPHER_MASTER_KEY is unset, so existing deployments
+        // boot without extra configuration.
+        key_cipher: Arc::new(volta_auth_core::crypto::KeyCipher::from_env()),
     };
 
     // Outbox worker — poll every 5s, deliver webhooks

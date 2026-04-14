@@ -8,7 +8,7 @@ use chrono::Utc;
 
 use crate::error::AuthError;
 use crate::record::*;
-use crate::store::{UserStore, TenantStore, MembershipStore, InvitationStore, FlowPersistence, SessionStore, MfaStore, RecoveryCodeStore, MagicLinkStore, SigningKeyStore, IdpConfigStore, M2mClientStore, PasskeyStore, WebhookStore, OutboxStore, WebhookDeliveryStore, AuditStore, DeviceTrustStore, BillingStore, PolicyStore};
+use crate::store::{UserStore, TenantStore, MembershipStore, InvitationStore, FlowPersistence, SessionStore, MfaStore, RecoveryCodeStore, MagicLinkStore, SigningKeyStore, IdpConfigStore, M2mClientStore, PasskeyStore, OidcFlowStore, WebhookStore, OutboxStore, WebhookDeliveryStore, AuditStore, DeviceTrustStore, BillingStore, PolicyStore};
 
 /// PostgreSQL-backed store — single struct implementing all DAO traits.
 #[derive(Clone)]
@@ -1195,6 +1195,49 @@ impl PolicyStore for PgStore {
              ORDER BY priority DESC LIMIT 1"
         ).bind(tenant_id).bind(resource).bind(action)
         .fetch_optional(&self.pool).await.map_err(AuthError::from)
+    }
+}
+
+// ─── OidcFlowStore (Backlog P0 #1) ─────────────────────────
+
+#[async_trait]
+impl OidcFlowStore for PgStore {
+    async fn save(&self, r: OidcFlowRecord) -> Result<(), AuthError> {
+        sqlx::query(
+            "INSERT INTO oidc_flows \
+               (id, state, nonce, code_verifier_encrypted, return_to, invite_code, tenant_id, expires_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+        )
+        .bind(r.id)
+        .bind(&r.state)
+        .bind(&r.nonce)
+        .bind(&r.code_verifier_encrypted)
+        .bind(r.return_to.as_deref())
+        .bind(r.invite_code.as_deref())
+        .bind(r.tenant_id)
+        .bind(r.expires_at)
+        .execute(&self.pool).await.map_err(AuthError::from)?;
+        Ok(())
+    }
+
+    async fn consume(&self, state: &str) -> Result<Option<OidcFlowRecord>, AuthError> {
+        // Atomic single-use semantics: DELETE … RETURNING … ensures a
+        // concurrent second consumption sees zero rows.
+        let row: Option<OidcFlowRecord> = sqlx::query_as::<_, OidcFlowRecord>(
+            "DELETE FROM oidc_flows \
+             WHERE state = $1 AND expires_at > now() \
+             RETURNING id, state, nonce, code_verifier_encrypted, return_to, invite_code, \
+                       tenant_id, created_at, expires_at"
+        )
+        .bind(state)
+        .fetch_optional(&self.pool).await.map_err(AuthError::from)?;
+        Ok(row)
+    }
+
+    async fn delete_expired(&self) -> Result<u64, AuthError> {
+        let res = sqlx::query("DELETE FROM oidc_flows WHERE expires_at <= now()")
+            .execute(&self.pool).await.map_err(AuthError::from)?;
+        Ok(res.rows_affected())
     }
 }
 

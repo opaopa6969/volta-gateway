@@ -13,5 +13,6 @@ pub mod flow;
 pub mod idp;
 pub mod totp;
 pub mod service;
+pub mod crypto;
 #[cfg(feature = "webauthn")]
 pub mod passkey;
