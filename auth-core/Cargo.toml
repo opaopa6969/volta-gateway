@@ -40,7 +40,7 @@ async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 
 # State machine
-tramli = "3.6.1"
+tramli = "3.8"
 tramli-plugins = "3.6.1"
 
 # UUID

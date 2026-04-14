@@ -27,11 +27,66 @@ pub async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Sessio
         .ok_or_else(|| ApiError::unauthorized("SESSION_EXPIRED", "re-login"))
 }
 
-/// #9: require the session to carry `ADMIN` or `OWNER` role. Used by all
-/// `/admin/*` and privileged `/api/v1/admin/*` handlers.
+/// #9 + backlog P0 #3: require ADMIN/OWNER privilege, accepting either a
+/// cookie session **or** a `Authorization: Bearer <jwt>` token.
+///
+/// Precedence:
+/// 1. If `Authorization: Bearer` is present, the JWT decides — no cookie
+///    fallback. Missing/invalid role → 403; invalid/expired token → 401.
+/// 2. Otherwise fall back to cookie session check.
+///
+/// See `auth-server/docs/specs/bearer-m2m-scope.md`.
 pub async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<SessionRecord, ApiError> {
+    require_admin_with_headers(state, jar, None).await
+}
+
+/// Variant used by handlers that already have `HeaderMap` in scope. When a
+/// Bearer token is presented, cookie session is ignored.
+pub async fn require_admin_with_headers(
+    state: &AppState,
+    jar: &CookieJar,
+    headers: Option<&axum::http::HeaderMap>,
+) -> Result<SessionRecord, ApiError> {
+    if let Some(h) = headers {
+        if let Some(token) = bearer_token(h) {
+            return bearer_admin(state, token);
+        }
+    }
     let session = require_session(state, jar).await?;
-    let is_privileged = session.roles.iter().any(|r| {
+    enforce_admin_role(&session.roles)?;
+    Ok(session)
+}
+
+/// Pull the bearer value out of `Authorization: Bearer <jwt>`, returning
+/// `None` when the header is missing or malformed.
+fn bearer_token(headers: &axum::http::HeaderMap) -> Option<&str> {
+    headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer ").or_else(|| s.strip_prefix("bearer ")))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+fn bearer_admin(state: &AppState, token: &str) -> Result<SessionRecord, ApiError> {
+    let claims = state
+        .jwt_verifier
+        .verify(token)
+        .map_err(|_| ApiError::unauthorized("INVALID_TOKEN", "invalid or expired token"))?;
+    let roles: Vec<String> = claims
+        .roles
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    enforce_admin_role(&roles)?;
+    Ok(synthetic_session_from_claims(claims, roles))
+}
+
+fn enforce_admin_role(roles: &[String]) -> Result<(), ApiError> {
+    let is_privileged = roles.iter().any(|r| {
         let u = r.to_ascii_uppercase();
         u == "ADMIN" || u == "OWNER"
     });
@@ -41,7 +96,81 @@ pub async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<SessionR
             "ADMIN or OWNER role required",
         ));
     }
-    Ok(session)
+    Ok(())
+}
+
+fn synthetic_session_from_claims(
+    claims: volta_auth_core::jwt::VoltaClaims,
+    roles: Vec<String>,
+) -> SessionRecord {
+    let now_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    SessionRecord {
+        session_id: format!("m2m-{}", uuid::Uuid::new_v4()),
+        user_id: claims.sub,
+        tenant_id: claims.tenant_id.unwrap_or_default(),
+        return_to: None,
+        created_at: now_epoch,
+        last_active_at: now_epoch,
+        expires_at: claims.exp.unwrap_or(now_epoch + 300) as u64,
+        invalidated_at: None,
+        mfa_verified_at: Some(now_epoch), // M2M is not interactive — treat as MFA-equivalent
+        ip_address: None,
+        user_agent: None,
+        csrf_token: None,
+        email: claims.email,
+        tenant_slug: claims.tenant_slug,
+        roles,
+        display_name: claims.name,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderMap;
+
+    #[test]
+    fn bearer_header_parses_both_cases() {
+        let mut h = HeaderMap::new();
+        h.insert("authorization", "Bearer abc.def.ghi".parse().unwrap());
+        assert_eq!(bearer_token(&h), Some("abc.def.ghi"));
+
+        let mut h2 = HeaderMap::new();
+        h2.insert("authorization", "bearer XYZ".parse().unwrap());
+        assert_eq!(bearer_token(&h2), Some("XYZ"));
+    }
+
+    #[test]
+    fn bearer_missing_returns_none() {
+        let h = HeaderMap::new();
+        assert!(bearer_token(&h).is_none());
+    }
+
+    #[test]
+    fn bearer_wrong_scheme_returns_none() {
+        let mut h = HeaderMap::new();
+        h.insert("authorization", "Basic dXNlcjpwYXNz".parse().unwrap());
+        assert!(bearer_token(&h).is_none());
+    }
+
+    #[test]
+    fn bearer_empty_value_returns_none() {
+        let mut h = HeaderMap::new();
+        h.insert("authorization", "Bearer   ".parse().unwrap());
+        assert!(bearer_token(&h).is_none());
+    }
+
+    #[test]
+    fn admin_role_enforced_case_insensitively() {
+        enforce_admin_role(&["admin".into()]).unwrap();
+        enforce_admin_role(&["Owner".into()]).unwrap();
+        enforce_admin_role(&["OWNER".into()]).unwrap();
+        assert!(enforce_admin_role(&["member".into()]).is_err());
+        assert!(enforce_admin_role(&[]).is_err());
+    }
 }
 
 /// Extract session ID from __volta_session cookie.

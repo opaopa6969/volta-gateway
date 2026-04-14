@@ -31,4 +31,8 @@ pub struct AppState {
     /// Symmetric cipher for at-rest secrets (PKCE verifier, IdP client secrets).
     /// Backlog P0 #1 (Java `KeyCipher`).
     pub key_cipher: Arc<KeyCipher>,
+    /// WebAuthn service (backlog P1 #5). `None` when the `WEBAUTHN_RP_ID` /
+    /// `WEBAUTHN_RP_ORIGIN` env pair is unset — passkey handlers then
+    /// respond with 503 directing the operator to configure it.
+    pub passkey: Option<Arc<volta_auth_core::passkey::PasskeyService>>,
 }

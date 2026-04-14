@@ -8,6 +8,7 @@ mod outbox_worker;
 pub mod pagination;
 pub mod rate_limit;
 pub mod saml;
+pub mod saml_sig;
 pub mod security;
 mod state;
 
@@ -73,6 +74,50 @@ async fn main() {
         info!("local_bypass enabled");
     }
 
+    // P1 #7: optional Redis pub/sub bridge for SSE fan-out.
+    let mut event_bus = auth_events::AuthEventBus::new();
+    let redis_url = env("REDIS_URL", "");
+    if !redis_url.is_empty() {
+        let channel = env("REDIS_CHANNEL", auth_events::DEFAULT_CHANNEL);
+        match auth_events::spawn_redis_bridge(&redis_url, channel, event_bus.clone()).await {
+            Ok((publisher, _handle)) => {
+                info!(channel = publisher.channel(), "redis auth-event bridge up");
+                event_bus = event_bus.with_redis(publisher);
+            }
+            Err(e) => {
+                tracing::warn!("redis auth-event bridge failed, continuing in-process only: {}", e);
+            }
+        }
+    } else {
+        info!("redis auth-event bridge disabled (REDIS_URL unset)");
+    }
+
+    // P1 #5: optional WebAuthn service. Activated by `WEBAUTHN_RP_ID` +
+    // `WEBAUTHN_RP_ORIGIN`. Without both set, passkey handlers return 503.
+    let rp_id = env("WEBAUTHN_RP_ID", "");
+    let rp_origin = env("WEBAUTHN_RP_ORIGIN", "");
+    let passkey_service = if !rp_id.is_empty() && !rp_origin.is_empty() {
+        match url::Url::parse(&rp_origin) {
+            Ok(origin) => match volta_auth_core::passkey::PasskeyService::new(&rp_id, &origin) {
+                Ok(svc) => {
+                    info!(rp_id = %rp_id, "webauthn configured");
+                    Some(Arc::new(svc))
+                }
+                Err(e) => {
+                    tracing::warn!("webauthn init failed, passkey disabled: {}", e);
+                    None
+                }
+            },
+            Err(e) => {
+                tracing::warn!("WEBAUTHN_RP_ORIGIN invalid URL, passkey disabled: {}", e);
+                None
+            }
+        }
+    } else {
+        info!("webauthn disabled (WEBAUTHN_RP_ID / WEBAUTHN_RP_ORIGIN unset)");
+        None
+    };
+
     let state = AppState {
         db,
         idp: Arc::new(idp),
@@ -84,11 +129,12 @@ async fn main() {
         base_url,
         state_signing_key: state_key.into_bytes(),
         local_bypass,
-        auth_events: auth_events::AuthEventBus::new(),
+        auth_events: event_bus,
         // Backlog P0 #1: AES-GCM cipher for PKCE verifier storage. Reuses
         // JWT_SECRET when KEY_CIPHER_MASTER_KEY is unset, so existing deployments
         // boot without extra configuration.
         key_cipher: Arc::new(volta_auth_core::crypto::KeyCipher::from_env()),
+        passkey: passkey_service,
     };
 
     // Outbox worker — poll every 5s, deliver webhooks

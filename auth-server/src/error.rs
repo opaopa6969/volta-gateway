@@ -39,6 +39,10 @@ impl ApiError {
     pub fn internal(message: &str) -> Self {
         Self { status: StatusCode::INTERNAL_SERVER_ERROR, code: "INTERNAL_ERROR".into(), message: message.into() }
     }
+
+    pub fn new(status: StatusCode, code: &str, message: &str) -> Self {
+        Self { status, code: code.into(), message: message.into() }
+    }
 }
 
 impl IntoResponse for ApiError {

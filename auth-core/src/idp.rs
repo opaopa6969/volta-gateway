@@ -231,6 +231,7 @@ impl IdpClient {
     }
 
     pub fn provider(&self) -> &str { &self.config.provider }
+    pub fn config(&self) -> &IdpConfig { &self.config }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

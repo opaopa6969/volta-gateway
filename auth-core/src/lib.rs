@@ -14,5 +14,6 @@ pub mod idp;
 pub mod totp;
 pub mod service;
 pub mod crypto;
+pub mod oidc;
 #[cfg(feature = "webauthn")]
 pub mod passkey;

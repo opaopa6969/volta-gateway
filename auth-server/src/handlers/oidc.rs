@@ -250,6 +250,32 @@ async fn complete_oidc(
         .await
         .map_err(|e| ApiError::bad_request("OIDC_FAILED", &format!("Authentication failed: {}", e)))?;
 
+    // Backlog P1 #4: verify id_token when the IdP config declares an issuer.
+    // Providers without `issuer_url` (plain OAuth2 like GitHub) keep the old
+    // `userinfo`-only path.
+    let id_token_sub: Option<String> = if let (Some(ref id_token), Some(ref issuer)) =
+        (token_resp.id_token.as_ref(), state.idp.config().issuer_url.as_ref())
+    {
+        let verifier = volta_auth_core::oidc::IdTokenVerifier::from_issuer(
+            issuer.trim_end_matches('/'),
+            &state.idp.config().client_id,
+        );
+        match verifier
+            .verify(id_token, &flow.nonce, &token_resp.access_token)
+            .await
+        {
+            Ok(claims) => Some(claims.sub),
+            Err(e) => {
+                return Err(ApiError::unauthorized(
+                    "OIDC_ID_TOKEN_INVALID",
+                    &format!("id_token verification failed: {}", e),
+                ));
+            }
+        }
+    } else {
+        None
+    };
+
     let userinfo = state.idp.userinfo(&token_resp.access_token).await
         .map_err(|e| ApiError::bad_request("OIDC_FAILED", &format!("Authentication failed: {}", e)))?;
 
@@ -260,11 +286,14 @@ async fn complete_oidc(
         .ok_or_else(|| ApiError::bad_request("OIDC_FAILED", "IdP did not return email"))?;
 
     let now = chrono::Utc::now();
+    // Prefer id_token's sub when we verified it (spec §3.1.3.7); otherwise
+    // fall back to userinfo.sub as before.
+    let sub = id_token_sub.unwrap_or_else(|| userinfo.sub.clone());
     let user = UserStore::upsert(&state.db, volta_auth_core::record::UserRecord {
         id: uuid::Uuid::new_v4(),
         email: email.clone(),
         display_name: userinfo.name.clone(),
-        google_sub: Some(userinfo.sub.clone()),
+        google_sub: Some(sub),
         created_at: now,
         is_active: true,
         locale: None,

@@ -8,7 +8,7 @@ use chrono::Utc;
 
 use crate::error::AuthError;
 use crate::record::*;
-use crate::store::{UserStore, TenantStore, MembershipStore, InvitationStore, FlowPersistence, SessionStore, MfaStore, RecoveryCodeStore, MagicLinkStore, SigningKeyStore, IdpConfigStore, M2mClientStore, PasskeyStore, OidcFlowStore, WebhookStore, OutboxStore, WebhookDeliveryStore, AuditStore, DeviceTrustStore, BillingStore, PolicyStore};
+use crate::store::{UserStore, TenantStore, MembershipStore, InvitationStore, FlowPersistence, SessionStore, MfaStore, RecoveryCodeStore, MagicLinkStore, SigningKeyStore, IdpConfigStore, M2mClientStore, PasskeyStore, OidcFlowStore, PasskeyChallengeRecord, PasskeyChallengeStore, WebhookStore, OutboxStore, WebhookDeliveryStore, AuditStore, DeviceTrustStore, BillingStore, PolicyStore};
 
 /// PostgreSQL-backed store — single struct implementing all DAO traits.
 #[derive(Clone)]
@@ -1241,6 +1241,37 @@ impl OidcFlowStore for PgStore {
     }
 }
 
+// ─── PasskeyChallengeStore (Backlog P1 #5) ─────────────────
+
+#[async_trait]
+impl PasskeyChallengeStore for PgStore {
+    async fn save(&self, r: PasskeyChallengeRecord) -> Result<(), AuthError> {
+        sqlx::query(
+            "INSERT INTO passkey_challenges (id, user_id, state, kind, expires_at) \
+             VALUES ($1, $2, $3, $4, $5)"
+        )
+        .bind(r.id).bind(r.user_id).bind(&r.state).bind(&r.kind).bind(r.expires_at)
+        .execute(&self.pool).await.map_err(AuthError::from)?;
+        Ok(())
+    }
+
+    async fn consume(&self, id: Uuid) -> Result<Option<PasskeyChallengeRecord>, AuthError> {
+        let row: Option<PasskeyChallengeRecord> = sqlx::query_as::<_, PasskeyChallengeRecord>(
+            "DELETE FROM passkey_challenges \
+             WHERE id = $1 AND expires_at > now() \
+             RETURNING id, user_id, state, kind, created_at, expires_at"
+        )
+        .bind(id).fetch_optional(&self.pool).await.map_err(AuthError::from)?;
+        Ok(row)
+    }
+
+    async fn delete_expired(&self) -> Result<u64, AuthError> {
+        let res = sqlx::query("DELETE FROM passkey_challenges WHERE expires_at <= now()")
+            .execute(&self.pool).await.map_err(AuthError::from)?;
+        Ok(res.rows_affected())
+    }
+}
+
 // ─── Paginated admin queries (P2.1) ────────────────────────
 //
 // These are direct methods on PgStore (no trait) — the admin handlers pass the
@@ -1389,6 +1420,38 @@ impl PgStore {
                 "role": role,
                 "is_active": active,
                 "joined_at": joined.to_rfc3339(),
+            })
+        }).collect();
+        Ok((items, total))
+    }
+
+    /// `(items, total)` — tenants list (backlog P1 #6), optional `q` over name/slug.
+    pub async fn list_tenants_paginated(
+        &self,
+        q: Option<&str>,
+        order: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<serde_json::Value>, i64), AuthError> {
+        let sql = format!(
+            "SELECT id, name, slug, is_active, created_at, \
+                    COUNT(*) OVER() AS total_count \
+             FROM tenants \
+             WHERE ($1::text IS NULL OR name ILIKE '%' || $1 || '%' OR slug ILIKE '%' || $1 || '%') \
+             ORDER BY {} LIMIT $2 OFFSET $3",
+            order
+        );
+        let rows: Vec<(Uuid, String, String, bool, chrono::DateTime<chrono::Utc>, i64)> =
+            sqlx::query_as(&sql).bind(q).bind(limit).bind(offset)
+                .fetch_all(&self.pool).await.map_err(AuthError::from)?;
+        let total = rows.first().map(|r| r.5).unwrap_or(0);
+        let items = rows.into_iter().map(|(id, name, slug, active, created, _)| {
+            serde_json::json!({
+                "id": id,
+                "name": name,
+                "slug": slug,
+                "is_active": active,
+                "created_at": created.to_rfc3339(),
             })
         }).collect();
         Ok((items, total))

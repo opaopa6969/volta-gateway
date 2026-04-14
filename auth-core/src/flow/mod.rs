@@ -5,3 +5,4 @@ pub mod oidc;
 pub mod mfa;
 pub mod passkey;
 pub mod invite;
+pub mod mermaid;

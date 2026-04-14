@@ -1,6 +1,7 @@
 //! Admin API handlers — audit, devices, billing, policies, SCIM, admin users/tenants.
 
 use axum::extract::{Path, Query, State};
+use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use axum_extra::extract::CookieJar;
@@ -8,14 +9,23 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::error::ApiError;
-use crate::helpers::{require_admin as auth_admin, require_session as auth};
+use crate::helpers::{require_admin_with_headers, require_session as auth};
 use crate::state::AppState;
 use volta_auth_core::store::*;
 
+/// Thin wrapper to keep handler bodies tidy — Bearer-or-cookie admin auth.
+async fn auth_admin(
+    s: &AppState,
+    jar: &CookieJar,
+    headers: &HeaderMap,
+) -> Result<volta_auth_core::record::SessionRecord, ApiError> {
+    require_admin_with_headers(s, jar, Some(headers)).await
+}
+
 // ─── Audit ─────────────────────────────────────────────────
 
-pub async fn list_audit(State(s): State<AppState>, jar: CookieJar, Query(q): Query<crate::pagination::PageRequest>) -> Result<Response, ApiError> {
-    let session = auth_admin(&s, &jar).await?;
+pub async fn list_audit(State(s): State<AppState>, jar: CookieJar, headers: HeaderMap, Query(q): Query<crate::pagination::PageRequest>) -> Result<Response, ApiError> {
+    let session = auth_admin(&s, &jar, &headers).await?;
     let req = q.normalized();
     let tid: Uuid = session.tenant_id.parse().unwrap_or_default();
     let from = req.from.as_deref().and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()).map(|d| d.with_timezone(&chrono::Utc));
@@ -127,8 +137,8 @@ pub async fn data_export(State(s): State<AppState>, jar: CookieJar) -> Result<Re
     })).into_response())
 }
 
-pub async fn hard_delete_user(State(s): State<AppState>, jar: CookieJar, Path(uid): Path<Uuid>) -> Result<Response, ApiError> {
-    let _ = auth_admin(&s, &jar).await?;
+pub async fn hard_delete_user(State(s): State<AppState>, jar: CookieJar, headers: HeaderMap, Path(uid): Path<Uuid>) -> Result<Response, ApiError> {
+    let _ = auth_admin(&s, &jar, &headers).await?;
     // #18 GDPR hard delete must cover:
     //   - audit_logs         (anonymize actor_id + detail)
     //   - outbox_events      (delete any pending event that names this user)
@@ -143,15 +153,21 @@ pub async fn hard_delete_user(State(s): State<AppState>, jar: CookieJar, Path(ui
 
 // ─── Admin system ──────────────────────────────────────────
 
-pub async fn admin_list_tenants(State(s): State<AppState>, jar: CookieJar) -> Result<Response, ApiError> {
-    let _ = auth_admin(&s, &jar).await?;
-    // Tenant pagination is out-of-scope for Java sync (Java endpoint wasn't paginated);
-    // leaving as stub until dedicated spec lands.
-    Ok(Json(serde_json::json!({"tenants": []})).into_response())
+pub async fn admin_list_tenants(State(s): State<AppState>, jar: CookieJar, headers: HeaderMap, Query(q): Query<crate::pagination::PageRequest>) -> Result<Response, ApiError> {
+    let _ = auth_admin(&s, &jar, &headers).await?;
+    let req = q.normalized();
+    let order = crate::pagination::PageRequest::order_sql(
+        req.sort.as_deref(),
+        &["created_at", "name", "slug"],
+        "created_at DESC",
+    );
+    let (items, total) = s.db.list_tenants_paginated(req.q.as_deref(), &order, req.limit(), req.offset())
+        .await.map_err(|e| ApiError::internal(&e.to_string()))?;
+    Ok(Json(crate::pagination::PageResponse::new(items, total, &req)).into_response())
 }
 
-pub async fn admin_list_users(State(s): State<AppState>, jar: CookieJar, Query(q): Query<crate::pagination::PageRequest>) -> Result<Response, ApiError> {
-    let _ = auth_admin(&s, &jar).await?;
+pub async fn admin_list_users(State(s): State<AppState>, jar: CookieJar, headers: HeaderMap, Query(q): Query<crate::pagination::PageRequest>) -> Result<Response, ApiError> {
+    let _ = auth_admin(&s, &jar, &headers).await?;
     let req = q.normalized();
     let order = crate::pagination::PageRequest::order_sql(
         req.sort.as_deref(),
@@ -164,8 +180,8 @@ pub async fn admin_list_users(State(s): State<AppState>, jar: CookieJar, Query(q
     Ok(Json(crate::pagination::PageResponse::new(items, total, &req)).into_response())
 }
 
-pub async fn outbox_flush(State(s): State<AppState>, jar: CookieJar) -> Result<Response, ApiError> {
-    let _ = auth_admin(&s, &jar).await?;
+pub async fn outbox_flush(State(s): State<AppState>, jar: CookieJar, headers: HeaderMap) -> Result<Response, ApiError> {
+    let _ = auth_admin(&s, &jar, &headers).await?;
     let pending = OutboxStore::claim_pending(&s.db, 100).await.map_err(|e| ApiError::internal(&e.to_string()))?;
     for event in &pending {
         OutboxStore::mark_published(&s.db, event.id).await.map_err(|e| ApiError::internal(&e.to_string()))?;

@@ -11,9 +11,25 @@
 
 ---
 
+## Status (2026-04-14 burst)
+
+Done since initial backlog: #1 (PKCE + KeyCipher), #2 structural defences,
+#3 Bearer M2M, #4 ID token verification, #5 passkey webauthn-rs, #6 tenants
+pagination, #7 Redis SSE, #8 Mermaid. Remaining: #2 cryptographic SAML
+signature verify (spec landed, C14N impl deferred); #9–#12 from the P2
+list.
+
+Each completed item has a spec at `docs/specs/<item>.md` and a design note
+at `docs/arch/<item>.md`. See those for details.
+
 ## P0
 
 ### 1. OIDC PKCE + KeyCipher (Java #4 / #15 / #16)
+
+**✅ Done** (commit `7922046`). See
+[`specs/oidc-id-token-validation.md`](specs/oidc-id-token-validation.md) for
+the adjacent ID-token work and [`arch/bearer-m2m-scope.md`](arch/bearer-m2m-scope.md)
+for the shared KeyCipher rationale.
 
 **現状**
 - `handlers/oidc.rs::login` は `state` + `nonce` のみ、`code_challenge` を送っていない。

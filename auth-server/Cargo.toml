@@ -6,7 +6,13 @@ description = "volta auth server — HTTP API layer for auth-core (100% Java vol
 
 [dependencies]
 # Auth core library
-volta-auth-core = { path = "../auth-core", features = ["postgres"] }
+volta-auth-core = { path = "../auth-core", features = ["postgres", "webauthn"] }
+
+# Bincode for serializing WebAuthn ceremony state (P1 #5)
+bincode = "1"
+
+# WebAuthn types surfaced in handler request/response bodies (P1 #5)
+webauthn-rs = { version = "0.6.0-dev", features = ["danger-allow-state-serialisation"] }
 
 # Web framework
 axum = { version = "0.8", features = ["macros"] }
@@ -62,6 +68,9 @@ futures-util = "0.3"
 
 # RNG for OIDC opaque state generation
 rand = "0.8"
+
+# Redis pub/sub for cross-instance SSE fan-out (P1 #7)
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 
 # SAML (XML parsing + signature verification)
 xmlparser = "0.13"

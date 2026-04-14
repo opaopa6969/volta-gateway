@@ -88,18 +88,18 @@ pub fn parse_identity(
         });
     }
 
-    // Signature validation (simplified — full XML DSig requires xmlsec)
+    // Signature validation — backlog P0 #2.
+    //
+    // Structural defences (anti-wrapping, algorithm allow-list, no external
+    // references) run here. Cryptographic verification (C14N + digest + RSA
+    // verify against the IdP cert) is still pending — see
+    // `auth-server/docs/specs/saml-signature-verification.md`.
     if !skip_signature {
-        if !xml.contains("<ds:Signature") && !xml.contains("<Signature") {
-            return Err(ApiError::unauthorized("SAML_SIGNATURE_REQUIRED", "SAML signature validation is required"));
-        }
         if idp_x509_cert.map(|c| c.is_empty()).unwrap_or(true) {
             return Err(ApiError::unauthorized("SAML_SIGNATURE_REQUIRED", "IdP certificate is required"));
         }
-        // Note: Full XML DSig verification requires libxmlsec1 or samael.
-        // For production, add samael with xmlsec feature for cryptographic verification.
-        // The structural checks below (issuer, destination, audience, expiry) provide
-        // defense-in-depth even without cryptographic signature verification.
+        crate::saml_sig::check_structure(&xml)
+            .map_err(|e| ApiError::unauthorized("SAML_SIGNATURE_REJECTED", &e.to_string()))?;
     }
 
     // Parse XML elements using simple text extraction
