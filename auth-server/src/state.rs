@@ -3,6 +3,9 @@ use volta_auth_core::idp::IdpClient;
 use volta_auth_core::jwt::{JwtIssuer, JwtVerifier};
 use volta_auth_core::store::pg::PgStore;
 
+use crate::auth_events::AuthEventBus;
+use crate::local_bypass::LocalNetworkBypass;
+
 /// Shared application state for all handlers.
 #[derive(Clone)]
 pub struct AppState {
@@ -20,4 +23,8 @@ pub struct AppState {
     pub base_url: String,
     /// HMAC key for signing OIDC state parameters.
     pub state_signing_key: Vec<u8>,
+    /// Local-network bypass for `/auth/verify` (P1.3, Java `5f23f88`+`4006ee7`).
+    pub local_bypass: Arc<LocalNetworkBypass>,
+    /// Auth event bus for `/viz/auth/stream` (P1.2, Java `9b4fe2c`).
+    pub auth_events: AuthEventBus,
 }

@@ -6,11 +6,43 @@ use axum_extra::extract::CookieJar;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
+use crate::error::ApiError;
 use crate::state::AppState;
+use volta_auth_core::record::SessionRecord;
+use volta_auth_core::store::SessionStore;
 
 type HmacSha256 = Hmac<Sha256>;
 
 const COOKIE_NAME: &str = "__volta_session";
+
+/// Resolve the current session from the request cookie, or return 401.
+///
+/// Shared by all non-public handlers.
+pub async fn require_session(state: &AppState, jar: &CookieJar) -> Result<SessionRecord, ApiError> {
+    let sid = extract_session_id(jar)
+        .ok_or_else(|| ApiError::unauthorized("SESSION_EXPIRED", "re-login"))?;
+    SessionStore::find(&state.db, &sid)
+        .await
+        .map_err(|e| ApiError::internal(&e.to_string()))?
+        .ok_or_else(|| ApiError::unauthorized("SESSION_EXPIRED", "re-login"))
+}
+
+/// #9: require the session to carry `ADMIN` or `OWNER` role. Used by all
+/// `/admin/*` and privileged `/api/v1/admin/*` handlers.
+pub async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<SessionRecord, ApiError> {
+    let session = require_session(state, jar).await?;
+    let is_privileged = session.roles.iter().any(|r| {
+        let u = r.to_ascii_uppercase();
+        u == "ADMIN" || u == "OWNER"
+    });
+    if !is_privileged {
+        return Err(ApiError::forbidden(
+            "INSUFFICIENT_SCOPE",
+            "ADMIN or OWNER role required",
+        ));
+    }
+    Ok(session)
+}
 
 /// Extract session ID from __volta_session cookie.
 pub fn extract_session_id(jar: &CookieJar) -> Option<String> {
@@ -33,6 +65,10 @@ pub fn set_session_cookie(resp: &mut Response, session_id: &str, state: &AppStat
 }
 
 /// Clear __volta_session cookie.
+///
+/// Fix #11: includes `Secure` / `SameSite` / `HttpOnly` so the clearing cookie
+/// has the same attributes as the original (required by Chrome/Firefox to
+/// actually overwrite the stored cookie rather than leave a duplicate alive).
 pub fn clear_session_cookie(resp: &mut Response, state: &AppState) {
     let mut cookie = format!(
         "{}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax",
@@ -40,6 +76,9 @@ pub fn clear_session_cookie(resp: &mut Response, state: &AppState) {
     );
     if !state.cookie_domain.is_empty() {
         cookie.push_str(&format!("; Domain={}", state.cookie_domain));
+    }
+    if state.force_secure_cookie {
+        cookie.push_str("; Secure");
     }
     resp.headers_mut().append("set-cookie", cookie.parse().unwrap());
 }

@@ -4,10 +4,12 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use axum_extra::extract::CookieJar;
 use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::error::ApiError;
+use crate::helpers::require_admin;
 use crate::state::AppState;
 use volta_auth_core::store::UserStore;
 
@@ -32,7 +34,8 @@ fn scim_user(id: Uuid, email: &str, name: Option<&str>, active: bool) -> serde_j
 }
 
 /// GET /scim/v2/Users
-pub async fn list_users(State(s): State<AppState>) -> Result<Response, ApiError> {
+pub async fn list_users(State(s): State<AppState>, jar: CookieJar) -> Result<Response, ApiError> {
+    let _ = require_admin(&s, &jar).await?;
     // Simplified — real impl would filter by tenant from Bearer token
     Ok(Json(scim_list(vec![])).into_response())
 }
@@ -46,7 +49,8 @@ pub struct ScimCreateUser {
 }
 
 /// POST /scim/v2/Users
-pub async fn create_user(State(s): State<AppState>, Json(b): Json<ScimCreateUser>) -> Result<Response, ApiError> {
+pub async fn create_user(State(s): State<AppState>, jar: CookieJar, Json(b): Json<ScimCreateUser>) -> Result<Response, ApiError> {
+    let _ = require_admin(&s, &jar).await?;
     let user = UserStore::upsert(&s.db, volta_auth_core::record::UserRecord {
         id: Uuid::new_v4(),
         email: b.user_name.clone(),
@@ -64,7 +68,8 @@ pub async fn create_user(State(s): State<AppState>, Json(b): Json<ScimCreateUser
 }
 
 /// GET /scim/v2/Users/{id}
-pub async fn get_user(State(s): State<AppState>, Path(id): Path<Uuid>) -> Result<Response, ApiError> {
+pub async fn get_user(State(s): State<AppState>, jar: CookieJar, Path(id): Path<Uuid>) -> Result<Response, ApiError> {
+    let _ = require_admin(&s, &jar).await?;
     let user = UserStore::find_by_id(&s.db, id).await
         .map_err(|e| ApiError::internal(&e.to_string()))?
         .ok_or_else(|| ApiError::bad_request("NOT_FOUND", "user not found"))?;
@@ -72,7 +77,8 @@ pub async fn get_user(State(s): State<AppState>, Path(id): Path<Uuid>) -> Result
 }
 
 /// PUT /scim/v2/Users/{id}
-pub async fn replace_user(State(s): State<AppState>, Path(id): Path<Uuid>, Json(b): Json<ScimCreateUser>) -> Result<Response, ApiError> {
+pub async fn replace_user(State(s): State<AppState>, jar: CookieJar, Path(id): Path<Uuid>, Json(b): Json<ScimCreateUser>) -> Result<Response, ApiError> {
+    let _ = require_admin(&s, &jar).await?;
     UserStore::update_display_name(&s.db, id, b.display_name.as_deref().unwrap_or("")).await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
     let user = UserStore::find_by_id(&s.db, id).await
@@ -82,7 +88,8 @@ pub async fn replace_user(State(s): State<AppState>, Path(id): Path<Uuid>, Json(
 }
 
 /// PATCH /scim/v2/Users/{id}
-pub async fn patch_user(State(s): State<AppState>, Path(id): Path<Uuid>, Json(b): Json<serde_json::Value>) -> Result<Response, ApiError> {
+pub async fn patch_user(State(s): State<AppState>, jar: CookieJar, Path(id): Path<Uuid>, Json(b): Json<serde_json::Value>) -> Result<Response, ApiError> {
+    let _ = require_admin(&s, &jar).await?;
     // Simplified PATCH — extract displayName from Operations
     if let Some(ops) = b.get("Operations").and_then(|v| v.as_array()) {
         for op in ops {
@@ -101,19 +108,22 @@ pub async fn patch_user(State(s): State<AppState>, Path(id): Path<Uuid>, Json(b)
 }
 
 /// DELETE /scim/v2/Users/{id}
-pub async fn delete_user(State(s): State<AppState>, Path(id): Path<Uuid>) -> Result<Response, ApiError> {
+pub async fn delete_user(State(s): State<AppState>, jar: CookieJar, Path(id): Path<Uuid>) -> Result<Response, ApiError> {
+    let _ = require_admin(&s, &jar).await?;
     UserStore::soft_delete(&s.db, id).await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 /// GET /scim/v2/Groups
-pub async fn list_groups(State(_s): State<AppState>) -> Response {
-    Json(scim_list(vec![])).into_response()
+pub async fn list_groups(State(s): State<AppState>, jar: CookieJar) -> Result<Response, ApiError> {
+    let _ = require_admin(&s, &jar).await?;
+    Ok(Json(scim_list(vec![])).into_response())
 }
 
 /// POST /scim/v2/Groups
-pub async fn create_group(State(_s): State<AppState>, Json(_b): Json<serde_json::Value>) -> Response {
+pub async fn create_group(State(s): State<AppState>, jar: CookieJar, Json(_b): Json<serde_json::Value>) -> Result<Response, ApiError> {
+    let _ = require_admin(&s, &jar).await?;
     // Groups map to tenants — simplified stub
     let mut resp = Json(serde_json::json!({
         "schemas": ["urn:ietf:params:scim:schemas:core:2.0:Group"],
@@ -122,5 +132,5 @@ pub async fn create_group(State(_s): State<AppState>, Json(_b): Json<serde_json:
         "members": [],
     })).into_response();
     *resp.status_mut() = StatusCode::CREATED;
-    resp
+    Ok(resp)
 }

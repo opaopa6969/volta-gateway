@@ -8,12 +8,39 @@ use axum::Json;
 use axum_extra::extract::CookieJar;
 use serde::{Deserialize, Serialize};
 
+use crate::auth_events::AuthEvent;
 use crate::error::{no_cache_headers, ApiError};
 use crate::helpers::{extract_session_id, is_json_accept, set_session_cookie, clear_session_cookie};
 use crate::state::AppState;
 use volta_auth_core::store::{SessionStore, MembershipStore, TenantStore};
 
+/// Publish a `LOGOUT` auth event for `/viz/auth/stream` (P1.2).
+///
+/// Best-effort: we look up the session to attach user/tenant metadata when
+/// possible, but a missing/expired session still produces an event (the
+/// front-end only filters by event_type).
+async fn publish_logout_event(state: &AppState, session_id: &str) {
+    let mut ev = AuthEvent::now("LOGOUT").with_session(session_id);
+    if let Ok(Some(s)) = SessionStore::find(&state.db, session_id).await {
+        ev = ev.with_user(s.user_id).with_tenant(s.tenant_id);
+    }
+    state.auth_events.publish(ev);
+}
+
 /// GET /auth/verify — ForwardAuth endpoint for gateway.
+///
+/// Order mirrors Java `AuthFlowHandler.verify` (`99a2769` + `4006ee7`):
+///   1. Require forwarded headers from the gateway.
+///   2. If a session cookie is present → resolve session:
+///       a. session invalid/expired → redirect to /login
+///       b. MFA pending → 302 to /mfa/challenge
+///       c. OK → 200 + `X-Volta-*` headers
+///   3. No session → local-network bypass: if the caller's IP is LAN/Tailscale,
+///      return 200 anonymous with `X-Volta-Auth-Source: local-bypass` (P1.3).
+///   4. No session + external IP → redirect to /login.
+///
+/// The bypass only fires when there is no session so that authenticated LAN
+/// users still get their real user headers and MFA enforcement.
 pub async fn verify(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -27,64 +54,82 @@ pub async fn verify(
         return ApiError::unauthorized("AUTHENTICATION_REQUIRED", "Missing forwarded headers").into_response();
     }
 
-    let session_id = match extract_session_id(&jar) {
-        Some(id) => id,
-        None => {
-            let return_to = format!("{}://{}{}", forwarded_proto, forwarded_host.unwrap(), forwarded_uri.unwrap());
-            let location = format!("{}/login?return_to={}", state.base_url, urlencoding::encode(&return_to));
-            let mut resp = Redirect::to(&location).into_response();
-            *resp.status_mut() = StatusCode::UNAUTHORIZED;
-            no_cache_headers(&mut resp);
-            return resp;
-        }
+    let redirect_to_login = || {
+        let return_to = format!("{}://{}{}", forwarded_proto, forwarded_host.unwrap(), forwarded_uri.unwrap());
+        let location = format!("{}/login?return_to={}", state.base_url, urlencoding::encode(&return_to));
+        let mut resp = Redirect::to(&location).into_response();
+        *resp.status_mut() = StatusCode::UNAUTHORIZED;
+        no_cache_headers(&mut resp);
+        resp
     };
 
-    let session = match SessionStore::find(&state.db, &session_id).await {
-        Ok(Some(s)) => s,
-        _ => {
-            let return_to = format!("{}://{}{}", forwarded_proto, forwarded_host.unwrap(), forwarded_uri.unwrap());
-            let location = format!("{}/login?return_to={}", state.base_url, urlencoding::encode(&return_to));
-            let mut resp = Redirect::to(&location).into_response();
-            *resp.status_mut() = StatusCode::UNAUTHORIZED;
-            no_cache_headers(&mut resp);
-            return resp;
+    // ── Session path ──────────────────────────────────────────
+    if let Some(session_id) = extract_session_id(&jar) {
+        let session = match SessionStore::find(&state.db, &session_id).await {
+            Ok(Some(s)) => s,
+            _ => return redirect_to_login(),
+        };
+
+        // P1.1 AUTH-010: MFA pending → send user to challenge (only if they are
+        // not already navigating to the MFA page, to avoid redirect loops).
+        if session.mfa_verified_at.is_none() {
+            if let Some(uri) = forwarded_uri {
+                let is_mfa_path = uri.starts_with("/mfa/") || uri.starts_with("/auth/mfa/");
+                if !is_mfa_path {
+                    let location = format!("{}/mfa/challenge", state.base_url);
+                    let mut resp = Redirect::to(&location).into_response();
+                    *resp.status_mut() = StatusCode::UNAUTHORIZED;
+                    no_cache_headers(&mut resp);
+                    return resp;
+                }
+            }
         }
-    };
 
-    // Build volta headers
-    let mut resp = StatusCode::OK.into_response();
-    let h = resp.headers_mut();
-    h.insert("x-volta-user-id", session.user_id.parse().unwrap());
-    if let Some(ref email) = session.email {
-        h.insert("x-volta-email", email.parse().unwrap());
-    }
-    h.insert("x-volta-tenant-id", session.tenant_id.parse().unwrap());
-    if let Some(ref slug) = session.tenant_slug {
-        h.insert("x-volta-tenant-slug", slug.parse().unwrap());
-    }
-    if !session.roles.is_empty() {
-        h.insert("x-volta-roles", session.roles.join(",").parse().unwrap());
-    }
-    let display = session.display_name.as_deref().unwrap_or("");
-    h.insert("x-volta-display-name", display.parse().unwrap());
+        // Build volta headers
+        let mut resp = StatusCode::OK.into_response();
+        let h = resp.headers_mut();
+        h.insert("x-volta-user-id", session.user_id.parse().unwrap());
+        if let Some(ref email) = session.email {
+            h.insert("x-volta-email", email.parse().unwrap());
+        }
+        h.insert("x-volta-tenant-id", session.tenant_id.parse().unwrap());
+        if let Some(ref slug) = session.tenant_slug {
+            h.insert("x-volta-tenant-slug", slug.parse().unwrap());
+        }
+        if !session.roles.is_empty() {
+            h.insert("x-volta-roles", session.roles.join(",").parse().unwrap());
+        }
+        let display = session.display_name.as_deref().unwrap_or("");
+        h.insert("x-volta-display-name", display.parse().unwrap());
 
-    // Issue JWT for X-Volta-JWT header
-    if let Ok(jwt) = state.jwt_issuer.issue(&volta_auth_core::jwt::VoltaClaims {
-        sub: session.user_id.clone(),
-        email: session.email.clone(),
-        tenant_id: Some(session.tenant_id.clone()),
-        tenant_slug: session.tenant_slug.clone(),
-        roles: if session.roles.is_empty() { None } else { Some(session.roles.join(",")) },
-        name: session.display_name.clone(),
-        app_id: None,
-        iat: None,
-        exp: None,
-    }) {
-        h.insert("x-volta-jwt", jwt.parse().unwrap());
+        if let Ok(jwt) = state.jwt_issuer.issue(&volta_auth_core::jwt::VoltaClaims {
+            sub: session.user_id.clone(),
+            email: session.email.clone(),
+            tenant_id: Some(session.tenant_id.clone()),
+            tenant_slug: session.tenant_slug.clone(),
+            roles: if session.roles.is_empty() { None } else { Some(session.roles.join(",")) },
+            name: session.display_name.clone(),
+            app_id: None,
+            iat: None,
+            exp: None,
+        }) {
+            h.insert("x-volta-jwt", jwt.parse().unwrap());
+        }
+
+        no_cache_headers(&mut resp);
+        return resp;
     }
 
-    no_cache_headers(&mut resp);
-    resp
+    // ── No session: local-network bypass (P1.3) ───────────────
+    if state.local_bypass.matches_request(&headers, None) {
+        let mut resp = StatusCode::OK.into_response();
+        resp.headers_mut().insert("x-volta-auth-source", "local-bypass".parse().unwrap());
+        no_cache_headers(&mut resp);
+        return resp;
+    }
+
+    // ── External caller, no session → login ───────────────────
+    redirect_to_login()
 }
 
 /// GET /auth/logout — browser logout with redirect.
@@ -93,6 +138,7 @@ pub async fn logout_get(
     jar: CookieJar,
 ) -> Response {
     if let Some(session_id) = extract_session_id(&jar) {
+        publish_logout_event(&state, &session_id).await;
         let _ = SessionStore::revoke(&state.db, &session_id).await;
     }
     let mut resp = Redirect::to(&format!("{}/login", state.base_url)).into_response();
@@ -108,6 +154,7 @@ pub async fn logout_post(
     jar: CookieJar,
 ) -> Response {
     if let Some(session_id) = extract_session_id(&jar) {
+        publish_logout_event(&state, &session_id).await;
         let _ = SessionStore::revoke(&state.db, &session_id).await;
     }
 
@@ -206,7 +253,11 @@ pub async fn switch_tenant(
         last_active_at: now_epoch,
         expires_at: now_epoch + state.session_ttl_secs,
         invalidated_at: None,
-        mfa_verified_at: session.mfa_verified_at,
+        // #12: MFA verification does NOT carry over across tenants. If the new
+        // tenant requires MFA, the user must re-verify in that tenant's context.
+        // Previously we copied `session.mfa_verified_at`, which silently elevated
+        // tenant B with MFA state obtained from tenant A.
+        mfa_verified_at: None,
         ip_address: session.ip_address,
         user_agent: session.user_agent,
         csrf_token: None,

@@ -9,8 +9,14 @@ use uuid::Uuid;
 
 use crate::error::ApiError;
 use crate::helpers::extract_session_id;
+use crate::security::validate_webhook_url;
 use crate::state::AppState;
 use volta_auth_core::store::{SessionStore, WebhookStore, WebhookDeliveryStore};
+
+/// Dev override: allow `http://` and private-range webhook URLs when set to "true".
+fn allow_insecure_webhooks() -> bool {
+    std::env::var("VOLTA_ALLOW_INSECURE_WEBHOOKS").ok().as_deref() == Some("true")
+}
 
 async fn auth(s: &AppState, jar: &CookieJar) -> Result<(), ApiError> {
     let sid = extract_session_id(jar).ok_or_else(|| ApiError::unauthorized("SESSION_EXPIRED", "re-login"))?;
@@ -24,6 +30,8 @@ pub struct CreateWebhookReq { pub endpoint_url: String, pub events: String, pub 
 
 pub async fn create_webhook(State(s): State<AppState>, jar: CookieJar, Path(tid): Path<Uuid>, Json(b): Json<CreateWebhookReq>) -> Result<Response, ApiError> {
     auth(&s, &jar).await?;
+    validate_webhook_url(&b.endpoint_url, allow_insecure_webhooks())
+        .map_err(|e| ApiError::bad_request("INVALID_ENDPOINT", &e))?;
     let secret = b.secret.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let id = WebhookStore::create(&s.db, volta_auth_core::record::WebhookRecord {
         id: Uuid::new_v4(), tenant_id: tid, endpoint_url: b.endpoint_url, secret, events: b.events,
@@ -51,6 +59,10 @@ pub struct PatchWebhookReq { pub endpoint_url: Option<String>, pub events: Optio
 
 pub async fn patch_webhook(State(s): State<AppState>, jar: CookieJar, Path((tid, wid)): Path<(Uuid, Uuid)>, Json(b): Json<PatchWebhookReq>) -> Result<Response, ApiError> {
     auth(&s, &jar).await?;
+    if let Some(ref new_url) = b.endpoint_url {
+        validate_webhook_url(new_url, allow_insecure_webhooks())
+            .map_err(|e| ApiError::bad_request("INVALID_ENDPOINT", &e))?;
+    }
     let existing = WebhookStore::find(&s.db, tid, wid).await.map_err(|e| ApiError::internal(&e.to_string()))?
         .ok_or_else(|| ApiError::bad_request("NOT_FOUND", "webhook not found"))?;
     WebhookStore::update(&s.db, wid, b.endpoint_url.as_deref().unwrap_or(&existing.endpoint_url),

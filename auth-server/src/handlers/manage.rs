@@ -63,11 +63,22 @@ pub async fn patch_tenant(State(s): State<AppState>, jar: CookieJar, Path(tid): 
 
 // ─── Member ────────────────────────────────────────────────
 
-pub async fn list_members(State(s): State<AppState>, jar: CookieJar, Path(tid): Path<Uuid>) -> Result<Response, ApiError> {
+pub async fn list_members(
+    State(s): State<AppState>,
+    jar: CookieJar,
+    Path(tid): Path<Uuid>,
+    axum::extract::Query(q): axum::extract::Query<crate::pagination::PageRequest>,
+) -> Result<Response, ApiError> {
     let _ = auth(&s, &jar).await?;
-    let members = MembershipStore::list_by_tenant(&s.db, tid).await.map_err(|e| ApiError::internal(&e.to_string()))?;
-    let items: Vec<serde_json::Value> = members.iter().map(|m| serde_json::json!({"id":m.id,"user_id":m.user_id,"role":m.role,"is_active":m.is_active})).collect();
-    Ok(Json(items).into_response())
+    let req = q.normalized();
+    let order = crate::pagination::PageRequest::order_sql(
+        req.sort.as_deref(),
+        &["joined_at", "role"],
+        "joined_at DESC",
+    );
+    let (items, total) = s.db.list_members_paginated(tid, &order, req.limit(), req.offset())
+        .await.map_err(|e| ApiError::internal(&e.to_string()))?;
+    Ok(Json(crate::pagination::PageResponse::new(items, total, &req)).into_response())
 }
 
 #[derive(Deserialize)]
@@ -105,11 +116,23 @@ pub async fn create_invitation(State(s): State<AppState>, jar: CookieJar, Path(t
     Ok(Json(serde_json::json!({"code": code})).into_response())
 }
 
-pub async fn list_invitations(State(s): State<AppState>, jar: CookieJar, Path(tid): Path<Uuid>) -> Result<Response, ApiError> {
+pub async fn list_invitations(
+    State(s): State<AppState>,
+    jar: CookieJar,
+    Path(tid): Path<Uuid>,
+    axum::extract::Query(q): axum::extract::Query<crate::pagination::PageRequest>,
+) -> Result<Response, ApiError> {
     let _ = auth(&s, &jar).await?;
-    let invs = InvitationStore::list_by_tenant(&s.db, tid).await.map_err(|e| ApiError::internal(&e.to_string()))?;
-    let items: Vec<serde_json::Value> = invs.iter().map(|i| serde_json::json!({"id":i.id,"code":i.code,"email":i.email,"role":i.role,"used_count":i.used_count,"max_uses":i.max_uses})).collect();
-    Ok(Json(items).into_response())
+    let req = q.normalized();
+    let order = crate::pagination::PageRequest::order_sql(
+        req.sort.as_deref(),
+        &["created_at", "expires_at"],
+        "created_at DESC",
+    );
+    let (items, total) = s.db.list_invitations_paginated(
+        tid, req.status.as_deref(), &order, req.limit(), req.offset(),
+    ).await.map_err(|e| ApiError::internal(&e.to_string()))?;
+    Ok(Json(crate::pagination::PageResponse::new(items, total, &req)).into_response())
 }
 
 pub async fn cancel_invitation(State(s): State<AppState>, jar: CookieJar, Path((tid, inv_id)): Path<(Uuid, Uuid)>) -> Result<Response, ApiError> {
@@ -226,7 +249,8 @@ pub async fn oauth_token(State(s): State<AppState>, axum::extract::Form(b): axum
         .ok_or_else(|| ApiError::unauthorized("INVALID_CLIENT", "invalid client_id"))?;
 
     let hash = crate::handlers::mfa::sha256_hex_pub(&b.client_secret);
-    if hash != client.client_secret_hash {
+    // #21: constant-time compare to avoid leaking the hash via early-exit timing.
+    if !crate::security::constant_time_eq(hash.as_bytes(), client.client_secret_hash.as_bytes()) {
         return Err(ApiError::unauthorized("INVALID_CLIENT", "invalid client_secret"));
     }
 

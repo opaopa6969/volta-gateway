@@ -8,31 +8,26 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::error::ApiError;
-use crate::helpers::extract_session_id;
+use crate::helpers::{require_admin as auth_admin, require_session as auth};
 use crate::state::AppState;
 use volta_auth_core::store::*;
 
-async fn auth(s: &AppState, jar: &CookieJar) -> Result<volta_auth_core::record::SessionRecord, ApiError> {
-    let sid = extract_session_id(jar).ok_or_else(|| ApiError::unauthorized("SESSION_EXPIRED", "re-login"))?;
-    SessionStore::find(&s.db, &sid).await.map_err(|e| ApiError::internal(&e.to_string()))?
-        .ok_or_else(|| ApiError::unauthorized("SESSION_EXPIRED", "re-login"))
-}
-
 // ─── Audit ─────────────────────────────────────────────────
 
-#[derive(Deserialize)]
-pub struct AuditQuery { pub tenant_id: Option<Uuid>, pub offset: Option<i64>, pub limit: Option<i64> }
-
-pub async fn list_audit(State(s): State<AppState>, jar: CookieJar, Query(q): Query<AuditQuery>) -> Result<Response, ApiError> {
-    let session = auth(&s, &jar).await?;
-    let tid = q.tenant_id.unwrap_or_else(|| session.tenant_id.parse().unwrap_or_default());
-    let logs = AuditStore::list(&s.db, tid, q.offset.unwrap_or(0), q.limit.unwrap_or(50)).await
-        .map_err(|e| ApiError::internal(&e.to_string()))?;
-    let items: Vec<serde_json::Value> = logs.iter().map(|l| serde_json::json!({
-        "id":l.id,"timestamp":l.timestamp.to_rfc3339(),"event_type":l.event_type,
-        "actor_id":l.actor_id,"target_type":l.target_type,"target_id":l.target_id
-    })).collect();
-    Ok(Json(items).into_response())
+pub async fn list_audit(State(s): State<AppState>, jar: CookieJar, Query(q): Query<crate::pagination::PageRequest>) -> Result<Response, ApiError> {
+    let session = auth_admin(&s, &jar).await?;
+    let req = q.normalized();
+    let tid: Uuid = session.tenant_id.parse().unwrap_or_default();
+    let from = req.from.as_deref().and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()).map(|d| d.with_timezone(&chrono::Utc));
+    let to = req.to.as_deref().and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()).map(|d| d.with_timezone(&chrono::Utc));
+    let order = crate::pagination::PageRequest::order_sql(
+        req.sort.as_deref(), &["timestamp", "event_type"], "timestamp DESC",
+    );
+    let (items, total) = s.db.list_audit_paginated(
+        tid, from, to, req.event.as_deref(), &order, req.limit(), req.offset(),
+    ).await.map_err(|e| ApiError::internal(&e.to_string()))?;
+    let resp = crate::pagination::PageResponse::new(items, total, &req);
+    Ok(Json(resp).into_response())
 }
 
 // ─── Devices ───────────────────────────────────────────────
@@ -133,9 +128,15 @@ pub async fn data_export(State(s): State<AppState>, jar: CookieJar) -> Result<Re
 }
 
 pub async fn hard_delete_user(State(s): State<AppState>, jar: CookieJar, Path(uid): Path<Uuid>) -> Result<Response, ApiError> {
-    let _ = auth(&s, &jar).await?;
-    // Anonymize audit logs, soft delete user
+    let _ = auth_admin(&s, &jar).await?;
+    // #18 GDPR hard delete must cover:
+    //   - audit_logs         (anonymize actor_id + detail)
+    //   - outbox_events      (delete any pending event that names this user)
+    //   - auth_flow_transitions (delete PII-bearing context_snapshots)
+    //   - users              (soft delete — real rows retained for FK integrity)
     AuditStore::anonymize(&s.db, uid).await.map_err(|e| ApiError::internal(&e.to_string()))?;
+    OutboxStore::delete_by_user(&s.db, uid).await.map_err(|e| ApiError::internal(&e.to_string()))?;
+    AuditStore::delete_flow_transitions_by_user(&s.db, uid).await.map_err(|e| ApiError::internal(&e.to_string()))?;
     UserStore::soft_delete(&s.db, uid).await.map_err(|e| ApiError::internal(&e.to_string()))?;
     Ok(Json(serde_json::json!({"ok": true})).into_response())
 }
@@ -143,18 +144,28 @@ pub async fn hard_delete_user(State(s): State<AppState>, jar: CookieJar, Path(ui
 // ─── Admin system ──────────────────────────────────────────
 
 pub async fn admin_list_tenants(State(s): State<AppState>, jar: CookieJar) -> Result<Response, ApiError> {
-    let _ = auth(&s, &jar).await?;
-    // Simplified — real impl would paginate
+    let _ = auth_admin(&s, &jar).await?;
+    // Tenant pagination is out-of-scope for Java sync (Java endpoint wasn't paginated);
+    // leaving as stub until dedicated spec lands.
     Ok(Json(serde_json::json!({"tenants": []})).into_response())
 }
 
-pub async fn admin_list_users(State(s): State<AppState>, jar: CookieJar) -> Result<Response, ApiError> {
-    let _ = auth(&s, &jar).await?;
-    Ok(Json(serde_json::json!({"users": []})).into_response())
+pub async fn admin_list_users(State(s): State<AppState>, jar: CookieJar, Query(q): Query<crate::pagination::PageRequest>) -> Result<Response, ApiError> {
+    let _ = auth_admin(&s, &jar).await?;
+    let req = q.normalized();
+    let order = crate::pagination::PageRequest::order_sql(
+        req.sort.as_deref(),
+        &["email", "created_at", "display_name"],
+        "created_at DESC",
+    );
+    let (items, total) = s.db.list_users_paginated(
+        req.q.as_deref(), &order, req.limit(), req.offset(),
+    ).await.map_err(|e| ApiError::internal(&e.to_string()))?;
+    Ok(Json(crate::pagination::PageResponse::new(items, total, &req)).into_response())
 }
 
 pub async fn outbox_flush(State(s): State<AppState>, jar: CookieJar) -> Result<Response, ApiError> {
-    let _ = auth(&s, &jar).await?;
+    let _ = auth_admin(&s, &jar).await?;
     let pending = OutboxStore::claim_pending(&s.db, 100).await.map_err(|e| ApiError::internal(&e.to_string()))?;
     for event in &pending {
         OutboxStore::mark_published(&s.db, event.id).await.map_err(|e| ApiError::internal(&e.to_string()))?;

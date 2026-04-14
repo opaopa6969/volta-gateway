@@ -2,8 +2,13 @@ mod app;
 mod error;
 mod handlers;
 mod helpers;
+pub mod auth_events;
+pub mod local_bypass;
 mod outbox_worker;
+pub mod pagination;
+pub mod rate_limit;
 pub mod saml;
+pub mod security;
 mod state;
 
 use sqlx::PgPool;
@@ -61,6 +66,13 @@ async fn main() {
         scopes: vec![],
     });
 
+    let local_bypass = Arc::new(local_bypass::LocalNetworkBypass::from_env());
+    if local_bypass.is_empty() {
+        info!("local_bypass disabled (LOCAL_BYPASS_CIDRS is empty)");
+    } else {
+        info!("local_bypass enabled");
+    }
+
     let state = AppState {
         db,
         idp: Arc::new(idp),
@@ -71,6 +83,8 @@ async fn main() {
         force_secure_cookie: force_secure,
         base_url,
         state_signing_key: state_key.into_bytes(),
+        local_bypass,
+        auth_events: auth_events::AuthEventBus::new(),
     };
 
     // Outbox worker — poll every 5s, deliver webhooks
@@ -83,7 +97,15 @@ async fn main() {
     info!(port = port, "volta-auth-server starting");
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, router).await.unwrap();
+    // `into_make_service_with_connect_info` makes peer SocketAddr available to
+    // handlers/middleware via `ConnectInfo<SocketAddr>` — needed for the IP-keyed
+    // rate limiter (#7, #10).
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .unwrap();
 }
 
 fn env(key: &str, default: &str) -> String {

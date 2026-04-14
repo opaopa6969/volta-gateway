@@ -1,12 +1,49 @@
 //! Axum Router — 100% compatible with Java volta-auth-proxy routes.
 
+use std::time::Duration;
+
+use axum::middleware::from_fn_with_state;
 use axum::routing::{delete, get, patch, post, put};
 use axum::Router;
 
 use crate::handlers;
+use crate::rate_limit::{limit_by_ip, RateLimiter};
 use crate::state::AppState;
 
 pub fn build_router(state: AppState) -> Router {
+    // #7, #10: per-endpoint rate limiters, keyed by client IP.
+    // (Java: OIDC 10/min, MFA verify 5/min, passkey 5/min, invite 20/min.)
+    let rl_oidc = RateLimiter::new("oidc", 10, Duration::from_secs(60));
+    let rl_mfa = RateLimiter::new("mfa", 5, Duration::from_secs(60));
+    let rl_passkey = RateLimiter::new("passkey", 5, Duration::from_secs(60));
+    let rl_invite = RateLimiter::new("invite", 20, Duration::from_secs(60));
+    let rl_magic = RateLimiter::new("magic-link", 5, Duration::from_secs(60));
+
+    // Rate-limited route groups (mounted then merged into the main router below).
+    let oidc_routes = Router::new()
+        .route("/login", get(handlers::oidc::login))
+        .route("/callback", get(handlers::oidc::callback))
+        .route("/auth/callback/complete", post(handlers::oidc::callback_complete))
+        .route_layer(from_fn_with_state(rl_oidc, limit_by_ip));
+
+    let mfa_routes = Router::new()
+        .route("/auth/mfa/verify", post(handlers::mfa::mfa_verify_login))
+        .route_layer(from_fn_with_state(rl_mfa, limit_by_ip));
+
+    let passkey_routes = Router::new()
+        .route("/auth/passkey/start", post(handlers::passkey_flow::auth_start))
+        .route("/auth/passkey/finish", post(handlers::passkey_flow::auth_finish))
+        .route_layer(from_fn_with_state(rl_passkey, limit_by_ip));
+
+    let invite_routes = Router::new()
+        .route("/invite/{code}/accept", post(handlers::manage::accept_invite))
+        .route_layer(from_fn_with_state(rl_invite, limit_by_ip));
+
+    let magic_routes = Router::new()
+        .route("/auth/magic-link/send", post(handlers::magic_link::send))
+        .route("/auth/magic-link/verify", get(handlers::magic_link::verify))
+        .route_layer(from_fn_with_state(rl_magic, limit_by_ip));
+
     Router::new()
         // Auth (ForwardAuth + session)
         .route("/auth/verify", get(handlers::auth::verify))
@@ -19,10 +56,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/saml/login", get(handlers::saml::saml_login))
         .route("/auth/saml/callback", post(handlers::saml::saml_callback))
 
-        // OIDC
-        .route("/login", get(handlers::oidc::login))
-        .route("/callback", get(handlers::oidc::callback))
-        .route("/auth/callback/complete", post(handlers::oidc::callback_complete))
+        // OIDC — moved into `oidc_routes` sub-router (rate-limited via route_layer)
 
         // Sessions
         .route("/api/me/sessions", get(handlers::session::list_sessions))
@@ -39,11 +73,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/users/{userId}/mfa/totp", delete(handlers::mfa::totp_disable))
         .route("/api/v1/users/me/mfa", get(handlers::mfa::mfa_status))
         .route("/api/v1/users/{userId}/mfa/recovery-codes/regenerate", post(handlers::mfa::regenerate_recovery_codes))
-        .route("/auth/mfa/verify", post(handlers::mfa::mfa_verify_login))
+        // GET /mfa/challenge — TOTP input page (AUTH-010)
+        .route("/mfa/challenge", get(handlers::mfa::mfa_challenge))
+        // /auth/mfa/verify — moved into `mfa_routes` sub-router (rate-limited)
 
-        // Magic Link
-        .route("/auth/magic-link/send", post(handlers::magic_link::send))
-        .route("/auth/magic-link/verify", get(handlers::magic_link::verify))
+        // Magic Link — moved into `magic_routes` sub-router (rate-limited)
 
         // Signing Keys (admin)
         .route("/api/v1/admin/keys", get(handlers::signing_key::list_keys))
@@ -64,7 +98,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/tenants/{tenantId}/invitations", post(handlers::manage::create_invitation))
         .route("/api/v1/tenants/{tenantId}/invitations", get(handlers::manage::list_invitations))
         .route("/api/v1/tenants/{tenantId}/invitations/{invitationId}", delete(handlers::manage::cancel_invitation))
-        .route("/invite/{code}/accept", post(handlers::manage::accept_invite))
+        // /invite/{code}/accept — moved into `invite_routes` sub-router (rate-limited)
 
         // IdP Config
         .route("/api/v1/tenants/{tenantId}/idp-configs", get(handlers::manage::list_idp_configs))
@@ -117,6 +151,8 @@ pub fn build_router(state: AppState) -> Router {
         // Admin (system)
         .route("/api/v1/admin/tenants", get(handlers::admin::admin_list_tenants))
         .route("/api/v1/admin/users", get(handlers::admin::admin_list_users))
+        // P2.1: new paginated sessions endpoint (matches Java `f31a2f2`)
+        .route("/api/v1/admin/sessions", get(handlers::extra::admin_list_sessions))
         .route("/api/v1/admin/outbox/flush", post(handlers::admin::outbox_flush))
 
         // SCIM 2.0
@@ -129,9 +165,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/scim/v2/Groups", get(handlers::scim::list_groups))
         .route("/scim/v2/Groups", post(handlers::scim::create_group))
 
-        // Passkey auth flow
-        .route("/auth/passkey/start", post(handlers::passkey_flow::auth_start))
-        .route("/auth/passkey/finish", post(handlers::passkey_flow::auth_finish))
+        // Passkey auth flow — /auth/passkey/* moved into `passkey_routes` (rate-limited)
         .route("/api/v1/users/{userId}/passkeys/register/start", post(handlers::passkey_flow::register_start))
         .route("/api/v1/users/{userId}/passkeys/register/finish", post(handlers::passkey_flow::register_finish))
 
@@ -164,9 +198,19 @@ pub fn build_router(state: AppState) -> Router {
         .route("/settings/security", get(handlers::extra::admin_members_page))
         .route("/settings/sessions", get(handlers::extra::admin_sessions_page))
 
+        // Viz (P1.2 SSE + P2.2 tramli-viz integration)
+        .route("/viz/auth/stream", get(handlers::viz::auth_stream))
+        .route("/viz/flows", get(handlers::viz::list_flows))
+        .route("/api/v1/admin/flows/{flowId}/transitions", get(handlers::viz::flow_transitions))
+
         // Health + JWKS
         .route("/healthz", get(handlers::health::healthz))
         .route("/.well-known/jwks.json", get(handlers::health::jwks))
 
+        .merge(oidc_routes)
+        .merge(mfa_routes)
+        .merge(passkey_routes)
+        .merge(invite_routes)
+        .merge(magic_routes)
         .with_state(state)
 }

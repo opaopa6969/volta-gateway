@@ -20,6 +20,9 @@ pub trait OutboxStore: Send + Sync {
     async fn claim_pending(&self, limit: i64) -> Result<Vec<OutboxRecord>, AuthError>;
     async fn mark_published(&self, id: Uuid) -> Result<(), AuthError>;
     async fn mark_retry(&self, id: Uuid, attempt: i32, error: &str) -> Result<(), AuthError>;
+    /// GDPR hard delete (#18): remove all queued events that mention the given user_id
+    /// in their JSONB payload.
+    async fn delete_by_user(&self, user_id: Uuid) -> Result<(), AuthError>;
 }
 
 #[async_trait]
@@ -35,6 +38,9 @@ pub trait AuditStore: Send + Sync {
     async fn insert(&self, record: AuditLogRecord) -> Result<(), AuthError>;
     async fn list(&self, tenant_id: Uuid, offset: i64, limit: i64) -> Result<Vec<AuditLogRecord>, AuthError>;
     async fn anonymize(&self, user_id: Uuid) -> Result<(), AuthError>;
+    /// GDPR hard delete (#18): delete auth_flow_transitions rows whose flow belongs
+    /// to the user (via auth_flows.session → sessions.user_id).
+    async fn delete_flow_transitions_by_user(&self, user_id: Uuid) -> Result<(), AuthError>;
 }
 
 // ─── Device Trust ──────────────────────────────────────────

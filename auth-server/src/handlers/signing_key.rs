@@ -3,15 +3,19 @@
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use axum_extra::extract::CookieJar;
 
 use crate::error::ApiError;
+use crate::helpers::require_admin;
 use crate::state::AppState;
 use volta_auth_core::store::SigningKeyStore;
 
 /// GET /api/v1/admin/keys — list signing keys (admin).
 pub async fn list_keys(
     State(state): State<AppState>,
+    jar: CookieJar,
 ) -> Result<Response, ApiError> {
+    let _ = require_admin(&state, &jar).await?;
     let keys = SigningKeyStore::list(&state.db).await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
 
@@ -30,7 +34,9 @@ pub async fn list_keys(
 /// POST /api/v1/admin/keys/rotate — rotate signing key.
 pub async fn rotate_key(
     State(state): State<AppState>,
+    jar: CookieJar,
 ) -> Result<Response, ApiError> {
+    let _ = require_admin(&state, &jar).await?;
     // Load current active key
     let current = SigningKeyStore::load_active(&state.db).await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
@@ -65,8 +71,10 @@ pub async fn rotate_key(
 /// POST /api/v1/admin/keys/{kid}/revoke — revoke a signing key.
 pub async fn revoke_key(
     State(state): State<AppState>,
+    jar: CookieJar,
     Path(kid): Path<String>,
 ) -> Result<Response, ApiError> {
+    let _ = require_admin(&state, &jar).await?;
     SigningKeyStore::revoke(&state.db, &kid).await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
 

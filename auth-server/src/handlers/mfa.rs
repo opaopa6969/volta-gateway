@@ -3,7 +3,7 @@
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::Json;
 use axum_extra::extract::CookieJar;
 use serde::Deserialize;
@@ -13,6 +13,76 @@ use crate::helpers::{extract_session_id, set_session_cookie};
 use crate::state::AppState;
 use volta_auth_core::store::{SessionStore, MfaStore, RecoveryCodeStore};
 use volta_auth_core::totp;
+
+/// GET /mfa/challenge — TOTP input page (AUTH-010 `99a2769`).
+///
+/// Requires an active session (otherwise redirects to /login). The session
+/// does NOT need `mfa_verified_at` set — that's the whole point of this page.
+pub async fn mfa_challenge(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Response {
+    let session_id = match extract_session_id(&jar) {
+        Some(id) => id,
+        None => {
+            let mut resp = axum::response::Redirect::to(&format!("{}/login", state.base_url)).into_response();
+            no_cache_headers(&mut resp);
+            return resp;
+        }
+    };
+    // Verify the session actually exists — if it was revoked, send the user back
+    // to /login rather than showing a phantom MFA page.
+    match SessionStore::find(&state.db, &session_id).await {
+        Ok(Some(_)) => {}
+        _ => {
+            let mut resp = axum::response::Redirect::to(&format!("{}/login", state.base_url)).into_response();
+            no_cache_headers(&mut resp);
+            return resp;
+        }
+    }
+
+    // Minimal Java-compat HTML; real UI lives in volta-auth-console.
+    let html = r##"<!DOCTYPE html><html lang="ja"><head>
+<meta charset="utf-8"><title>MFA Challenge — volta</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+body{font-family:system-ui,-apple-system,sans-serif;background:#f5f5f5;margin:0;display:flex;align-items:center;justify-content:center;min-height:100vh}
+.card{background:#fff;padding:32px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.1);max-width:360px;width:100%}
+h1{margin:0 0 8px;font-size:20px}
+p{color:#666;margin:0 0 24px;font-size:14px}
+input{width:100%;padding:12px;border:1px solid #ddd;border-radius:6px;font-size:16px;box-sizing:border-box;margin-bottom:12px;letter-spacing:2px;text-align:center}
+button{width:100%;padding:12px;background:#0f3460;color:#fff;border:0;border-radius:6px;font-size:16px;cursor:pointer}
+button:hover{background:#16213e}
+.err{color:#c62828;font-size:13px;min-height:18px;margin-top:8px}
+</style></head><body>
+<form class="card" id="f">
+  <h1>多要素認証</h1>
+  <p>認証アプリに表示される 6 桁のコード、または recovery code を入力してください。</p>
+  <input name="code" inputmode="numeric" autocomplete="one-time-code" autofocus required>
+  <button type="submit">確認</button>
+  <div class="err" id="e"></div>
+</form>
+<script>
+const f = document.getElementById('f'), e = document.getElementById('e');
+f.addEventListener('submit', async ev => {
+  ev.preventDefault();
+  e.textContent = '';
+  const code = new FormData(f).get('code');
+  const r = await fetch('/auth/mfa/verify', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json','Accept':'application/json'},
+    credentials: 'include',
+    body: JSON.stringify({code}),
+  });
+  if (r.ok) { location.replace(new URLSearchParams(location.search).get('return_to') || '/'); return; }
+  try { const j = await r.json(); e.textContent = j.message || 'コードが正しくありません'; }
+  catch { e.textContent = 'コードが正しくありません'; }
+});
+</script></body></html>"##;
+    let mut resp = Html(html).into_response();
+    no_cache_headers(&mut resp);
+    resp
+}
 
 /// POST /api/v1/users/{userId}/mfa/totp/setup — generate TOTP secret.
 pub async fn totp_setup(

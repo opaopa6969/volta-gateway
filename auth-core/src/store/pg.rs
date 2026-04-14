@@ -950,10 +950,14 @@ impl PasskeyStore for PgStore {
         ).bind(credential_id).fetch_optional(&self.pool).await.map_err(AuthError::from)
     }
 
-    async fn update_counter(&self, id: Uuid, sign_count: i64) -> Result<(), AuthError> {
-        sqlx::query("UPDATE user_passkeys SET sign_count = $1, last_used_at = now() WHERE id = $2")
-            .bind(sign_count).bind(id).execute(&self.pool).await.map_err(AuthError::from)?;
-        Ok(())
+    async fn update_counter(&self, id: Uuid, new_sign_count: i64) -> Result<bool, AuthError> {
+        // #17: only succeed when the new count is strictly greater than the stored
+        // value. Rejects concurrent replays and cloned-authenticator attacks.
+        let result = sqlx::query(
+            "UPDATE user_passkeys SET sign_count = $1, last_used_at = now() \
+             WHERE id = $2 AND sign_count < $1"
+        ).bind(new_sign_count).bind(id).execute(&self.pool).await.map_err(AuthError::from)?;
+        Ok(result.rows_affected() > 0)
     }
 
     async fn delete(&self, user_id: Uuid, id: Uuid) -> Result<(), AuthError> {
@@ -1036,6 +1040,15 @@ impl OutboxStore for PgStore {
             .execute(&self.pool).await.map_err(AuthError::from)?;
         Ok(())
     }
+    async fn delete_by_user(&self, user_id: Uuid) -> Result<(), AuthError> {
+        // payload is JSONB; match any event that references this user_id anywhere
+        // inside its payload (covers "actor_id", "user_id", "target_id" variants).
+        sqlx::query(
+            "DELETE FROM outbox_events \
+             WHERE payload::text LIKE '%' || $1::text || '%'"
+        ).bind(user_id).execute(&self.pool).await.map_err(AuthError::from)?;
+        Ok(())
+    }
 }
 
 // ─── WebhookDeliveryStore ──────────────────────────────────
@@ -1082,6 +1095,17 @@ impl AuditStore for PgStore {
     async fn anonymize(&self, user_id: Uuid) -> Result<(), AuthError> {
         sqlx::query("UPDATE audit_logs SET actor_id=NULL, detail=NULL WHERE actor_id=$1")
             .bind(user_id).execute(&self.pool).await.map_err(AuthError::from)?;
+        Ok(())
+    }
+    async fn delete_flow_transitions_by_user(&self, user_id: Uuid) -> Result<(), AuthError> {
+        // auth_flow_transitions.flow_id → auth_flows.id (session_id → sessions.user_id)
+        sqlx::query(
+            "DELETE FROM auth_flow_transitions WHERE flow_id IN (\
+                 SELECT id FROM auth_flows WHERE session_id IN (\
+                     SELECT session_id FROM sessions WHERE user_id = $1::text\
+                 )\
+             )"
+        ).bind(user_id).execute(&self.pool).await.map_err(AuthError::from)?;
         Ok(())
     }
 }
@@ -1171,5 +1195,204 @@ impl PolicyStore for PgStore {
              ORDER BY priority DESC LIMIT 1"
         ).bind(tenant_id).bind(resource).bind(action)
         .fetch_optional(&self.pool).await.map_err(AuthError::from)
+    }
+}
+
+// ─── Paginated admin queries (P2.1) ────────────────────────
+//
+// These are direct methods on PgStore (no trait) — the admin handlers pass the
+// rows through as JSON, so we skip the overhead of reconstructing full record
+// structs. `order` is a pre-sanitized SQL fragment produced by
+// `auth-server::pagination::PageRequest::order_sql`.
+
+impl PgStore {
+    /// `(items, total)` — users list with optional `q` (email/display_name) filter.
+    pub async fn list_users_paginated(
+        &self,
+        q: Option<&str>,
+        order: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<serde_json::Value>, i64), AuthError> {
+        let sql = format!(
+            "SELECT id, email, display_name, is_active, created_at, locale, \
+                    COUNT(*) OVER() AS total_count \
+             FROM users \
+             WHERE deleted_at IS NULL \
+               AND ($1::text IS NULL OR email ILIKE '%' || $1 || '%' OR COALESCE(display_name,'') ILIKE '%' || $1 || '%') \
+             ORDER BY {} LIMIT $2 OFFSET $3",
+            order
+        );
+        let rows: Vec<(Uuid, String, Option<String>, bool, chrono::DateTime<chrono::Utc>, Option<String>, i64)> =
+            sqlx::query_as(&sql).bind(q).bind(limit).bind(offset)
+                .fetch_all(&self.pool).await.map_err(AuthError::from)?;
+        let total = rows.first().map(|r| r.6).unwrap_or(0);
+        let items = rows.into_iter().map(|(id, email, name, active, created, locale, _)| {
+            serde_json::json!({
+                "id": id,
+                "email": email,
+                "display_name": name,
+                "is_active": active,
+                "created_at": created.to_rfc3339(),
+                "locale": locale,
+            })
+        }).collect();
+        Ok((items, total))
+    }
+
+    /// `(items, total)` — sessions list, optionally filtered by user_id.
+    pub async fn list_sessions_paginated(
+        &self,
+        user_id: Option<&str>,
+        order: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<serde_json::Value>, i64), AuthError> {
+        let sql = format!(
+            "SELECT id, user_id, tenant_id, created_at, expires_at, invalidated_at, ip_address, user_agent, \
+                    COUNT(*) OVER() AS total_count \
+             FROM sessions \
+             WHERE ($1::text IS NULL OR user_id = $1) \
+             ORDER BY {} LIMIT $2 OFFSET $3",
+            order
+        );
+        let rows: Vec<(String, String, String, i64, i64, Option<i64>, Option<String>, Option<String>, i64)> =
+            sqlx::query_as(&sql).bind(user_id).bind(limit).bind(offset)
+                .fetch_all(&self.pool).await.map_err(AuthError::from)?;
+        let total = rows.first().map(|r| r.8).unwrap_or(0);
+        let items = rows.into_iter().map(|(id, uid, tid, created, expires, invalidated, ip, ua, _)| {
+            serde_json::json!({
+                "session_id": id,
+                "user_id": uid,
+                "tenant_id": tid,
+                "created_at": created,
+                "expires_at": expires,
+                "invalidated_at": invalidated,
+                "ip_address": ip,
+                "user_agent": ua,
+                "active": invalidated.is_none(),
+            })
+        }).collect();
+        Ok((items, total))
+    }
+
+    /// `(items, total)` — audit log with from/to/event filters.
+    pub async fn list_audit_paginated(
+        &self,
+        tenant_id: Uuid,
+        from: Option<chrono::DateTime<chrono::Utc>>,
+        to: Option<chrono::DateTime<chrono::Utc>>,
+        event: Option<&str>,
+        order: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<serde_json::Value>, i64), AuthError> {
+        let sql = format!(
+            "SELECT id, timestamp, event_type, actor_id, tenant_id, target_type, target_id, \
+                    COUNT(*) OVER() AS total_count \
+             FROM audit_logs \
+             WHERE tenant_id = $1 \
+               AND ($2::timestamptz IS NULL OR timestamp >= $2) \
+               AND ($3::timestamptz IS NULL OR timestamp <= $3) \
+               AND ($4::text IS NULL OR event_type = $4) \
+             ORDER BY {} LIMIT $5 OFFSET $6",
+            order
+        );
+        let rows: Vec<(i64, chrono::DateTime<chrono::Utc>, String, Option<Uuid>, Option<Uuid>, Option<String>, Option<String>, i64)> =
+            sqlx::query_as(&sql).bind(tenant_id).bind(from).bind(to).bind(event).bind(limit).bind(offset)
+                .fetch_all(&self.pool).await.map_err(AuthError::from)?;
+        let total = rows.first().map(|r| r.7).unwrap_or(0);
+        let items = rows.into_iter().map(|(id, ts, ev, actor, tid, ttype, tid_str, _)| {
+            serde_json::json!({
+                "id": id,
+                "timestamp": ts.to_rfc3339(),
+                "event_type": ev,
+                "actor_id": actor,
+                "tenant_id": tid,
+                "target_type": ttype,
+                "target_id": tid_str,
+            })
+        }).collect();
+        Ok((items, total))
+    }
+
+    /// `(items, total)` — tenant members list.
+    pub async fn list_members_paginated(
+        &self,
+        tenant_id: Uuid,
+        order: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<serde_json::Value>, i64), AuthError> {
+        let sql = format!(
+            "SELECT m.id, m.user_id, u.email, u.display_name, m.role, m.is_active, m.joined_at, \
+                    COUNT(*) OVER() AS total_count \
+             FROM memberships m \
+             LEFT JOIN users u ON u.id = m.user_id \
+             WHERE m.tenant_id = $1 \
+             ORDER BY {} LIMIT $2 OFFSET $3",
+            order
+        );
+        let rows: Vec<(Uuid, Uuid, Option<String>, Option<String>, String, bool, chrono::DateTime<chrono::Utc>, i64)> =
+            sqlx::query_as(&sql).bind(tenant_id).bind(limit).bind(offset)
+                .fetch_all(&self.pool).await.map_err(AuthError::from)?;
+        let total = rows.first().map(|r| r.7).unwrap_or(0);
+        let items = rows.into_iter().map(|(id, uid, email, name, role, active, joined, _)| {
+            serde_json::json!({
+                "id": id,
+                "user_id": uid,
+                "email": email,
+                "display_name": name,
+                "role": role,
+                "is_active": active,
+                "joined_at": joined.to_rfc3339(),
+            })
+        }).collect();
+        Ok((items, total))
+    }
+
+    /// `(items, total)` — invitations list, filtered by status (pending / used / expired).
+    pub async fn list_invitations_paginated(
+        &self,
+        tenant_id: Uuid,
+        status: Option<&str>,
+        order: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<serde_json::Value>, i64), AuthError> {
+        // Status filter is expressed as SQL fragment because the condition is
+        // multi-predicate; we still keep the column-sort whitelist via `order`.
+        let status_sql = match status.unwrap_or("").to_ascii_lowercase().as_str() {
+            "pending" => "used_count < max_uses AND expires_at > now()",
+            "used" => "used_count >= max_uses",
+            "expired" => "expires_at <= now() AND used_count < max_uses",
+            _ => "TRUE",
+        };
+        let sql = format!(
+            "SELECT id, tenant_id, code, email, role, used_count, max_uses, created_at, expires_at, \
+                    COUNT(*) OVER() AS total_count \
+             FROM invitations \
+             WHERE tenant_id = $1 AND {} \
+             ORDER BY {} LIMIT $2 OFFSET $3",
+            status_sql, order
+        );
+        let rows: Vec<(Uuid, Uuid, String, Option<String>, String, i32, i32, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>, i64)> =
+            sqlx::query_as(&sql).bind(tenant_id).bind(limit).bind(offset)
+                .fetch_all(&self.pool).await.map_err(AuthError::from)?;
+        let total = rows.first().map(|r| r.9).unwrap_or(0);
+        let items = rows.into_iter().map(|(id, tid, code, email, role, used, max, created, expires, _)| {
+            serde_json::json!({
+                "id": id,
+                "tenant_id": tid,
+                "code": code,
+                "email": email,
+                "role": role,
+                "used_count": used,
+                "max_uses": max,
+                "created_at": created.to_rfc3339(),
+                "expires_at": expires.to_rfc3339(),
+            })
+        }).collect();
+        Ok((items, total))
     }
 }

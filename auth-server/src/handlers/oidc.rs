@@ -192,7 +192,10 @@ async fn complete_oidc(
     let userinfo = state.idp.userinfo(&token_resp.access_token).await
         .map_err(|e| ApiError::bad_request("OIDC_FAILED", &format!("Authentication failed: {}", e)))?;
 
+    // #14: NFC-normalize + lowercase before store/compare to prevent homoglyph bypass.
     let email = userinfo.email.clone()
+        .map(|e| crate::security::normalize_email(&e))
+        .filter(|e| !e.is_empty())
         .ok_or_else(|| ApiError::bad_request("OIDC_FAILED", "IdP did not return email"))?;
 
     // Upsert user
@@ -230,6 +233,7 @@ async fn complete_oidc(
     let now_epoch = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
 
+    let tenant_id_for_event = tenant_id.clone();
     SessionStore::create(&state.db, volta_auth_core::record::SessionRecord {
         session_id: session_id.clone(),
         user_id: user.id.to_string(),
@@ -248,6 +252,14 @@ async fn complete_oidc(
         roles,
         display_name: user.display_name,
     }).await.map_err(|e| ApiError::internal(&e.to_string()))?;
+
+    // P1.2: publish auth event for /viz/auth/stream subscribers.
+    state.auth_events.publish(
+        crate::auth_events::AuthEvent::now("LOGIN_SUCCESS")
+            .with_user(user.id.to_string())
+            .with_tenant(tenant_id_for_event)
+            .with_session(session_id.clone()),
+    );
 
     Ok((session_id, return_to.to_string()))
 }

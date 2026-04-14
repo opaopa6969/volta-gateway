@@ -9,7 +9,7 @@ use axum_extra::extract::CookieJar;
 use uuid::Uuid;
 
 use crate::error::{no_cache_headers, ApiError};
-use crate::helpers::{extract_session_id, clear_session_cookie};
+use crate::helpers::{extract_session_id, clear_session_cookie, require_admin};
 use crate::state::AppState;
 use volta_auth_core::store::{SessionStore, MembershipStore, UserStore, TenantStore};
 
@@ -19,16 +19,28 @@ fn auth_sync(jar: &CookieJar) -> Result<String, ApiError> {
 
 // ─── Admin Sessions ────────────────────────────────────────
 
-/// GET /admin/sessions — list all active sessions (admin).
-pub async fn admin_list_sessions(State(s): State<AppState>, jar: CookieJar) -> Result<Response, ApiError> {
-    let _ = auth_sync(&jar)?;
-    // Simplified — real impl would list all sessions with pagination
-    Ok(Json(serde_json::json!({"sessions": []})).into_response())
+/// GET /admin/sessions — list all active sessions (admin, paginated P2.1).
+pub async fn admin_list_sessions(
+    State(s): State<AppState>,
+    jar: CookieJar,
+    axum::extract::Query(q): axum::extract::Query<crate::pagination::PageRequest>,
+) -> Result<Response, ApiError> {
+    let _ = require_admin(&s, &jar).await?;
+    let req = q.normalized();
+    let order = crate::pagination::PageRequest::order_sql(
+        req.sort.as_deref(),
+        &["created_at", "expires_at"],
+        "created_at DESC",
+    );
+    let (items, total) = s.db.list_sessions_paginated(
+        req.user_id.as_deref(), &order, req.limit(), req.offset(),
+    ).await.map_err(|e| ApiError::internal(&e.to_string()))?;
+    Ok(Json(crate::pagination::PageResponse::new(items, total, &req)).into_response())
 }
 
 /// DELETE /admin/sessions/{id} — admin revoke session.
 pub async fn admin_revoke_session(State(s): State<AppState>, jar: CookieJar, Path(sid): Path<String>) -> Result<Response, ApiError> {
-    let _ = auth_sync(&jar)?;
+    let _ = require_admin(&s, &jar).await?;
     SessionStore::revoke(&s.db, &sid).await.map_err(|e| ApiError::internal(&e.to_string()))?;
     Ok(Json(serde_json::json!({"ok": true})).into_response())
 }
@@ -120,7 +132,7 @@ pub async fn select_tenant(State(s): State<AppState>, jar: CookieJar) -> Result<
 
 /// POST /api/v1/users/{userId}/export — admin data export for specific user.
 pub async fn admin_export_user(State(s): State<AppState>, jar: CookieJar, Path(uid): Path<Uuid>) -> Result<Response, ApiError> {
-    let _ = auth_sync(&jar)?;
+    let _ = require_admin(&s, &jar).await?;
     let user = UserStore::find_by_id(&s.db, uid).await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
     let tenants = TenantStore::find_by_user(&s.db, uid).await

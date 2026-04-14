@@ -69,6 +69,12 @@ pub fn parse_identity(
     let xml = String::from_utf8(xml_bytes)
         .map_err(|_| ApiError::bad_request("SAML_INVALID_RESPONSE", "invalid UTF-8"))?;
 
+    // #19 XXE: reject any XML that declares DOCTYPE or ENTITY. The current parser is
+    // text-based and does not expand entities, but this rejection is cheap defence
+    // against future migrations to a DOM parser that would be vulnerable.
+    crate::security::reject_xml_doctype(&xml)
+        .map_err(|e| ApiError::bad_request("SAML_INVALID_RESPONSE", &e))?;
+
     // Dev mode mock support (same as Java)
     if xml.starts_with("MOCK:") {
         let email = xml.trim_start_matches("MOCK:").trim();
@@ -172,7 +178,10 @@ pub fn parse_identity(
     if email.as_ref().map(|e| !e.contains('@')).unwrap_or(true) {
         email = extract_saml_attribute(&xml, "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress");
     }
+    // #14: NFC-normalize + lowercase before returning so downstream compares/stores
+    // never see a homoglyph of an existing user.
     let email = email
+        .map(|e| crate::security::normalize_email(&e))
         .filter(|e| e.contains('@'))
         .ok_or_else(|| ApiError::unauthorized("SAML_INVALID_RESPONSE", "email claim not found"))?;
 

@@ -56,10 +56,17 @@ pub async fn auth_finish(
         email: None, tenant_slug: None, roles: vec![], display_name: None,
     }).await.map_err(|e| ApiError::internal(&e.to_string()))?;
 
-    // Update sign counter
+    // #17: atomic sign-counter bump. If the update is rejected (stored count >=
+    // new count) we treat the assertion as a replay and reject the login.
     let new_count = passkey.sign_count + 1;
-    PasskeyStore::update_counter(&s.db, passkey.id, new_count).await
+    let applied = PasskeyStore::update_counter(&s.db, passkey.id, new_count).await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
+    if !applied {
+        return Err(ApiError::unauthorized(
+            "PASSKEY_FAILED",
+            "sign-counter rejected — possible replay or cloned authenticator",
+        ));
+    }
 
     let mut resp = Json(serde_json::json!({"ok": true})).into_response();
     set_session_cookie(&mut resp, &session_id, &s);

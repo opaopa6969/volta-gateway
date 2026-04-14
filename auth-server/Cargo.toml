@@ -45,6 +45,20 @@ ring = "0.17"
 
 # URL encoding
 urlencoding = "2"
+url = "2"
+
+# Unicode normalization (NFC for email comparison)
+unicode-normalization = "0.1"
+
+# CIDR parsing (local network bypass)
+ipnet = "2"
+
+# Constant-time comparison (fallback — also uses ring::constant_time)
+subtle = "2.6"
+
+# Async stream utilities for SSE fan-out (P1.2 auth event stream)
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures-util = "0.3"
 
 # SAML (XML parsing + signature verification)
 xmlparser = "0.13"

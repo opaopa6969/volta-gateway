@@ -76,7 +76,11 @@ pub async fn saml_callback(
     let saml_response = form.saml_response.as_deref().unwrap_or("");
 
     let acs_url = format!("{}/auth/saml/callback", s.base_url);
-    let skip_sig = std::env::var("SAML_SKIP_SIGNATURE").unwrap_or_default() == "true";
+    // #8: SAML_SKIP_SIGNATURE only takes effect on localhost requests. Any production
+    // deployment receives traffic through a gateway whose forwarded IP is non-loopback,
+    // so signature verification can never be accidentally disabled by env.
+    let skip_sig = std::env::var("SAML_SKIP_SIGNATURE").unwrap_or_default() == "true"
+        && crate::security::is_localhost_request(&headers);
 
     let identity = saml::parse_identity(
         saml_response,
