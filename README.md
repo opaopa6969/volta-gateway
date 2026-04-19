@@ -2,13 +2,33 @@
 
 # volta-gateway
 
-Auth-aware reverse proxy for small-to-medium SaaS, powered by state machine.
+Auth-aware reverse proxy for small-to-medium SaaS, powered by a state machine
+([tramli 3.8](https://github.com/opaopa6969/tramli)). **Dual implementation**:
+Rust (default, this workspace) and Java (`volta-auth-proxy` sidecar, still
+supported for production SAML). The Rust side ships **~96 routes** that match
+the Java auth-proxy 1:1 — see [`docs/parity.md`](docs/parity.md).
 
 **Every request rides on rails** — the state machine ensures that only valid transitions happen. No request smuggling. No forgotten auth checks. No invisible failures.
 
 > **For large-scale deployments (50+ services, Kubernetes, Canary deploys):** use [Traefik](https://traefik.io/) + [volta-auth-proxy](https://github.com/opaopa6969/volta-auth-proxy) with ForwardAuth. Traefik's ecosystem is unmatched for orchestration.
 >
 > **For small-to-medium SaaS (5-20 services, auth latency matters):** volta-gateway gives you 5-10x faster auth checks, per-step visibility, and a single YAML config.
+
+## Table of Contents
+
+- [How it works](#how-it-works) — request state machine
+- [Quick Start](#quick-start) — clone, configure, run
+- [Dual implementation (Rust + Java)](#dual-implementation-rust--java)
+- [Features](#features-v020)
+- [Configuration](#configuration)
+- [Security](#security)
+- [Architecture](#architecture)
+- [vs Traefik](#vs-traefik-benchmarked)
+- [Development with tramli](#development-with-tramli)
+- [Workspace structure](#workspace-structure)
+- [Docs](#docs)
+
+---
 
 ## How it works
 
@@ -69,19 +89,49 @@ Every state transition is logged. You can see **exactly** where time was spent:
 ## Quick Start
 
 ```bash
-# 1. Clone
+# 1. Clone + build the workspace (5 crates)
 git clone https://github.com/opaopa6969/volta-gateway
 cd volta-gateway
+cargo build --workspace --release
 
-# 2. Configure (edit routing to match your backends)
+# 2. Configure
 cp volta-gateway.yaml my-config.yaml
-# Edit my-config.yaml
+# edit my-config.yaml
 
-# 3. Make sure volta-auth-proxy is running on localhost:7070
+# 3a. Fastest smoke path (no DB) — mock backend + mock auth
+cargo run --release -p volta-gateway --example mock_backend &
+cargo run --release -p volta-gateway --example mock_auth &
 
-# 4. Run
-cargo run -- my-config.yaml
+# 3b. Or run the real auth-server (Rust, Java-parity) on :7070
+#     export DATABASE_URL=... JWT_SECRET=...
+cargo run --release -p volta-auth-server &
+
+# 4. Run the gateway
+cargo run --release -p volta-gateway -- my-config.yaml
+
+# 5. Hit it
+curl -H "Host: app.localhost" http://localhost:8080/api/hi
 ```
+
+Full walkthrough: [`docs/getting-started.md`](docs/getting-started.md) ·
+[日本語](docs/getting-started-ja.md).
+
+## Dual implementation (Rust + Java)
+
+volta-gateway ships with a **Rust auth-server** (`auth-server/` in this
+workspace) that is a route-by-route replacement for the Java
+`volta-auth-proxy`. ~96 endpoints are covered: auth, OIDC, SAML, MFA,
+Passkey, Magic Link, SCIM 2.0, Webhook, Audit, Billing, Policy, GDPR,
+Admin, JWKS, viz/SSE.
+
+| Scenario                                       | Recommended topology |
+|------------------------------------------------|----------------------|
+| Greenfield, single language                    | **gateway + auth-server (Rust)** or `volta-bin` (in-process) |
+| Migrating from Java `volta-auth-proxy`         | keep Java sidecar under `path_prefix: /saml/` per DD-005, route the rest to auth-server |
+| SAML production with `xmlsec`-class assurance  | keep Java sidecar for `/saml/*` (Rust side is simplified) |
+
+Full route-by-route table: [`docs/parity.md`](docs/parity.md). Tracing every
+Java commit that landed in Rust: [`auth-server/docs/sync-from-java-2026-04-14.md`](auth-server/docs/sync-from-java-2026-04-14.md).
 
 ## Features (v0.2.0)
 
@@ -216,7 +266,11 @@ Same-condition benchmark: localhost mock auth + mock backend. Traefik v3.4 (Dock
 
 ## Development with tramli
 
-volta-gateway uses [tramli](https://github.com/opaopa6969/tramli) (`tramli = "0.1"` on [crates.io](https://crates.io/crates/tramli)) as its state machine engine.
+volta-gateway uses [tramli](https://github.com/opaopa6969/tramli) as its state
+machine engine. The workspace pins `tramli = "3.8"` and `tramli-plugins = "3.6.1"`
+in both `gateway/Cargo.toml` and `auth-core/Cargo.toml`. The full upgrade trail
+from 3.2 through 3.8, plus the feedback loop that shaped each minor release,
+is documented in [`docs/feedback.md`](docs/feedback.md).
 
 ### Why tramli?
 
@@ -299,10 +353,11 @@ See [tramli docs](https://github.com/opaopa6969/tramli) for the full API. The [u
 
 ```
 volta-gateway/
-  Cargo.toml              Workspace root
+  Cargo.toml              Workspace root (5 crates)
   gateway/                HTTP reverse proxy (30+ features)
-  auth-core/              Auth library — JWT, session, OIDC/MFA/Passkey flows
-  volta-bin/              Unified binary (gateway + auth in-process)
+  auth-core/              Auth library — JWT, session, OIDC/MFA/Passkey SM flows
+  auth-server/            Axum auth API — ~96 routes, Java volta-auth-proxy 1:1
+  volta-bin/              Unified binary (gateway + auth-core in-process)
   tools/traefik-to-volta/ Config converter CLI
 ```
 
@@ -351,6 +406,16 @@ cargo run -p volta-bin -- config.yaml
 - PostgreSQL 13+ (for auth-core with `postgres` feature)
 - Docker (for integration tests)
 - Backend apps running
+
+## Docs
+
+- [Getting Started](docs/getting-started.md) · [日本語](docs/getting-started-ja.md)
+- [Architecture](docs/architecture.md) · [日本語](docs/architecture-ja.md) — FlowEngine, routing, auth-server 5-merge router, plugins
+- [Rust ↔ Java Parity](docs/parity.md) · [日本語](docs/parity-ja.md) — route-by-route, 96 endpoints
+- [tramli feedback loop](docs/feedback.md) — upgrade trail 3.2 → 3.8
+- [Benchmarks](docs/benchmark-article.md) · [Migration from Traefik](docs/migration-from-traefik.md) · [日本語](docs/migration-from-traefik-ja.md)
+- [CHANGELOG](CHANGELOG.md)
+- [Backlog](docs/backlog.md) · [HANDOFF](docs/HANDOFF.md)
 
 ## License
 

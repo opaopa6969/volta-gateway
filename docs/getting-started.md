@@ -1,112 +1,167 @@
+[日本語版はこちら / Japanese](getting-started-ja.md)
+
 # Getting Started with volta-gateway
 
-volta-gateway は認証対応リバースプロキシ。ステートマシンでリクエストライフサイクルを制御し、
-Traefik + ForwardAuth 比 **6.6x 高速** な認証チェックを提供します。
+This guide walks you from `git clone` to a working request through the
+gateway. The whole loop fits in one terminal, and it covers three layouts:
 
-## 前提条件
+1. **Gateway + Java auth-proxy** (legacy topology).
+2. **Gateway + Rust auth-server** (replacement topology — recommended).
+3. **Unified `volta-bin`** (gateway + auth-core in-process, no HTTP roundtrip).
 
-- Rust 1.75+
-- バックエンドアプリ (任意の HTTP サーバー)
+## 0. Prerequisites
 
-## 1. インストール
+- Rust 1.75+ (edition 2021)
+- PostgreSQL 13+ (for auth-core features)
+- Docker (optional — for integration tests and the `volta-auth-proxy` sidecar)
+- A backend HTTP service to route to. If you don't have one, use the
+  `mock_backend` example shipped with the repo.
+
+## 1. Clone and build
 
 ```bash
 git clone https://github.com/opaopa6969/volta-gateway
 cd volta-gateway
-cargo build --release
+cargo build --workspace --release
 ```
 
-## 2. 最小設定
+The workspace has five crates (`gateway`, `auth-core`, `auth-server`,
+`volta-bin`, `tools/traefik-to-volta`). Check
+[`docs/architecture.md`](architecture.md) before editing any of them.
 
-`my-config.yaml` を作成:
+## 2. Minimum config
+
+Create `my-config.yaml`:
 
 ```yaml
 server:
   port: 8080
 
 auth:
-  volta_url: http://localhost:7070   # 認証サーバー
-  timeout_ms: 500
+  volta_url: http://localhost:7070   # auth-server (or Java auth-proxy)
+  timeout_ms: 500                    # fail-closed: auth down → 502
 
-routing:
-  - host: app.localhost
-    backend: http://localhost:3000   # バックエンドアプリ
-    app_id: my-app
-```
-
-## 3. バックエンドを起動
-
-お手持ちのアプリを port 3000 で起動するか、テスト用 mock を使用:
-
-```bash
-# テスト用 mock backend
-cargo run --release --example mock_backend &
-
-# テスト用 mock auth (全リクエスト承認)
-cargo run --release --example mock_auth &
-```
-
-## 4. volta-gateway を起動
-
-```bash
-cargo run --release -p volta-gateway -- my-config.yaml
-```
-
-```
-INFO volta-gateway starting port=8080
-INFO listening addr=0.0.0.0:8080
-```
-
-## 5. リクエスト送信
-
-```bash
-curl -H "Host: app.localhost" http://localhost:8080/api/test
-```
-
-レスポンスにバックエンドの応答が返ります。
-`x-request-id` ヘッダーで各リクエストを追跡できます。
-
-## 認証なしの Public ルート
-
-webhook エンドポイントなど、認証をスキップしたいルートは `public: true`:
-
-```yaml
 routing:
   - host: app.localhost
     backend: http://localhost:3000
-    public: true                    # 認証チェックなし
+    app_id: my-app
 ```
 
-特定パスだけ認証をバイパス:
+Full field reference: [`volta-gateway.full.yaml`](../volta-gateway.full.yaml).
+
+## 3. Spin up a mock backend + mock auth (no DB)
+
+For a pure smoke test, you don't need PostgreSQL. The `gateway` crate ships
+two examples:
+
+```bash
+# Terminal 1 — mock backend on :3000 (returns {"ok": true})
+cargo run --release -p volta-gateway --example mock_backend
+
+# Terminal 2 — mock auth on :7070 (accepts every request)
+cargo run --release -p volta-gateway --example mock_auth
+
+# Terminal 3 — gateway on :8080
+cargo run --release -p volta-gateway -- my-config.yaml
+```
+
+Check it works:
+
+```bash
+curl -H "Host: app.localhost" http://localhost:8080/api/hi
+# => {"ok":true}
+```
+
+Each response carries `x-request-id` so you can trace it. The gateway logs
+five transitions per request (Received → Validated → Routed → AuthChecked →
+Forwarded → Completed) with `durationMicros` for each hop.
+
+## 4. Swap to the real auth-server (Rust)
+
+`auth-server` is the Java-parity Axum service (see [`parity.md`](parity.md)).
+It needs PostgreSQL.
+
+```bash
+# Start Postgres
+docker run --rm -d --name volta-pg -e POSTGRES_PASSWORD=postgres -p 5432:5432 postgres:16
+export DATABASE_URL=postgres://postgres:postgres@localhost/postgres
+export JWT_SECRET="$(openssl rand -hex 32)"
+
+# Run auth-server on :7070 (same URL the gateway points to)
+cargo run --release -p volta-auth-server
+
+# Gateway unchanged — still points at http://localhost:7070
+cargo run --release -p volta-gateway -- my-config.yaml
+```
+
+Visit `http://localhost:8080/login` to kick off an OIDC flow. Configure the
+IdP env vars (`IDP_PROVIDER`, `IDP_CLIENT_ID`, `IDP_CLIENT_SECRET`) as listed
+in [`auth-server/README.md`](../auth-server/README.md).
+
+## 5. Unified binary — zero auth hop
+
+`volta-bin` bundles the gateway and `auth-core` into one process. Auth checks
+become ~1 µs in-process function calls instead of a ~250 µs HTTP roundtrip.
+
+```bash
+cargo run --release -p volta-bin -- my-config.yaml
+```
+
+Enable in config:
+
+```yaml
+auth:
+  jwt_secret: "${JWT_SECRET}"   # in-process JWT verification
+  cookie_name: volta_session
+```
+
+This mode does **not** expose the 96 routes (login, MFA, etc.) — it only
+*verifies* existing sessions. Pair it with an `auth-server` instance for the
+full flow, or keep the Java sidecar during migration.
+
+## 6. Public routes, CORS, load balancing
+
+Public routes (webhooks, health probes):
 
 ```yaml
 routing:
   - host: app.localhost
     backend: http://localhost:3000
     auth_bypass_paths:
-      - prefix: /webhooks/          # /webhooks/* は認証なし
+      - prefix: /webhooks/
       - prefix: /health
 ```
 
-## CORS 設定
+CORS is **deny-by-default** (DD-001). Opt in per route:
 
 ```yaml
 routing:
   - host: app.localhost
     backend: http://localhost:3000
     cors_origins:
-      - https://app.localhost       # 許可するオリジン
-      # - "*"                       # ワイルドカード (非推奨)
+      - https://app.localhost
 ```
 
-`cors_origins` を省略 = CORS ヘッダーなし (安全なデフォルト)。
+Weighted canary:
 
-## HTTPS / Let's Encrypt
+```yaml
+routing:
+  - host: app.localhost
+    backends:
+      - url: http://localhost:3000
+        weight: 9    # 90%
+      - url: http://localhost:3001
+        weight: 1    # 10%
+```
+
+## 7. HTTPS with Let's Encrypt
+
+TLS-ALPN-01:
 
 ```yaml
 server:
   port: 8080
-  force_https: true                 # HTTP → HTTPS リダイレクト
+  force_https: true
 
 tls:
   domains:
@@ -114,101 +169,68 @@ tls:
   contact_email: admin@example.com
   port: 443
   cache_dir: ./acme-cache
-  staging: true                     # テスト時は true (本番は false)
+  staging: true   # switch to false in production
 ```
 
-## ロードバランシング
+DNS-01 via Cloudflare (for wildcard certs):
 
 ```yaml
-routing:
-  - host: app.localhost
-    backends:
-      - url: http://localhost:3000
-        weight: 3                   # 75% のトラフィック
-      - url: http://localhost:3001
-        weight: 1                   # 25% のトラフィック
+tls:
+  domains:
+    - "*.example.com"
+  contact_email: admin@example.com
+  dns01:
+    cloudflare_api_token_env: CF_DNS_TOKEN
 ```
 
-## 設定検証
-
-CI/CD で設定ファイルの事前検証:
+## 8. Config validation in CI
 
 ```bash
 cargo run --release -p volta-gateway -- --validate my-config.yaml
 ```
 
-無効な設定はエラーメッセージとともに非ゼロで終了します。
+Returns non-zero on any invalid route, unknown plugin, or missing backend.
+Add it to your pipeline before deploy.
 
-## ホットリロード
+## 9. Hot reload
 
-設定変更をゼロダウンタイムで反映:
+Zero-downtime route swap (`ArcSwap`):
 
 ```bash
-# SIGHUP シグナルで再読み込み
 kill -HUP $(pgrep volta-gateway)
-
-# または Admin API 経由
+# or
 curl -X POST http://localhost:8080/admin/reload
 ```
 
-## Admin API
+## 10. Admin API
 
-localhost からのみアクセス可能:
-
-```bash
-# ルーティング一覧
-curl http://localhost:8080/admin/routes
-
-# バックエンド健全性
-curl http://localhost:8080/admin/backends
-
-# 統計情報
-curl http://localhost:8080/admin/stats
-
-# Prometheus メトリクス
-curl http://localhost:8080/metrics
-```
-
-## In-Process 認証 (auth-core)
-
-volta-auth-proxy への HTTP ラウンドトリップを排除し、
-JWT 検証を in-process で行うことで認証レイテンシを **250μs → 1μs** に削減:
+All localhost-only:
 
 ```bash
-# 統合バイナリ (gateway + auth-core)
-cargo run --release -p volta-bin -- my-config.yaml
+curl http://localhost:8080/admin/routes     # routing table
+curl http://localhost:8080/admin/backends   # backend health
+curl http://localhost:8080/admin/stats      # counters
+curl http://localhost:8080/metrics          # Prometheus
 ```
 
-auth-core の設定例:
+## 11. Load test
 
-```yaml
-auth:
-  jwt_secret: "your-secret-key"     # in-process JWT 検証
-  cookie_name: volta_session        # セッション Cookie 名
+```bash
+# Simple smoke (hey or wrk)
+hey -n 100000 -c 100 -host app.localhost http://localhost:8080/api/hi
+
+# Benchmark script used for the README numbers
+cargo bench -p volta-gateway --bench proxy_bench
 ```
 
-## Docker Compose 例
+See [`docs/benchmark-article.md`](benchmark-article.md) for the full
+methodology and the 6.6x vs Traefik result.
 
-```yaml
-services:
-  gateway:
-    build: .
-    ports:
-      - "8080:8080"
-    volumes:
-      - ./config.yaml:/etc/volta/config.yaml
-    command: ["/usr/local/bin/volta-gateway", "/etc/volta/config.yaml"]
+## 12. What to read next
 
-  backend:
-    image: your-app:latest
-    labels:
-      volta.host: app.localhost
-      volta.port: "3000"
-      volta.app_id: my-app
-```
-
-## 次のステップ
-
-- [Full config reference](../volta-gateway.full.yaml) — 全設定項目
-- [Benchmark results](benchmark-article.md) — パフォーマンス詳解
-- [Migration from Traefik](migration-from-traefik.md) — Traefik からの移行ガイド
+- [README](../README.md) — features and positioning
+- [`docs/architecture.md`](architecture.md) — FlowEngine, routing, 5-merge router, plugins
+- [`docs/parity.md`](parity.md) — Rust vs Java, route-by-route
+- [`docs/migration-from-traefik.md`](migration-from-traefik.md) — migration guide
+- [`docs/feedback.md`](feedback.md) — tramli upgrade loop (3.2 → 3.8)
+- [Full YAML reference](../volta-gateway.full.yaml)
