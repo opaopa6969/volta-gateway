@@ -1876,6 +1876,208 @@ routing:
     backend: http://localhost:4000
 ```
 
+---
+
+## Appendix F — Mermaid Diagrams
+
+### F.1 System Architecture — Rust/Java dual implementation + 5 rate-limited merge routers
+
+```mermaid
+graph TB
+    CF["Cloudflare / TLS termination"]
+
+    subgraph volta-gateway ["volta-gateway (Rust binary)"]
+        GW["ProxyService\nArcSwap RoutingTable\nFlowEngine (tramli 3.8)"]
+        LB["Load Balancer\nRound-robin / Weighted\nCircuit Breaker (5 fail / 30 s)"]
+    end
+
+    subgraph auth-server ["volta-auth-server (Axum, 96 routes)"]
+        MAIN["main_router\n(~80 non-rate-limited routes)"]
+
+        subgraph rate_limited ["5 rate-limited merge sub-routers"]
+            OIDC["oidc_routes\n10 / min / IP\nGET /login\nGET /callback\nPOST /auth/callback/complete"]
+            MFA["mfa_routes\n5 / min / IP\nPOST /auth/mfa/verify"]
+            PK["passkey_routes\n5 / min / IP\nPOST /auth/passkey/start\nPOST /auth/passkey/finish"]
+            INV["invite_routes\n20 / min / IP\nPOST /invite/{code}/accept"]
+            ML["magic_routes\n5 / min / IP\nPOST /auth/magic-link/send\nGET /auth/magic-link/verify"]
+        end
+
+        MAIN --> rate_limited
+    end
+
+    subgraph java_sidecar ["Java sidecar (volta-auth-proxy, Spring Boot)"]
+        SAML["SAML assertion verify\npath_prefix: /saml/\n(DD-005 — indefinite)"]
+    end
+
+    subgraph auth-core ["auth-core (Rust library)"]
+        AC["AuthService\nFlowDefinitions\nJWT / Session / Passkey\nKeyCipher (AES-GCM + PBKDF2)"]
+    end
+
+    PG[("PostgreSQL\n23 migrations")]
+    REDIS[("Redis\nSSE pub/sub")]
+    BACKENDS["Backend Apps"]
+
+    CF --> GW
+    GW --> LB
+    GW -->|"/saml/* (DD-005)"| SAML
+    GW -->|"auth check\n(VoltaAuthClient)"| auth-server
+    GW --> LB --> BACKENDS
+    auth-server --> AC
+    AC --> PG
+    auth-server --> REDIS
+```
+
+### F.2 Per-request tramli State Machine — sequenceDiagram
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant GW as volta-gateway\n(ProxyService)
+    participant SM as FlowEngine\n(tramli 3.8)
+    participant AUTH as volta-auth-server
+    participant BE as Backend
+
+    C->>GW: HTTP request
+    GW->>SM: engine.start_flow(&def, &id, RequestData)
+    Note over SM: [Received] --auto[RequestValidator]--> [Validated]<br/>[Validated] --auto[RoutingResolver]--> [Routed]<br/>~1 µs total
+    SM-->>GW: flow_id (state = Routed)
+
+    GW->>AUTH: volta_client.check_auth(&req).await  (~500 µs)
+    AUTH-->>GW: AuthData (200 OK / 302 Redirect / 401)
+
+    GW->>SM: engine.resume_and_execute(&flow_id, auth_data)
+    Note over SM: [Routed] --external[AuthGuard]--> [AuthChecked]<br/>~300 ns
+    SM-->>GW: state = AuthChecked
+
+    GW->>BE: backend.forward(&req).await  (~1–50 ms)
+    BE-->>GW: BackendResponse
+
+    GW->>SM: engine.resume_and_execute(&flow_id, resp_data)
+    Note over SM: [AuthChecked] --external[ForwardGuard]--> [Forwarded]<br/>[Forwarded] --auto[CompletionProcessor]--> [Completed]<br/>~300 ns
+    SM-->>GW: state = Completed
+
+    GW-->>C: HTTP response
+```
+
+### F.3 ER Diagram — auth_flows / sessions / user_passkeys / oidc_flows
+
+```mermaid
+erDiagram
+    users {
+        uuid id PK
+        varchar email
+        varchar display_name
+        timestamptz created_at
+        timestamptz deleted_at
+    }
+    tenants {
+        uuid id PK
+        varchar slug
+        varchar name
+        boolean mfa_required
+        timestamptz mfa_grace_until
+        timestamptz suspended_at
+    }
+    memberships {
+        uuid user_id FK
+        uuid tenant_id FK
+        varchar role
+        timestamptz created_at
+    }
+    sessions {
+        uuid id PK
+        uuid user_id FK
+        uuid tenant_id FK
+        timestamptz created_at
+        timestamptz revoked_at
+        timestamptz last_used_at
+        timestamptz mfa_verified_at
+        varchar ip
+        varchar user_agent
+    }
+    auth_flows {
+        uuid flow_id PK
+        varchar flow_name
+        varchar current_state
+        jsonb data_json
+        integer version
+        timestamptz ttl_expires_at
+    }
+    auth_flow_transitions {
+        uuid id PK
+        uuid flow_id FK
+        varchar from_state
+        varchar to_state
+        bigint duration_micros
+        text data_types
+        timestamptz created_at
+    }
+    user_passkeys {
+        uuid id PK
+        uuid user_id FK
+        bytea credential_id
+        bytea public_key
+        bigint sign_count
+        varchar transports
+    }
+    oidc_flows {
+        uuid id PK
+        varchar state
+        varchar nonce
+        text code_verifier_encrypted
+        text return_to
+        varchar invite_code
+        uuid tenant_id FK
+        timestamptz created_at
+        timestamptz expires_at
+    }
+
+    users ||--o{ memberships : "belongs to"
+    tenants ||--o{ memberships : "has"
+    users ||--o{ sessions : "owns"
+    tenants ||--o{ sessions : "scopes"
+    auth_flows ||--o{ auth_flow_transitions : "records"
+    users ||--o{ user_passkeys : "registers"
+    tenants ||--o{ oidc_flows : "initiates"
+```
+
+### F.4 FlowEngine State Machine — stateDiagram
+
+```mermaid
+stateDiagram-v2
+    [*] --> Received : inbound HTTP request
+
+    Received --> Validated : auto / RequestValidator\n(header size, body size,\nhost, path-traversal,\nIP allowlist)
+    Received --> BadRequest : on_error (RequestValidator)
+
+    Validated --> Routed : auto / RoutingResolver\n(host lookup, wildcard match)
+    Validated --> BadRequest : on_error (unknown host)
+
+    Routed --> AuthChecked : external / AuthGuard\n(async volta-auth-server call)
+    Routed --> Redirect : guard → 302 (unauthenticated)
+    Routed --> Denied : guard → 403 (IP not in allowlist)
+    Routed --> BadGateway : on_error (auth-server down)
+
+    AuthChecked --> Forwarded : external / ForwardGuard\n(async backend call)
+    AuthChecked --> BadGateway : on_error (backend 5xx)
+    AuthChecked --> GatewayTimeout : on_error (timeout_secs exceeded)
+
+    Forwarded --> Completed : auto / CompletionProcessor\n(metrics, transition log)
+
+    Completed --> [*]
+    BadRequest --> [*]
+    Redirect --> [*]
+    Denied --> [*]
+    BadGateway --> [*]
+    GatewayTimeout --> [*]
+
+    note right of Routed
+        tramli strict_mode (3.6+)
+        TTL: 30 s
+        8 build() invariants validated at startup
+    end note
+```
+
 Invoked as `volta config.yaml`. Session verification costs ~1 µs (JWT
 HS256 verify + cache hit) instead of the ~250 µs round-trip to a separate
 auth-server process.
