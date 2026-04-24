@@ -489,6 +489,441 @@ impl GatewayConfig {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── helpers ──────────────────────────────────────────────────
+
+    fn make_route(host: &str, backend: &str) -> RouteEntry {
+        RouteEntry {
+            host: host.to_string(),
+            backend: Some(backend.to_string()),
+            backends: vec![],
+            app_id: None,
+            ip_allowlist: vec![],
+            cors_origins: vec![],
+            path_prefix: None,
+            strip_prefix: None,
+            add_prefix: None,
+            request_headers: None,
+            response_headers: None,
+            geo_allowlist: vec![],
+            geo_denylist: vec![],
+            public: false,
+            auth_bypass_paths: vec![],
+            mirror: None,
+            timeout_secs: None,
+            cache: None,
+            backend_tls: None,
+        }
+    }
+
+    fn make_weighted_route(host: &str, backends: Vec<WeightedBackend>) -> RouteEntry {
+        RouteEntry {
+            host: host.to_string(),
+            backend: None,
+            backends,
+            app_id: None,
+            ip_allowlist: vec![],
+            cors_origins: vec![],
+            path_prefix: None,
+            strip_prefix: None,
+            add_prefix: None,
+            request_headers: None,
+            response_headers: None,
+            geo_allowlist: vec![],
+            geo_denylist: vec![],
+            public: false,
+            auth_bypass_paths: vec![],
+            mirror: None,
+            timeout_secs: None,
+            cache: None,
+            backend_tls: None,
+        }
+    }
+
+    fn minimal_config_yaml(extra: &str) -> String {
+        format!(
+            r#"
+server:
+  port: 8080
+auth:
+  volta_url: "http://localhost:7070"
+routing:
+  - host: "example.com"
+    backend: "http://backend:3000"
+{}
+"#,
+            extra
+        )
+    }
+
+    fn parse_config(yaml: &str) -> GatewayConfig {
+        serde_yaml::from_str(yaml).expect("yaml parse failed")
+    }
+
+    // ── RouteEntry::all_backends ─────────────────────────────────
+
+    #[test]
+    fn all_backends_single_backend_field() {
+        let route = make_route("example.com", "http://backend:3000");
+        assert_eq!(route.all_backends(), vec!["http://backend:3000"]);
+    }
+
+    #[test]
+    fn all_backends_weighted_only() {
+        let route = make_weighted_route(
+            "example.com",
+            vec![
+                WeightedBackend { url: "http://a:3000".into(), weight: 90 },
+                WeightedBackend { url: "http://b:3000".into(), weight: 10 },
+            ],
+        );
+        assert_eq!(route.all_backends(), vec!["http://a:3000", "http://b:3000"]);
+    }
+
+    #[test]
+    fn all_backends_single_not_duplicated_when_also_in_backends() {
+        // backend field url already appears in backends — should not duplicate
+        let route = RouteEntry {
+            host: "example.com".into(),
+            backend: Some("http://a:3000".into()),
+            backends: vec![WeightedBackend { url: "http://a:3000".into(), weight: 90 }],
+            app_id: None,
+            ip_allowlist: vec![],
+            cors_origins: vec![],
+            path_prefix: None,
+            strip_prefix: None,
+            add_prefix: None,
+            request_headers: None,
+            response_headers: None,
+            geo_allowlist: vec![],
+            geo_denylist: vec![],
+            public: false,
+            auth_bypass_paths: vec![],
+            mirror: None,
+            timeout_secs: None,
+            cache: None,
+            backend_tls: None,
+        };
+        // should appear exactly once
+        assert_eq!(route.all_backends().len(), 1);
+    }
+
+    #[test]
+    fn all_backends_empty_when_none_configured() {
+        let route = RouteEntry {
+            host: "example.com".into(),
+            backend: None,
+            backends: vec![],
+            app_id: None,
+            ip_allowlist: vec![],
+            cors_origins: vec![],
+            path_prefix: None,
+            strip_prefix: None,
+            add_prefix: None,
+            request_headers: None,
+            response_headers: None,
+            geo_allowlist: vec![],
+            geo_denylist: vec![],
+            public: false,
+            auth_bypass_paths: vec![],
+            mirror: None,
+            timeout_secs: None,
+            cache: None,
+            backend_tls: None,
+        };
+        assert!(route.all_backends().is_empty());
+    }
+
+    // ── RouteEntry::all_weights ──────────────────────────────────
+
+    #[test]
+    fn all_weights_single_backend_gets_weight_one() {
+        let route = make_route("example.com", "http://backend:3000");
+        assert_eq!(route.all_weights(), vec![1u32]);
+    }
+
+    #[test]
+    fn all_weights_preserves_weighted_values() {
+        let route = make_weighted_route(
+            "example.com",
+            vec![
+                WeightedBackend { url: "http://a:3000".into(), weight: 70 },
+                WeightedBackend { url: "http://b:3000".into(), weight: 30 },
+            ],
+        );
+        assert_eq!(route.all_weights(), vec![70u32, 30u32]);
+    }
+
+    // ── GatewayConfig::validate ──────────────────────────────────
+
+    #[test]
+    fn validate_passes_for_minimal_valid_config() {
+        let cfg = parse_config(&minimal_config_yaml(""));
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_fails_when_routing_is_empty() {
+        let yaml = r#"
+server:
+  port: 8080
+auth:
+  volta_url: "http://localhost:7070"
+routing: []
+"#;
+        let cfg: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        let errs = cfg.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("routing is empty")));
+    }
+
+    #[test]
+    fn validate_fails_for_duplicate_hosts() {
+        let yaml = r#"
+server:
+  port: 8080
+auth:
+  volta_url: "http://localhost:7070"
+routing:
+  - host: "example.com"
+    backend: "http://a:3000"
+  - host: "example.com"
+    backend: "http://b:3000"
+"#;
+        let cfg: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        let errs = cfg.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("duplicate routing host")));
+    }
+
+    #[test]
+    fn validate_fails_for_invalid_cidr_in_ip_allowlist() {
+        let yaml = r#"
+server:
+  port: 8080
+auth:
+  volta_url: "http://localhost:7070"
+routing:
+  - host: "example.com"
+    backend: "http://a:3000"
+    ip_allowlist:
+      - "not-a-cidr"
+"#;
+        let cfg: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        let errs = cfg.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("invalid CIDR")));
+    }
+
+    #[test]
+    fn validate_fails_when_route_has_no_backend() {
+        let yaml = r#"
+server:
+  port: 8080
+auth:
+  volta_url: "http://localhost:7070"
+routing:
+  - host: "example.com"
+"#;
+        let cfg: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        let errs = cfg.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("no backends")));
+    }
+
+    #[test]
+    fn validate_fails_force_https_without_tls() {
+        let yaml = r#"
+server:
+  port: 8080
+  force_https: true
+auth:
+  volta_url: "http://localhost:7070"
+routing:
+  - host: "example.com"
+    backend: "http://a:3000"
+"#;
+        let cfg: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        let errs = cfg.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("force_https")));
+    }
+
+    #[test]
+    fn validate_fails_for_invalid_l4_proxy_protocol() {
+        let yaml = r#"
+server:
+  port: 8080
+auth:
+  volta_url: "http://localhost:7070"
+routing:
+  - host: "example.com"
+    backend: "http://a:3000"
+l4_proxy:
+  - listen_port: 5432
+    backend: "10.0.0.5:5432"
+    protocol: "sctp"
+"#;
+        let cfg: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        let errs = cfg.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("protocol must be 'tcp' or 'udp'")));
+    }
+
+    // ── cors_table / ip_allowlist_table ──────────────────────────
+
+    #[test]
+    fn cors_table_excludes_routes_without_cors_origins() {
+        let cfg = parse_config(&minimal_config_yaml(""));
+        let table = cfg.cors_table();
+        // minimal config has no cors_origins → table should be empty
+        assert!(table.is_empty());
+    }
+
+    #[test]
+    fn cors_table_includes_routes_with_cors_origins() {
+        let yaml = r#"
+server:
+  port: 8080
+auth:
+  volta_url: "http://localhost:7070"
+routing:
+  - host: "api.example.com"
+    backend: "http://a:3000"
+    cors_origins:
+      - "https://app.example.com"
+"#;
+        let cfg: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        let table = cfg.cors_table();
+        assert!(table.contains_key("api.example.com"));
+        assert_eq!(table["api.example.com"], vec!["https://app.example.com"]);
+    }
+
+    #[test]
+    fn ip_allowlist_table_parses_valid_cidr() {
+        let yaml = r#"
+server:
+  port: 8080
+auth:
+  volta_url: "http://localhost:7070"
+routing:
+  - host: "internal.example.com"
+    backend: "http://a:3000"
+    ip_allowlist:
+      - "10.0.0.0/8"
+      - "192.168.1.0/24"
+"#;
+        let cfg: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        let table = cfg.ip_allowlist_table();
+        assert!(table.contains_key("internal.example.com"));
+        assert_eq!(table["internal.example.com"].len(), 2);
+    }
+
+    // ── Default field values ─────────────────────────────────────
+
+    #[test]
+    fn server_defaults_are_applied_when_fields_absent() {
+        let yaml = r#"
+server: {}
+auth:
+  volta_url: "http://localhost:7070"
+routing:
+  - host: "example.com"
+    backend: "http://a:3000"
+"#;
+        let cfg: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.server.port, 8080);
+        assert_eq!(cfg.server.read_timeout_secs, 10);
+        assert_eq!(cfg.server.request_timeout_secs, 30);
+        assert!(!cfg.server.force_https);
+    }
+
+    #[test]
+    fn rate_limit_defaults_are_applied() {
+        let cfg = parse_config(&minimal_config_yaml(""));
+        assert_eq!(cfg.rate_limit.requests_per_second, 1000);
+        assert_eq!(cfg.rate_limit.per_ip_rps, 100);
+    }
+
+    #[test]
+    fn tenancy_defaults_are_applied_when_section_present() {
+        // When tenancy: {} is present in YAML, per-field serde defaults fire.
+        let yaml = r#"
+server:
+  port: 8080
+auth:
+  volta_url: "http://localhost:7070"
+routing:
+  - host: "example.com"
+    backend: "http://a:3000"
+tenancy: {}
+"#;
+        let cfg: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.tenancy.mode, "single");
+        assert_eq!(cfg.tenancy.creation_policy, "disabled");
+        assert_eq!(cfg.tenancy.max_orgs_per_user, 1);
+    }
+
+    #[test]
+    fn binding_defaults_are_applied_when_section_present() {
+        // When binding: {} is present in YAML, per-field serde defaults fire.
+        let yaml = r#"
+server:
+  port: 8080
+auth:
+  volta_url: "http://localhost:7070"
+routing:
+  - host: "example.com"
+    backend: "http://a:3000"
+binding: {}
+"#;
+        let cfg: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(!cfg.binding.enabled);
+        assert_eq!(cfg.binding.on_user_delete, "archive");
+        assert_eq!(cfg.binding.retention_days, 90);
+    }
+
+    // ── WeightedBackend deserialization ──────────────────────────
+
+    #[test]
+    fn weighted_backend_simple_string_gets_weight_one() {
+        let yaml = r#"
+server:
+  port: 8080
+auth:
+  volta_url: "http://localhost:7070"
+routing:
+  - host: "example.com"
+    backends:
+      - "http://a:3000"
+      - "http://b:3000"
+"#;
+        let cfg: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        let route = &cfg.routing[0];
+        assert_eq!(route.backends.len(), 2);
+        assert_eq!(route.backends[0].weight, 1);
+        assert_eq!(route.backends[1].weight, 1);
+    }
+
+    #[test]
+    fn weighted_backend_explicit_weight_is_preserved() {
+        let yaml = r#"
+server:
+  port: 8080
+auth:
+  volta_url: "http://localhost:7070"
+routing:
+  - host: "example.com"
+    backends:
+      - url: "http://a:3000"
+        weight: 80
+      - url: "http://b:3000"
+        weight: 20
+"#;
+        let cfg: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        let route = &cfg.routing[0];
+        assert_eq!(route.backends[0].weight, 80);
+        assert_eq!(route.backends[1].weight, 20);
+    }
+}
+
 fn default_port() -> u16 { 8080 }
 fn default_read_timeout() -> u64 { 10 }
 fn default_request_timeout() -> u64 { 30 }
