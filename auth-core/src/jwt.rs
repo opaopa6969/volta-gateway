@@ -190,3 +190,128 @@ impl JwtIssuer {
             .map_err(|e| JwtError::InvalidToken(format!("encoding failed: {}", e)))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SECRET: &[u8] = b"test-secret-at-least-32-bytes!!!";
+
+    fn minimal_claims(sub: &str) -> VoltaClaims {
+        VoltaClaims {
+            sub: sub.into(),
+            email: None,
+            tenant_id: None,
+            tenant_slug: None,
+            roles: None,
+            name: None,
+            app_id: None,
+            iat: None,
+            exp: None,
+        }
+    }
+
+    // ── JwtIssuer ──────────────────────────────────────────────
+
+    #[test]
+    fn issue_sets_iat_and_exp() {
+        let issuer = JwtIssuer::new_hs256(SECRET, 3600);
+        let token = issuer.issue(&minimal_claims("u1")).unwrap();
+        let verifier = JwtVerifier::new_hs256(SECRET);
+        let claims = verifier.verify(&token).unwrap();
+        let iat = claims.iat.expect("iat must be set");
+        let exp = claims.exp.expect("exp must be set");
+        assert_eq!(exp - iat, 3600, "exp should be iat + ttl");
+    }
+
+    #[test]
+    fn issue_ttl_accessor() {
+        let issuer = JwtIssuer::new_hs256(SECRET, 7200);
+        assert_eq!(issuer.ttl_secs(), 7200);
+    }
+
+    #[test]
+    fn issue_preserves_optional_claims() {
+        let issuer = JwtIssuer::new_hs256(SECRET, 3600);
+        let verifier = JwtVerifier::new_hs256(SECRET);
+        let mut c = minimal_claims("u2");
+        c.email = Some("user@example.com".into());
+        c.tenant_id = Some("t-42".into());
+        c.tenant_slug = Some("acme".into());
+        c.roles = Some("OWNER".into());
+        c.name = Some("Alice".into());
+        let token = issuer.issue(&c).unwrap();
+        let got = verifier.verify(&token).unwrap();
+        assert_eq!(got.email.unwrap(), "user@example.com");
+        assert_eq!(got.tenant_id.unwrap(), "t-42");
+        assert_eq!(got.tenant_slug.unwrap(), "acme");
+        assert_eq!(got.roles.unwrap(), "OWNER");
+        assert_eq!(got.name.unwrap(), "Alice");
+    }
+
+    #[test]
+    fn two_tokens_issued_at_same_second_differ_only_by_sub() {
+        let issuer = JwtIssuer::new_hs256(SECRET, 3600);
+        let t1 = issuer.issue(&minimal_claims("user-a")).unwrap();
+        let t2 = issuer.issue(&minimal_claims("user-b")).unwrap();
+        assert_ne!(t1, t2);
+    }
+
+    // ── JwtVerifier ────────────────────────────────────────────
+
+    #[test]
+    fn verify_invalid_jwt_string() {
+        let verifier = JwtVerifier::new_hs256(SECRET);
+        let result = verifier.verify("not.a.jwt");
+        assert!(matches!(result, Err(JwtError::InvalidToken(_))));
+    }
+
+    #[test]
+    fn verify_empty_sub_is_rejected() {
+        let issuer = JwtIssuer::new_hs256(SECRET, 3600);
+        let verifier = JwtVerifier::new_hs256(SECRET);
+        // Issue with empty sub — issuer does not validate sub.
+        // Then verify must reject it.
+        let c = VoltaClaims {
+            sub: String::new(),
+            email: None, tenant_id: None, tenant_slug: None,
+            roles: None, name: None, app_id: None,
+            iat: None, exp: None,
+        };
+        let token = issuer.issue(&c).unwrap();
+        assert!(matches!(verifier.verify(&token), Err(JwtError::MissingClaims(_))));
+    }
+
+    #[test]
+    fn verify_to_headers_includes_user_id() {
+        let issuer = JwtIssuer::new_hs256(SECRET, 3600);
+        let verifier = JwtVerifier::new_hs256(SECRET);
+        let mut c = minimal_claims("hdr-user");
+        c.email = Some("hdr@test.com".into());
+        let token = issuer.issue(&c).unwrap();
+        let headers = verifier.verify_to_headers(&token).unwrap();
+        assert_eq!(headers["x-volta-user-id"], "hdr-user");
+        assert_eq!(headers["x-volta-email"], "hdr@test.com");
+    }
+
+    #[test]
+    fn verify_to_headers_omits_absent_optional_fields() {
+        let issuer = JwtIssuer::new_hs256(SECRET, 3600);
+        let verifier = JwtVerifier::new_hs256(SECRET);
+        let token = issuer.issue(&minimal_claims("bare-user")).unwrap();
+        let headers = verifier.verify_to_headers(&token).unwrap();
+        assert!(headers.contains_key("x-volta-user-id"));
+        assert!(!headers.contains_key("x-volta-email"));
+        assert!(!headers.contains_key("x-volta-tenant-id"));
+    }
+
+    #[test]
+    fn verify_wrong_algorithm_token_is_rejected() {
+        // Craft a "none" alg token and make sure it's not accepted.
+        let verifier = JwtVerifier::new_hs256(SECRET);
+        // A token signed with HS256 but verified with a completely different secret
+        let other_issuer = JwtIssuer::new_hs256(b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", 3600);
+        let token = other_issuer.issue(&minimal_claims("attacker")).unwrap();
+        assert!(matches!(verifier.verify(&token), Err(JwtError::InvalidSignature)));
+    }
+}

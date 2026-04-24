@@ -59,6 +59,20 @@ mod tests {
     }
 
     #[test]
+    fn generate_secret_has_expected_length() {
+        // 20 bytes → ceiling(20 * 8 / 5) = 32 base32 chars
+        let secret = generate_secret();
+        assert_eq!(secret.len(), 32);
+    }
+
+    #[test]
+    fn generate_secret_is_unique() {
+        let a = generate_secret();
+        let b = generate_secret();
+        assert_ne!(a, b, "secrets must be random");
+    }
+
+    #[test]
     fn totp_verify_current_code() {
         let secret = b"12345678901234567890"; // standard test vector
         let now = std::time::SystemTime::now()
@@ -71,8 +85,72 @@ mod tests {
     }
 
     #[test]
+    fn totp_accepts_previous_window() {
+        // Clock-skew tolerance: previous time step must be accepted.
+        let secret = b"12345678901234567890";
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let prev_time = (now / 30).saturating_sub(1);
+        let code = totp_lite::totp_custom::<totp_lite::Sha1>(30, 6, secret, prev_time);
+        assert!(verify_totp(secret, &code, 30));
+    }
+
+    #[test]
+    fn totp_accepts_next_window() {
+        // Clock-skew tolerance: next time step must be accepted.
+        let secret = b"12345678901234567890";
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let next_time = (now / 30) + 1;
+        let code = totp_lite::totp_custom::<totp_lite::Sha1>(30, 6, secret, next_time);
+        assert!(verify_totp(secret, &code, 30));
+    }
+
+    #[test]
     fn totp_reject_wrong_code() {
         let secret = b"12345678901234567890";
         assert!(!verify_totp(secret, "000000", 30));
+    }
+
+    #[test]
+    fn totp_reject_wrong_length_code() {
+        let secret = b"12345678901234567890";
+        // 5-digit code — TOTP always produces 6 digits, so this cannot match.
+        assert!(!verify_totp(secret, "12345", 30));
+    }
+
+    #[test]
+    fn totp_different_secrets_produce_different_codes() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let time = now / 30;
+        let code_a = totp_lite::totp_custom::<totp_lite::Sha1>(30, 6, b"secret-AAAAAAAAAAAAA", time);
+        let code_b = totp_lite::totp_custom::<totp_lite::Sha1>(30, 6, b"secret-BBBBBBBBBBBBB", time);
+        // Codes are different with overwhelming probability (1/10^6 chance of collision).
+        // Only assert that secret-A code is rejected by secret-B verifier.
+        assert!(!verify_totp(b"secret-BBBBBBBBBBBBB", &code_a, 30));
+        assert!(!verify_totp(b"secret-AAAAAAAAAAAAA", &code_b, 30));
+    }
+
+    #[test]
+    fn base32_encode_known_vector() {
+        // RFC 4648 test vector: b"" → ""
+        assert_eq!(base32_encode(b""), "");
+        // RFC 4648: b"f" → "MY====== " without padding → "MY"
+        assert_eq!(base32_encode(b"f"), "MY");
+        // RFC 4648: b"fo" → "MZXQ"
+        assert_eq!(base32_encode(b"fo"), "MZXQ");
+    }
+
+    #[test]
+    fn base32_encode_only_valid_chars() {
+        let encoded = base32_encode(b"Hello, World!");
+        assert!(encoded.chars().all(|c| c.is_ascii_uppercase() || ('2'..='7').contains(&c)));
     }
 }

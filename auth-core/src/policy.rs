@@ -177,4 +177,90 @@ mod tests {
         let policy = PolicyEngine::default_policy();
         assert!(policy.can_any(&["VIEWER".into(), "ADMIN".into()], "invite_members"));
     }
+
+    // ── Additional boundary / edge-case tests ─────────────────
+
+    #[test]
+    fn unknown_role_has_no_permissions() {
+        let policy = PolicyEngine::default_policy();
+        assert!(!policy.can("SUPERUSER", "read_only"));
+        assert!(!policy.can("", "read_only"));
+    }
+
+    #[test]
+    fn can_any_with_empty_roles_is_false() {
+        let policy = PolicyEngine::default_policy();
+        assert!(!policy.can_any(&[], "read_only"));
+    }
+
+    #[test]
+    fn unknown_role_has_max_rank() {
+        let policy = PolicyEngine::default_policy();
+        assert_eq!(policy.rank("NONEXISTENT"), usize::MAX);
+    }
+
+    #[test]
+    fn is_at_least_same_role_is_true() {
+        let policy = PolicyEngine::default_policy();
+        assert!(policy.is_at_least("ADMIN", "ADMIN"));
+        assert!(policy.is_at_least("VIEWER", "VIEWER"));
+    }
+
+    #[test]
+    fn owner_inherits_all_lower_permissions() {
+        let policy = PolicyEngine::default_policy();
+        // OWNER must have every permission that VIEWER has.
+        for perm in policy.permissions("VIEWER") {
+            assert!(
+                policy.can("OWNER", &perm),
+                "OWNER should inherit VIEWER permission '{}'", perm
+            );
+        }
+        // OWNER must have every permission that MEMBER has.
+        for perm in policy.permissions("MEMBER") {
+            assert!(
+                policy.can("OWNER", &perm),
+                "OWNER should inherit MEMBER permission '{}'", perm
+            );
+        }
+        // OWNER must have every permission that ADMIN has.
+        for perm in policy.permissions("ADMIN") {
+            assert!(
+                policy.can("OWNER", &perm),
+                "OWNER should inherit ADMIN permission '{}'", perm
+            );
+        }
+    }
+
+    #[test]
+    fn enforce_min_role_with_multiple_roles_takes_highest() {
+        let policy = PolicyEngine::default_policy();
+        // User has both VIEWER and ADMIN — should satisfy ADMIN requirement.
+        assert_eq!(
+            policy.enforce_min_role(&["VIEWER".into(), "ADMIN".into()], "ADMIN"),
+            PolicyResult::Allow
+        );
+    }
+
+    #[test]
+    fn permissions_unknown_role_returns_empty_set() {
+        let policy = PolicyEngine::default_policy();
+        assert!(policy.permissions("NONEXISTENT").is_empty());
+    }
+
+    #[test]
+    fn viewer_cannot_manage_tenant() {
+        let policy = PolicyEngine::default_policy();
+        assert!(!policy.can("VIEWER", "delete_tenant"));
+        assert!(!policy.can("VIEWER", "transfer_ownership"));
+        assert!(!policy.can("VIEWER", "manage_signing_keys"));
+    }
+
+    #[test]
+    fn member_cannot_invite_or_remove() {
+        let policy = PolicyEngine::default_policy();
+        assert!(!policy.can("MEMBER", "invite_members"));
+        assert!(!policy.can("MEMBER", "remove_members"));
+        assert!(!policy.can("MEMBER", "change_member_role"));
+    }
 }
