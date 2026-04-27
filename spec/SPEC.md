@@ -180,25 +180,22 @@ Each inbound HTTP request drives exactly one `tramli::FlowInstance` against
 the `ProxyState` enum defined in `gateway/src/state.rs`. The flow is built in
 `gateway/src/flow.rs::build_proxy_flow_with_allowlist`:
 
-```
-[*] → Received
-       │ auto (RequestValidator)
-       ▼
-     Validated
-       │ auto (RoutingResolver)
-       ▼
-     Routed
-       │ external (AuthGuard)        ← AuthData injected by async volta call
-       ▼
-     AuthChecked
-       │ external (ForwardGuard)     ← BackendResponse injected by async backend call
-       ▼
-     Forwarded
-       │ auto (CompletionProcessor)
-       ▼
-     Completed [*]
+```mermaid
+stateDiagram-v2
+    [*] --> Received
+    Received --> Validated : auto / RequestValidator
+    Validated --> Routed : auto / RoutingResolver
+    Routed --> AuthChecked : external / AuthGuard<br/>(AuthData injected by async volta call)
+    AuthChecked --> Forwarded : external / ForwardGuard<br/>(BackendResponse injected by async backend call)
+    Forwarded --> Completed : auto / CompletionProcessor
+    Completed --> [*]
 
-  on_any_error → BadGateway
+    Received --> BadGateway : on_any_error
+    Validated --> BadGateway : on_any_error
+    Routed --> BadGateway : on_any_error
+    AuthChecked --> BadGateway : on_any_error
+    Forwarded --> BadGateway : on_any_error
+    BadGateway --> [*]
 ```
 
 Terminal error states (declared via `on_any_error` + per-processor `FlowError`):
@@ -567,10 +564,17 @@ Idempotency:      invitation_usages row inserted under unique constraint
 The gateway's plugin lifecycle in `gateway/src/plugin.rs` mirrors the tramli
 SM shape but is implemented as a plain Rust `enum`:
 
-```
-PluginState::Loaded → Validated → Active ←→ Error(reason)
-                              ↓
-                        Rejected(reason)
+```mermaid
+stateDiagram-v2
+    [*] --> Loaded
+    Loaded --> Validated : wasm validation (imports/exports shape)
+    Validated --> Active : smoke invocation OK
+    Loaded --> Active : native plugin (valid by type)
+    Active --> Error : runtime failure
+    Error --> Active : retry
+    Validated --> Rejected : smoke invocation failed
+    Active --> Rejected : terminal failure
+    Rejected --> [*]
 ```
 
 - Native plugins skip straight to `Active` after construction (they are valid
@@ -706,11 +710,13 @@ MFA verify, logout, tenant switch.
 Each backend has a `CircuitBreaker` state machine living alongside the
 `RouteInfo`:
 
-```
-Closed ── 5 failures within 30 s ──▶ Open
-  ▲                                    │
-  │                                    ▼
-  └── 1 successful probe ─── HalfOpen ◀ 30 s elapsed
+```mermaid
+stateDiagram-v2
+    [*] --> Closed
+    Closed --> Open : 5 failures within 30 s
+    Open --> HalfOpen : 30 s elapsed
+    HalfOpen --> Closed : 1 successful probe
+    HalfOpen --> Open : probe fails
 ```
 
 - `Closed`: requests pass through, failure counter increments on 5xx or
@@ -1288,31 +1294,33 @@ Sample usage in CI:
 
 **Profile A — Rust-only (greenfield):**
 
-```
-Cloudflare → volta-gateway (HTTP :8080)
-                     ├── volta-auth-server (:7070, Rust)
-                     │       └── PostgreSQL
-                     │       └── Redis (optional, for SSE)
-                     └── Backend apps
+```mermaid
+graph LR
+    CF["Cloudflare"] --> GW["volta-gateway<br/>HTTP :8080"]
+    GW --> AS["volta-auth-server<br/>:7070, Rust"]
+    GW --> BE["Backend apps"]
+    AS --> PG[("PostgreSQL")]
+    AS --> RD[("Redis<br/>(optional, SSE)")]
 ```
 
 **Profile B — Migrating from Java (DD-005 transition):**
 
-```
-Cloudflare → volta-gateway
-                     ├── path_prefix: /saml/     → Java volta-auth-proxy (:7070)
-                     ├── path_prefix: /auth/saml/ → Java volta-auth-proxy
-                     ├── (remaining ~94 auth routes) → Rust volta-auth-server (:7071)
-                     └── Backend apps
+```mermaid
+graph LR
+    CF["Cloudflare"] --> GW["volta-gateway"]
+    GW -->|"path_prefix: /saml/"| JAVA["Java volta-auth-proxy<br/>:7070"]
+    GW -->|"path_prefix: /auth/saml/"| JAVA
+    GW -->|"remaining ~94 auth routes"| RUST["Rust volta-auth-server<br/>:7071"]
+    GW --> BE["Backend apps"]
 ```
 
 **Profile C — Unified binary (embedded auth):**
 
-```
-Cloudflare → volta (single binary)
-                     │   gateway + auth-core in-process (1 µs session check)
-                     ├── PostgreSQL
-                     └── Backend apps
+```mermaid
+graph LR
+    CF["Cloudflare"] --> VOLTA["volta (single binary)<br/>gateway + auth-core in-process<br/>(1 µs session check)"]
+    VOLTA --> PG[("PostgreSQL")]
+    VOLTA --> BE["Backend apps"]
 ```
 
 ### 12.3 Configuration delivery
@@ -1887,40 +1895,40 @@ graph TB
     CF["Cloudflare / TLS termination"]
 
     subgraph volta-gateway ["volta-gateway (Rust binary)"]
-        GW["ProxyService\nArcSwap RoutingTable\nFlowEngine (tramli 3.8)"]
-        LB["Load Balancer\nRound-robin / Weighted\nCircuit Breaker (5 fail / 30 s)"]
+        GW["ProxyService<br/>ArcSwap RoutingTable<br/>FlowEngine (tramli 3.8)"]
+        LB["Load Balancer<br/>Round-robin / Weighted<br/>Circuit Breaker (5 fail / 30 s)"]
     end
 
     subgraph auth-server ["volta-auth-server (Axum, 96 routes)"]
-        MAIN["main_router\n(~80 non-rate-limited routes)"]
+        MAIN["main_router<br/>(~80 non-rate-limited routes)"]
 
         subgraph rate_limited ["5 rate-limited merge sub-routers"]
-            OIDC["oidc_routes\n10 / min / IP\nGET /login\nGET /callback\nPOST /auth/callback/complete"]
-            MFA["mfa_routes\n5 / min / IP\nPOST /auth/mfa/verify"]
-            PK["passkey_routes\n5 / min / IP\nPOST /auth/passkey/start\nPOST /auth/passkey/finish"]
-            INV["invite_routes\n20 / min / IP\nPOST /invite/{code}/accept"]
-            ML["magic_routes\n5 / min / IP\nPOST /auth/magic-link/send\nGET /auth/magic-link/verify"]
+            OIDC["oidc_routes<br/>10 / min / IP<br/>GET /login<br/>GET /callback<br/>POST /auth/callback/complete"]
+            MFA["mfa_routes<br/>5 / min / IP<br/>POST /auth/mfa/verify"]
+            PK["passkey_routes<br/>5 / min / IP<br/>POST /auth/passkey/start<br/>POST /auth/passkey/finish"]
+            INV["invite_routes<br/>20 / min / IP<br/>POST /invite/{code}/accept"]
+            ML["magic_routes<br/>5 / min / IP<br/>POST /auth/magic-link/send<br/>GET /auth/magic-link/verify"]
         end
 
         MAIN --> rate_limited
     end
 
     subgraph java_sidecar ["Java sidecar (volta-auth-proxy, Spring Boot)"]
-        SAML["SAML assertion verify\npath_prefix: /saml/\n(DD-005 — indefinite)"]
+        SAML["SAML assertion verify<br/>path_prefix: /saml/<br/>(DD-005 — indefinite)"]
     end
 
     subgraph auth-core ["auth-core (Rust library)"]
-        AC["AuthService\nFlowDefinitions\nJWT / Session / Passkey\nKeyCipher (AES-GCM + PBKDF2)"]
+        AC["AuthService<br/>FlowDefinitions<br/>JWT / Session / Passkey<br/>KeyCipher (AES-GCM + PBKDF2)"]
     end
 
-    PG[("PostgreSQL\n23 migrations")]
-    REDIS[("Redis\nSSE pub/sub")]
+    PG[("PostgreSQL<br/>23 migrations")]
+    REDIS[("Redis<br/>SSE pub/sub")]
     BACKENDS["Backend Apps"]
 
     CF --> GW
     GW --> LB
     GW -->|"/saml/* (DD-005)"| SAML
-    GW -->|"auth check\n(VoltaAuthClient)"| auth-server
+    GW -->|"auth check<br/>(VoltaAuthClient)"| auth-server
     GW --> LB --> BACKENDS
     auth-server --> AC
     AC --> PG
@@ -1932,8 +1940,8 @@ graph TB
 ```mermaid
 sequenceDiagram
     participant C as Client
-    participant GW as volta-gateway\n(ProxyService)
-    participant SM as FlowEngine\n(tramli 3.8)
+    participant GW as volta-gateway<br/>(ProxyService)
+    participant SM as FlowEngine<br/>(tramli 3.8)
     participant AUTH as volta-auth-server
     participant BE as Backend
 
@@ -2047,22 +2055,22 @@ erDiagram
 stateDiagram-v2
     [*] --> Received : inbound HTTP request
 
-    Received --> Validated : auto / RequestValidator\n(header size, body size,\nhost, path-traversal,\nIP allowlist)
+    Received --> Validated : auto / RequestValidator<br/>(header size, body size,<br/>host, path-traversal,<br/>IP allowlist)
     Received --> BadRequest : on_error (RequestValidator)
 
-    Validated --> Routed : auto / RoutingResolver\n(host lookup, wildcard match)
+    Validated --> Routed : auto / RoutingResolver<br/>(host lookup, wildcard match)
     Validated --> BadRequest : on_error (unknown host)
 
-    Routed --> AuthChecked : external / AuthGuard\n(async volta-auth-server call)
+    Routed --> AuthChecked : external / AuthGuard<br/>(async volta-auth-server call)
     Routed --> Redirect : guard → 302 (unauthenticated)
     Routed --> Denied : guard → 403 (IP not in allowlist)
     Routed --> BadGateway : on_error (auth-server down)
 
-    AuthChecked --> Forwarded : external / ForwardGuard\n(async backend call)
+    AuthChecked --> Forwarded : external / ForwardGuard<br/>(async backend call)
     AuthChecked --> BadGateway : on_error (backend 5xx)
     AuthChecked --> GatewayTimeout : on_error (timeout_secs exceeded)
 
-    Forwarded --> Completed : auto / CompletionProcessor\n(metrics, transition log)
+    Forwarded --> Completed : auto / CompletionProcessor<br/>(metrics, transition log)
 
     Completed --> [*]
     BadRequest --> [*]
@@ -2184,45 +2192,31 @@ under pathological hit distributions.
 
 ---
 
-## Appendix A — ASCII architecture
+## Appendix A — System architecture
 
-```
-                              ┌─────────────────────────────────┐
-                              │            Clients              │
-                              └────────────────┬────────────────┘
-                                               │ TLS
-                                     ┌─────────▼─────────┐
-                                     │    Cloudflare     │
-                                     └─────────┬─────────┘
-                                               │ HTTP/1.1 + HTTP/2
-                                     ┌─────────▼─────────────────┐
-                                     │     volta-gateway         │
-                                     │  ┌─────────────────────┐  │
-                                     │  │ tower::ServiceBuilder│  │
-                                     │  │  Trace→RL→Timeout    │  │
-                                     │  ├─────────────────────┤  │
-                                     │  │ ProxyService        │  │
-                                     │  │  tramli FlowEngine  │  │
-                                     │  │  (sync SM ~2 µs)    │  │
-                                     │  ├─────────────────────┤  │
-                                     │  │ hyper + tokio       │  │
-                                     │  └─────────────────────┘  │
-                                     └──┬────────────┬───────────┘
-                                        │            │
-                        ┌───────────────▼──┐   ┌─────▼────────────┐
-                        │ volta-auth-server│   │   Backend apps   │
-                        │   Axum router    │   └──────────────────┘
-                        │   96 routes      │
-                        │   + 5 merges     │
-                        │                  │
-                        │   auth-core lib  │
-                        │   (JWT, flows)   │
-                        └──┬──────────┬────┘
-                           │          │
-                 ┌─────────▼──┐  ┌────▼─────────┐
-                 │ PostgreSQL │  │ Redis (SSE)  │
-                 │ 23 tables  │  └──────────────┘
-                 └────────────┘
+```mermaid
+graph TB
+    CLIENTS["Clients"] -->|"TLS"| CF["Cloudflare"]
+    CF -->|"HTTP/1.1 + HTTP/2"| GW
+
+    subgraph GW ["volta-gateway"]
+        TOWER["tower::ServiceBuilder<br/>Trace → RL → Timeout"]
+        PROXY["ProxyService<br/>tramli FlowEngine (sync SM ~2 µs)"]
+        HYPER["hyper + tokio"]
+        TOWER --> PROXY --> HYPER
+    end
+
+    GW --> AS
+    GW --> BE["Backend apps"]
+
+    subgraph AS ["volta-auth-server"]
+        AXUM["Axum router<br/>96 routes + 5 merges"]
+        CORE["auth-core lib<br/>(JWT, flows)"]
+        AXUM --> CORE
+    end
+
+    CORE --> PG[("PostgreSQL<br/>23 tables")]
+    CORE --> RD[("Redis (SSE)")]
 ```
 
 ## Appendix B — Traceability index
