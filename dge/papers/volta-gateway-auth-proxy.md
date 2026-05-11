@@ -127,19 +127,21 @@ Pingora は圧倒的な性能だが「フレームワーク」であり、その
 
 volta-gateway は **「Caddy の設定簡潔さ」+「Oathkeeper の認証パイプライン」+「Pingora の Rust ランタイム」** の交差点を狙う:
 
-```
-                    大規模 (50+ svc)
-                    │
-            Envoy ──┤── Traefik
-                    │
-                    │        Pomerium
-                    │       ╱
-    Zero-trust ─────┤──────╱── volta-gateway ← ここ
-                    │     ╱
-                    │    ╱
-            Caddy ──┤───── Authelia
-                    │
-                    小規模 (5-20 svc)
+```mermaid
+quadrantChart
+    title Positioning
+    x-axis "Simple proxy" --> "Zero-trust"
+    y-axis "小規模 (5-20 svc)" --> "大規模 (50+ svc)"
+    quadrant-1 "大規模 / Zero-trust"
+    quadrant-2 "大規模 / Simple"
+    quadrant-3 "小規模 / Simple"
+    quadrant-4 "小規模 / Zero-trust"
+    "Envoy": [0.20, 0.95]
+    "Traefik": [0.30, 0.90]
+    "Pomerium": [0.85, 0.65]
+    "Authelia": [0.85, 0.30]
+    "Caddy": [0.20, 0.25]
+    "volta-gateway (★)": [0.70, 0.55]
 ```
 
 ## 4. Quality Assurance

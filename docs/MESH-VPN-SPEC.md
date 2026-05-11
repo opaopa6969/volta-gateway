@@ -16,29 +16,19 @@ volta-gateway: 1 つの config + 1 つの認証で HTTP proxy も VPN も
 
 ## Architecture (Phase 1: Headscale Sidecar)
 
-```
-┌──────────────────────────────────────┐
-│ Docker Compose                       │
-│                                      │
-│  volta-gateway (:80, :443)           │
-│  ├── HTTP reverse proxy (既存)       │
-│  ├── /api/mesh/* → Headscale proxy   │
-│  └── ForwardAuth (volta-auth-proxy)  │
-│                                      │
-│  Headscale (:8080, :3478)            │
-│  ├── Coordination server             │
-│  ├── Built-in DERP server            │
-│  └── WireGuard key management        │
-│                                      │
-│  volta-auth-proxy (:7070)            │
-│  └── 認証 (OIDC, Passkey, MFA)      │
-│                                      │
-│  PostgreSQL (shared)                 │
-└──────────────────────────────────────┘
-
-Client:
-  Tailscale client → mesh.unlaxer.org
-  → volta-gateway → ForwardAuth → Headscale
+```mermaid
+flowchart TB
+    subgraph Compose["Docker Compose"]
+        GW["volta-gateway (:80, :443)<br/>- HTTP reverse proxy (既存)<br/>- /api/mesh/* → Headscale proxy<br/>- ForwardAuth (volta-auth-proxy)"]
+        HS["Headscale (:8080, :3478)<br/>- Coordination server<br/>- Built-in DERP server<br/>- WireGuard key management"]
+        Auth["volta-auth-proxy (:7070)<br/>認証 (OIDC, Passkey, MFA)"]
+        PG[("PostgreSQL (shared)")]
+        GW --> HS
+        GW --> Auth
+        Auth --> PG
+        HS --> PG
+    end
+    Client["Tailscale client"] -->|mesh.unlaxer.org| GW
 ```
 
 ## Authentication Flow

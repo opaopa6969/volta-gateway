@@ -27,18 +27,21 @@ Shared dependencies: `tramli = "3.8"` and `tramli-plugins = "3.6.1"` in both
 Every request that enters `gateway` drives **one tramli `FlowInstance`**.
 The state machine is declared in `gateway/src/flow.rs`:
 
-```text
-         ┌─────────┐   ┌───────────┐   ┌────────┐
-[*] ──▶ │Received │──▶│ Validated │──▶│ Routed │──▶ [AuthGuard] ──▶ AuthChecked
-         └─────────┘   └───────────┘   └────────┘        │
-              │              │             │              ▼
-              └── BAD_REQUEST, REDIRECT, DENIED, BAD_GATEWAY, GATEWAY_TIMEOUT
-                                                          │
-                                                          ▼
-                                                   [ForwardGuard] ──▶ Forwarded
-                                                                         │
-                                                                         ▼
-                                                                     Completed [*]
+```mermaid
+stateDiagram-v2
+    [*] --> Received
+    Received --> Validated
+    Validated --> Routed
+    Routed --> AuthChecked : [AuthGuard]
+    AuthChecked --> Forwarded : [ForwardGuard]
+    Forwarded --> Completed
+    Completed --> [*]
+    Received --> BAD_REQUEST
+    Validated --> BAD_REQUEST
+    Routed --> REDIRECT
+    Routed --> DENIED
+    AuthChecked --> BAD_GATEWAY
+    AuthChecked --> GATEWAY_TIMEOUT
 ```
 
 Processors (sync, <2µs each):
@@ -178,10 +181,14 @@ machine in `gateway/src/flow.rs` is the only place where we create a
 `gateway/src/plugin.rs` (~420 LoC) implements a **tramli-managed plugin
 lifecycle**:
 
-```text
-LOADED ──▶ VALIDATED ──▶ ACTIVE ◀──▶ ERROR
-                  │
-                  └──▶ REJECTED  (validation failed)
+```mermaid
+stateDiagram-v2
+    [*] --> LOADED
+    LOADED --> VALIDATED
+    VALIDATED --> ACTIVE
+    ACTIVE --> ERROR
+    ERROR --> ACTIVE
+    VALIDATED --> REJECTED : validation failed
 ```
 
 ### Phase 1: built-in native plugins

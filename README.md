@@ -32,15 +32,24 @@ the Java auth-proxy 1:1 — see [`docs/parity.md`](docs/parity.md).
 
 ## How it works
 
+```mermaid
+flowchart LR
+    Client --> CF["Cloudflare (TLS)"]
+    CF --> GW["volta-gateway (HTTP:8080)"]
+    GW -->|auth check| Volta[volta-auth-proxy]
+    GW --> Backend["Backend App"]
 ```
-Client → Cloudflare (TLS) → volta-gateway (HTTP:8080) → volta-auth-proxy (auth check)
-                                                       → Backend App
 
-Request lifecycle (state machine):
-  RECEIVED → VALIDATED → ROUTED → [auth] → AUTH_CHECKED → [forward] → FORWARDED → COMPLETED
-                                            ├── REDIRECT (login)
-                                            ├── DENIED (403)
-                                            └── BAD_GATEWAY (volta down)
+**Request lifecycle (state machine):**
+
+```mermaid
+flowchart LR
+    RECEIVED --> VALIDATED --> ROUTED
+    ROUTED -->|auth| AUTH_CHECKED
+    AUTH_CHECKED -->|forward| FORWARDED --> COMPLETED
+    AUTH_CHECKED --> REDIRECT["REDIRECT (login)"]
+    AUTH_CHECKED --> DENIED["DENIED (403)"]
+    AUTH_CHECKED --> BAD_GATEWAY["BAD_GATEWAY (volta down)"]
 ```
 
 ### State Chart
@@ -205,25 +214,12 @@ Full config reference: `volta-gateway.full.yaml`
 
 ## Architecture
 
-```
-┌────────────────────────────────────────────┐
-│  tower::ServiceBuilder                     │
-│    TraceLayer → RateLimitLayer → Timeout   │
-├────────────────────────────────────────────┤
-│  ProxyService (SM lifecycle)               │
-│                                            │
-│  Sync judgment:          Async I/O:        │
-│    RECEIVED → VALIDATED    (nothing)       │
-│    VALIDATED → ROUTED      (nothing)       │
-│    ROUTED → [External]     volta HTTP call │
-│    AUTH_CHECKED → [Ext]    backend forward │
-│    FORWARDED → COMPLETED   (nothing)       │
-│                                            │
-│  SM is sync (~2μs). I/O is async (hyper).  │
-│  Separation of concerns.                   │
-├────────────────────────────────────────────┤
-│  hyper (HTTP) + tokio (async runtime)      │
-└────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    Tower["tower::ServiceBuilder<br/>TraceLayer → RateLimitLayer → Timeout"]
+    Proxy["ProxyService (SM lifecycle)<br/>Sync judgment / Async I/O:<br/>- RECEIVED → VALIDATED (nothing)<br/>- VALIDATED → ROUTED (nothing)<br/>- ROUTED → [External] (volta HTTP call)<br/>- AUTH_CHECKED → [Ext] (backend forward)<br/>- FORWARDED → COMPLETED (nothing)<br/><br/>SM is sync (~2μs). I/O is async (hyper).<br/>Separation of concerns."]
+    Hyper["hyper (HTTP) + tokio (async runtime)"]
+    Tower --> Proxy --> Hyper
 ```
 
 The SM pattern comes from [tramli](https://github.com/opaopa6969/tramli) — a constrained flow engine where invalid transitions cannot exist.

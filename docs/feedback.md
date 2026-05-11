@@ -14,10 +14,13 @@ release was redeployed here within 24 hours.
 
 `tramli_react` is a feedback shape, not a codebase. It means:
 
-```
-ship in volta-gateway → hit friction → file an issue upstream
-     ↑                                              │
-     └──── tramli releases fix  ◀──── tramli merges PR
+```mermaid
+flowchart LR
+    A["ship in volta-gateway"] --> B["hit friction"]
+    B --> C["file an issue upstream"]
+    C --> D["tramli merges PR"]
+    D --> E["tramli releases fix"]
+    E --> A
 ```
 
 The round-trip is short enough that it's worth tracking openly so that:
@@ -55,10 +58,14 @@ and the Rust port in this repo).
 volta-gateway's own plugin system (`gateway/src/plugin.rs`) took its
 lifecycle shape from tramli's plugin SPI:
 
-```
-LOADED ──▶ VALIDATED ──▶ ACTIVE ◀──▶ ERROR
-                  │
-                  └──▶ REJECTED
+```mermaid
+stateDiagram-v2
+    [*] --> LOADED
+    LOADED --> VALIDATED
+    VALIDATED --> ACTIVE
+    ACTIVE --> ERROR
+    ERROR --> ACTIVE
+    VALIDATED --> REJECTED
 ```
 
 The built-in plugins (`ApiKeyAuth`, `RateLimitByUser`, `Monetizer`,
@@ -168,10 +175,13 @@ These are in `docs/backlog.md` and in tramli's own issue tracker:
 
 `tramli_react` はコードベースではなくフィードバック形状:
 
-```
-volta-gateway で投入 → 摩擦検出 → 上流に issue
-     ↑                                        │
-     └─── tramli リリース 反映  ◀── tramli が PR merge
+```mermaid
+flowchart LR
+    A["volta-gateway で投入"] --> B["摩擦検出"]
+    B --> C["上流に issue"]
+    C --> D["tramli が PR merge"]
+    D --> E["tramli リリース 反映"]
+    E --> A
 ```
 
 この往復を公開で追うことで:
@@ -204,10 +214,14 @@ volta-gateway で投入 → 摩擦検出 → 上流に issue
 volta-gateway 自身のプラグインシステム (`gateway/src/plugin.rs`) は tramli
 Plugin SPI のライフサイクル形状を採用:
 
-```
-LOADED ──▶ VALIDATED ──▶ ACTIVE ◀──▶ ERROR
-                  │
-                  └──▶ REJECTED
+```mermaid
+stateDiagram-v2
+    [*] --> LOADED
+    LOADED --> VALIDATED
+    VALIDATED --> ACTIVE
+    ACTIVE --> ERROR
+    ERROR --> ACTIVE
+    VALIDATED --> REJECTED
 ```
 
 ビルトイン (`ApiKeyAuth`, `RateLimitByUser`, `Monetizer`, `HeaderInjector`) が
