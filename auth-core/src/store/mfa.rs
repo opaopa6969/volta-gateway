@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use uuid::Uuid;
 use crate::error::AuthError;
-use crate::record::{MfaRecord, RecoveryCodeRecord, MagicLinkRecord, SigningKeyRecord};
+use crate::record::{MfaRecord, MagicLinkRecord, SigningKeyRecord};
 
 /// MFA store — TOTP secret management.
 #[async_trait]

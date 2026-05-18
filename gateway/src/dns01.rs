@@ -3,6 +3,8 @@
 //! Phase 1: Cloudflare DNS provider (TXT record CRUD).
 //! Phase 2: Full ACME DNS-01 order flow via `instant-acme`.
 
+#![allow(dead_code)]
+
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn, error};
 
@@ -168,7 +170,7 @@ pub async fn obtain_certificate_dns01(
     provider: &dyn DnsProvider,
 ) -> Result<AcmeCertificate, String> {
     use instant_acme::{
-        Account, NewAccount, NewOrder, OrderStatus, ChallengeType, RetryPolicy,
+        Account, NewAccount, NewOrder, ChallengeType, RetryPolicy,
     };
 
     let directory_url = if tls_config.staging {

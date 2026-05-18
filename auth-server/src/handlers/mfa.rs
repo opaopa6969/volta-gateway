@@ -2,7 +2,6 @@
 //! 100% compatible with Java volta-auth-proxy.
 
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use axum::Json;
 use axum_extra::extract::CookieJar;

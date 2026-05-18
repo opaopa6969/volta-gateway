@@ -2,7 +2,6 @@
 //! select-tenant, user export, admin HTML pages (stubs).
 
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use axum::Json;
 use axum_extra::extract::CookieJar;

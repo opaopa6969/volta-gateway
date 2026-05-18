@@ -2,7 +2,9 @@
 //!
 //! Builds a hyper client with mutual TLS (client certificate + CA verification).
 
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+#![allow(dead_code)]
+
+use rustls::pki_types::CertificateDer;
 use serde::Deserialize;
 use std::sync::Arc;
 

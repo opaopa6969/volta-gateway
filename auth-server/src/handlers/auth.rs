@@ -1,12 +1,12 @@
 //! /auth/* handlers — verify, logout, refresh, switch-tenant.
 //! 100% compatible with Java volta-auth-proxy.
 
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::Json;
 use axum_extra::extract::CookieJar;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::auth_events::AuthEvent;
 use crate::error::{no_cache_headers, ApiError};

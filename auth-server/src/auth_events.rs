@@ -204,7 +204,7 @@ pub async fn spawn_redis_bridge(
     let client = redis::Client::open(url)?;
     let publish_conn: ConnectionManager = ConnectionManager::new(client.clone()).await?;
     // Separate dedicated connection for subscribe (pub/sub needs exclusive conn).
-    let mut pubsub = client.get_async_connection().await?.into_pubsub();
+    let mut pubsub = client.get_async_pubsub().await?;
     pubsub.subscribe(&channel).await?;
 
     // Subscriber task — pipes incoming messages back into the local broadcast.

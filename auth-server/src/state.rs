@@ -23,6 +23,7 @@ pub struct AppState {
     /// Base URL for redirects (e.g. "https://auth.example.com").
     pub base_url: String,
     /// HMAC key for signing OIDC state parameters.
+    #[allow(dead_code)]
     pub state_signing_key: Vec<u8>,
     /// Local-network bypass for `/auth/verify` (P1.3, Java `5f23f88`+`4006ee7`).
     pub local_bypass: Arc<LocalNetworkBypass>,

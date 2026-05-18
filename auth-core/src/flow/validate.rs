@@ -211,6 +211,7 @@ fn find_cycle(edges: &[&Edge]) -> Option<Vec<&'static str>> {
 mod tests {
     use super::*;
 
+    #[allow(dead_code)]
     fn edge(from: &'static str, to: &'static str) -> Edge {
         Edge { from, to, label: "auto" }
     }

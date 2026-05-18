@@ -10,7 +10,7 @@
 
 use clap::Parser;
 use regex::Regex;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::collections::HashMap;
 
 #[derive(Parser)]

@@ -86,6 +86,7 @@ pub struct L4ProxyEntry {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct TlsConfig {
     /// Domains for ACME certificate. Must match routing hosts.
     pub domains: Vec<String>,
@@ -115,6 +116,7 @@ fn default_challenge() -> String { "http-01".into() }
 
 /// #39: Access log configuration.
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct AccessLogConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -130,6 +132,7 @@ fn default_access_format() -> String { "json".into() }
 // ─── #55: Config Schema v3 ─────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, Default)]
+#[allow(dead_code)]
 pub struct TenancyConfig {
     #[serde(default = "default_tenancy_mode")]
     pub mode: String,
@@ -150,6 +153,7 @@ fn default_max_orgs() -> u32 { 1 }
 fn default_org_display() -> String { "Organization".into() }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+#[allow(dead_code)]
 pub struct TenantRouting {
     #[serde(default = "default_routing_mode")]
     pub mode: String,
@@ -164,6 +168,7 @@ fn default_slug_header() -> String { "X-Volta-Tenant-Slug".into() }
 fn default_cookie_scope() -> String { "shared".into() }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+#[allow(dead_code)]
 pub struct AccessConfig {
     #[serde(default = "default_visibility")]
     pub default_visibility: String,
@@ -178,6 +183,7 @@ fn default_actions() -> Vec<String> {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+#[allow(dead_code)]
 pub struct BindingConfig {
     #[serde(default)]
     pub enabled: bool,

@@ -8,7 +8,6 @@ use tramli::{Builder, FlowContext, FlowDefinition, FlowError, FlowEngine, InMemo
 use std::time::Duration;
 
 use crate::error::AuthError;
-use crate::store::SessionStore;
 
 // ─── Token Flow State (tramli SM) ──────────────────────
 

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use volta_gateway::proxy::{ErrorPages, CorsTable};
@@ -100,7 +100,7 @@ fn compression_preserves_headers_via_into_parts() {
     use hyper::{Response, StatusCode};
     use hyper::header::HeaderValue;
 
-    let mut resp = Response::builder()
+    let resp = Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "application/json")
         .header("set-cookie", "session=abc123; Path=/; HttpOnly")
