@@ -82,4 +82,51 @@ impl PasskeyService {
             .finish_passkey_registration(response, state)
             .map_err(|e| AuthError::Internal(format!("passkey reg finish: {}", e)))
     }
+
+    /// Start discoverable-credential (username-less) authentication.
+    ///
+    /// Issues a challenge with an empty `allowCredentials` list and
+    /// `userVerification=required`. The authenticator will present credentials
+    /// it already holds for this RP and the user picks one.
+    ///
+    /// Returns `(challenge_response, server_state)`:
+    /// - `challenge_response` is sent to the client (JSON)
+    /// - `server_state` must be kept server-side until `finish_discoverable_authentication`
+    pub fn start_discoverable_authentication(
+        &self,
+    ) -> Result<(RequestChallengeResponse, DiscoverableAuthentication), AuthError> {
+        self.webauthn
+            .start_discoverable_authentication()
+            .map_err(|e| AuthError::Internal(format!("discoverable auth start: {}", e)))
+    }
+
+    /// Pre-process the client's response to extract the user UUID and credential ID.
+    ///
+    /// Call this before `finish_discoverable_authentication` to identify *which*
+    /// user is authenticating (by `user_unique_id`) and load their credentials.
+    pub fn identify_discoverable_authentication<'a>(
+        &self,
+        credential: &'a PublicKeyCredential,
+    ) -> Result<(Uuid, &'a [u8]), AuthError> {
+        self.webauthn
+            .identify_discoverable_authentication(credential)
+            .map_err(|e| AuthError::Internal(format!("discoverable auth identify: {}", e)))
+    }
+
+    /// Finish discoverable-credential authentication: verify the assertion.
+    ///
+    /// `creds` must be the passkeys belonging to the user identified via
+    /// `identify_discoverable_authentication`.
+    ///
+    /// Returns the `AuthenticationResult` with updated credential counter.
+    pub fn finish_discoverable_authentication(
+        &self,
+        credential: &PublicKeyCredential,
+        state: DiscoverableAuthentication,
+        creds: &[DiscoverableKey],
+    ) -> Result<AuthenticationResult, AuthError> {
+        self.webauthn
+            .finish_discoverable_authentication(credential, state, creds)
+            .map_err(|e| AuthError::Internal(format!("discoverable auth finish: {}", e)))
+    }
 }

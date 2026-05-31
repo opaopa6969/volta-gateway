@@ -57,7 +57,7 @@ tracing = "0.1"
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono"], optional = true }
 
 # WebAuthn/Passkey (optional — enable with `features = ["webauthn"]`)
-webauthn-rs = { version = "0.6.0-dev", features = ["danger-allow-state-serialisation"], optional = true }
+webauthn-rs = { version = "0.6.0-dev", features = ["danger-allow-state-serialisation", "conditional-ui"], optional = true }
 
 [dev-dependencies]
 testcontainers = "0.23"
