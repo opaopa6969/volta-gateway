@@ -35,11 +35,6 @@ Each item has spec + arch under `docs/specs/<item>.md` /
 green** as of this commit.
 
 Future follow-ups (not in original backlog):
-- exc-c14n full canonicalisation for SAML XML-DSig — current
-  implementation assumes IdP emits canonical form (works with
-  Keycloak / ADFS / Shibboleth defaults). Spec
-  [`saml-signature-verification.md`](specs/saml-signature-verification.md)
-  documents the limit.
 - Outbox fan-out of audit events for external webhook subscribers
   (see `arch/audit-db-insert.md`).
 - Discoverable-credential passkey flow (currently username-bound only).
