@@ -12,7 +12,7 @@ volta-auth-core = { path = "../auth-core", features = ["postgres", "webauthn"] }
 bincode = "1"
 
 # WebAuthn types surfaced in handler request/response bodies (P1 #5)
-webauthn-rs = { version = "0.6.0-dev", features = ["danger-allow-state-serialisation"] }
+webauthn-rs = { version = "0.6.0-dev", features = ["danger-allow-state-serialisation", "conditional-ui"] }
 
 # For in-trait async fns in tests that mock auth-core stores (P2 #10)
 async-trait = "0.1"

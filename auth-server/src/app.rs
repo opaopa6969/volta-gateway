@@ -33,6 +33,9 @@ pub fn build_router(state: AppState) -> Router {
     let passkey_routes = Router::new()
         .route("/auth/passkey/start", post(handlers::passkey_flow::auth_start))
         .route("/auth/passkey/finish", post(handlers::passkey_flow::auth_finish))
+        // Discoverable-credential (username-less) passkey flow (#58)
+        .route("/auth/passkey/discover/start", post(handlers::passkey_flow::discover_start))
+        .route("/auth/passkey/discover/finish", post(handlers::passkey_flow::discover_finish))
         .route_layer(from_fn_with_state(rl_passkey, limit_by_ip));
 
     let invite_routes = Router::new()
