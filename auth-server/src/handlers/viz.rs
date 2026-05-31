@@ -196,6 +196,10 @@ pub fn flow_descriptors() -> [volta_auth_core::flow::validate::FlowDescriptor; 4
             edges: flow_tables::OIDC.edges,
             // OIDC has one external guard (REDIRECTED → CALLBACK_RECEIVED).
             external_edges: &flow_tables::OIDC_EXTERNAL,
+            // Rules #6 and #7: processors and aliases populated when tramli
+            // exposes requires/produces and @FlowData aliases (see issue #60).
+            processors: &[],
+            flow_data_aliases: &[],
         },
         FlowDescriptor {
             name: flow_tables::PASSKEY.name,
@@ -204,6 +208,8 @@ pub fn flow_descriptors() -> [volta_auth_core::flow::validate::FlowDescriptor; 4
             terminals: flow_tables::PASSKEY.terminals,
             edges: flow_tables::PASSKEY.edges,
             external_edges: &flow_tables::PASSKEY_EXTERNAL,
+            processors: &[],
+            flow_data_aliases: &[],
         },
         FlowDescriptor {
             name: flow_tables::MFA.name,
@@ -212,6 +218,8 @@ pub fn flow_descriptors() -> [volta_auth_core::flow::validate::FlowDescriptor; 4
             terminals: flow_tables::MFA.terminals,
             edges: flow_tables::MFA.edges,
             external_edges: &flow_tables::MFA_EXTERNAL,
+            processors: &[],
+            flow_data_aliases: &[],
         },
         FlowDescriptor {
             name: flow_tables::INVITE.name,
@@ -220,6 +228,8 @@ pub fn flow_descriptors() -> [volta_auth_core::flow::validate::FlowDescriptor; 4
             terminals: flow_tables::INVITE.terminals,
             edges: flow_tables::INVITE.edges,
             external_edges: &flow_tables::INVITE_EXTERNAL,
+            processors: &[],
+            flow_data_aliases: &[],
         },
     ]
 }

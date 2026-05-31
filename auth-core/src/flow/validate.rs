@@ -2,13 +2,30 @@
 //!
 //! Implements the Java `FlowDefinition.build()` rules that matter today:
 //! reachability, terminal path, Auto/Branch DAG, external-edge uniqueness,
-//! branch-target existence, and terminal outgoing guard.
+//! branch-target existence, terminal outgoing guard, requires/produces
+//! contract (rule #6), and @FlowData alias uniqueness (rule #7).
 //!
 //! Spec: `auth-server/docs/specs/flow-definition-validation.md`.
 
 use std::collections::{HashMap, HashSet};
 
 use crate::flow::mermaid::Edge;
+
+/// Declares the data contract for one state processor: which context keys
+/// it requires to be present before it runs and which keys it produces.
+///
+/// Used by rule #6 to verify the requires/produces chain is consistent along
+/// every path from `initial` to a terminal.
+#[derive(Debug)]
+pub struct ProcessorSpec {
+    /// The state this processor is attached to.
+    pub state: &'static str,
+    /// Keys that must have been produced by upstream processors before this
+    /// processor runs.
+    pub requires: &'static [&'static str],
+    /// Keys that this processor adds to the flow context when it succeeds.
+    pub produces: &'static [&'static str],
+}
 
 /// Shape the validator consumes. Constructed from the flow tables in
 /// `auth-server::handlers::viz::flow_tables`.
@@ -22,6 +39,13 @@ pub struct FlowDescriptor {
     /// Subset of `edges` that are driven by external (HTTP) input.
     /// Empty when the flow has none.
     pub external_edges: &'static [Edge],
+    /// Per-state processor contracts (rule #6). Empty slice disables the
+    /// check — backward-compatible with existing `FlowDescriptor` literals.
+    pub processors: &'static [ProcessorSpec],
+    /// `@FlowData` aliases declared by this flow's context types.
+    /// Each entry is `(alias, fully-qualified-class-name)`.
+    /// Empty slice disables the per-flow uniqueness check for rule #7.
+    pub flow_data_aliases: &'static [(&'static str, &'static str)],
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -42,6 +66,15 @@ pub enum FlowError {
     MultipleExternalEdges(&'static str),
     /// Rule 5: an edge points at a state not declared.
     UnknownBranchTarget(&'static str),
+    /// Rule 6: processor at `state` requires `missing` key(s) that no
+    /// upstream processor produces along this path.
+    RequirementMismatch { state: &'static str, missing: Vec<&'static str> },
+    /// Rule 7: two context types in the same flow share the same alias.
+    DuplicateAlias {
+        alias: &'static str,
+        first: &'static str,
+        second: &'static str,
+    },
     /// Rule 8: a terminal state has an outgoing edge.
     TerminalHasOutgoing(&'static str),
 }
@@ -116,6 +149,30 @@ pub fn validate(flow: &FlowDescriptor) -> Result<(), Vec<FlowError>> {
         }
     }
 
+    // Rule 6: requires/produces chain consistent along every path.
+    if !flow.processors.is_empty() {
+        let proc_map: HashMap<&'static str, &ProcessorSpec> = flow
+            .processors
+            .iter()
+            .map(|p| (p.state, p))
+            .collect();
+        check_requires_produces(flow, &proc_map, &mut errors);
+    }
+
+    // Rule 7: @FlowData alias uniqueness within this flow.
+    {
+        let mut seen: HashMap<&'static str, &'static str> = HashMap::new();
+        for &(alias, fqcn) in flow.flow_data_aliases {
+            if let Some(&prev_fqcn) = seen.get(alias) {
+                if prev_fqcn != fqcn {
+                    errors.push(FlowError::DuplicateAlias { alias, first: prev_fqcn, second: fqcn });
+                }
+            } else {
+                seen.insert(alias, fqcn);
+            }
+        }
+    }
+
     // Rule 8: terminals have no outgoing edges.
     let terminal_set: HashSet<&'static str> = flow.terminals.iter().copied().collect();
     for e in flow.edges {
@@ -125,6 +182,106 @@ pub fn validate(flow: &FlowDescriptor) -> Result<(), Vec<FlowError>> {
     }
 
     if errors.is_empty() { Ok(()) } else { Err(errors) }
+}
+
+/// Validate rule #6 (requires/produces chain) by DFS over all paths from
+/// `initial`.  At each state, the processor's `requires` must be a subset of
+/// the keys accumulated by upstream `produces`.
+fn check_requires_produces(
+    flow: &FlowDescriptor,
+    proc_map: &HashMap<&'static str, &ProcessorSpec>,
+    errors: &mut Vec<FlowError>,
+) {
+    // Build adjacency list (all edges, including external).
+    let mut adj: HashMap<&'static str, Vec<&'static str>> = HashMap::new();
+    for e in flow.edges {
+        adj.entry(e.from).or_default().push(e.to);
+    }
+
+    // DFS: (state, accumulated-produced-set)
+    // We treat the initial state's produces as seeding the produced set.
+    // Use a stack of (state, produced_so_far).
+    let mut visited_with_produced: HashMap<&'static str, HashSet<&'static str>> = HashMap::new();
+    let mut stack: Vec<(&'static str, HashSet<&'static str>)> = Vec::new();
+
+    // Seed: what the initial state's processor produces.
+    let initial_produced: HashSet<&'static str> = proc_map
+        .get(flow.initial)
+        .map(|p| p.produces.iter().copied().collect())
+        .unwrap_or_default();
+    stack.push((flow.initial, initial_produced));
+
+    let mut reported: HashSet<&'static str> = HashSet::new();
+
+    while let Some((state, produced)) = stack.pop() {
+        // Check this state's processor requirements.
+        if let Some(spec) = proc_map.get(state) {
+            let missing: Vec<&'static str> = spec
+                .requires
+                .iter()
+                .copied()
+                .filter(|&r| !produced.contains(r))
+                .collect();
+            if !missing.is_empty() && !reported.contains(state) {
+                reported.insert(state);
+                errors.push(FlowError::RequirementMismatch { state, missing });
+            }
+        }
+
+        // Propagate to successors.
+        let produced_after: HashSet<&'static str> = {
+            let mut p = produced.clone();
+            if let Some(spec) = proc_map.get(state) {
+                p.extend(spec.produces.iter().copied());
+            }
+            p
+        };
+
+        if let Some(nexts) = adj.get(state) {
+            for &next in nexts {
+                // Only revisit if the produced set is strictly larger (avoids
+                // infinite loops on external-edge cycles while still catching gaps).
+                let already = visited_with_produced
+                    .get(next)
+                    .map(|prev| prev.is_superset(&produced_after))
+                    .unwrap_or(false);
+                if !already {
+                    visited_with_produced.insert(next, produced_after.clone());
+                    stack.push((next, produced_after.clone()));
+                }
+            }
+        }
+    }
+}
+
+/// Cross-flow alias uniqueness check for rule #7.
+///
+/// Call this once at startup with **all** `FlowDescriptor`s.  Returns all
+/// `DuplicateAlias` errors where the same alias string is claimed by two
+/// different FQCN values across different flows.
+pub fn validate_global_aliases(flows: &[&FlowDescriptor]) -> Vec<FlowError> {
+    // alias → (fqcn, flow_name)
+    let mut global: HashMap<&'static str, (&'static str, &'static str)> = HashMap::new();
+    let mut errors = Vec::new();
+
+    for flow in flows {
+        for &(alias, fqcn) in flow.flow_data_aliases {
+            match global.get(alias) {
+                Some(&(prev_fqcn, _)) if prev_fqcn != fqcn => {
+                    errors.push(FlowError::DuplicateAlias {
+                        alias,
+                        first: prev_fqcn,
+                        second: fqcn,
+                    });
+                }
+                Some(_) => {} // same fqcn registered twice — allowed
+                None => {
+                    global.insert(alias, (fqcn, flow.name));
+                }
+            }
+        }
+    }
+    errors
 }
 
 fn bfs_reachable(flow: &FlowDescriptor) -> HashSet<&'static str> {
@@ -226,6 +383,8 @@ mod tests {
             Edge { from: "B", to: "C", label: "auto" },
         ],
         external_edges: &[],
+        processors: &[],
+        flow_data_aliases: &[],
     };
 
     #[test]
@@ -237,7 +396,7 @@ mod tests {
     fn initial_not_declared_fails() {
         static F: FlowDescriptor = FlowDescriptor {
             name: "f", states: &["B"], initial: "A", terminals: &["B"],
-            edges: &[], external_edges: &[],
+            edges: &[], external_edges: &[], processors: &[], flow_data_aliases: &[],
         };
         let err = validate(&F).unwrap_err();
         assert!(err.iter().any(|e| matches!(e, FlowError::InitialNotDeclared("A"))));
@@ -248,7 +407,7 @@ mod tests {
         static F: FlowDescriptor = FlowDescriptor {
             name: "f", states: &["A", "B", "C"], initial: "A", terminals: &["B"],
             edges: &[Edge { from: "A", to: "B", label: "auto" }],
-            external_edges: &[],
+            external_edges: &[], processors: &[], flow_data_aliases: &[],
         };
         let err = validate(&F).unwrap_err();
         assert!(err.iter().any(|e| matches!(e, FlowError::UnreachableState("C"))));
@@ -258,7 +417,7 @@ mod tests {
     fn no_terminal_path_detected() {
         static F: FlowDescriptor = FlowDescriptor {
             name: "f", states: &["A", "B"], initial: "A", terminals: &["B"],
-            edges: &[], external_edges: &[],
+            edges: &[], external_edges: &[], processors: &[], flow_data_aliases: &[],
         };
         let err = validate(&F).unwrap_err();
         assert!(err.iter().any(|e| matches!(e, FlowError::NoTerminalPath)));
@@ -272,7 +431,7 @@ mod tests {
                 Edge { from: "A", to: "B", label: "auto" },
                 Edge { from: "B", to: "A", label: "auto" },
             ],
-            external_edges: &[],
+            external_edges: &[], processors: &[], flow_data_aliases: &[],
         };
         let err = validate(&F).unwrap_err();
         assert!(err.iter().any(|e| matches!(e, FlowError::AutoBranchCycle(_))));
@@ -291,6 +450,7 @@ mod tests {
                 Edge { from: "A", to: "B", label: "Guard1" },
                 Edge { from: "A", to: "C", label: "Guard2" },
             ],
+            processors: &[], flow_data_aliases: &[],
         };
         let err = validate(&F).unwrap_err();
         assert!(err.iter().any(|e| matches!(e, FlowError::MultipleExternalEdges("A"))));
@@ -301,7 +461,7 @@ mod tests {
         static F: FlowDescriptor = FlowDescriptor {
             name: "f", states: &["A", "B"], initial: "A", terminals: &["A"],
             edges: &[Edge { from: "A", to: "B", label: "auto" }],
-            external_edges: &[],
+            external_edges: &[], processors: &[], flow_data_aliases: &[],
         };
         let err = validate(&F).unwrap_err();
         assert!(err.iter().any(|e| matches!(e, FlowError::TerminalHasOutgoing("A"))));
@@ -316,11 +476,199 @@ mod tests {
                 Edge { from: "A", to: "B", label: "auto" },
                 Edge { from: "B", to: "C", label: "auto" },
             ],
-            external_edges: &[],
+            external_edges: &[], processors: &[], flow_data_aliases: &[],
         };
         let err = validate(&F).unwrap_err();
         let unreach = err.iter().any(|e| matches!(e, FlowError::UnreachableState("UNREACH")));
         let term_out = err.iter().any(|e| matches!(e, FlowError::TerminalHasOutgoing("A")));
         assert!(unreach && term_out, "expected both errors, got {:?}", err);
+    }
+
+    // ── Rule #6: requires / produces ────────────────────────────────────────
+
+    /// A processor at state B requires "token" but no upstream processor
+    /// produces it → RequirementMismatch.
+    #[test]
+    fn requirement_mismatch_is_detected() {
+        static PROCS: &[ProcessorSpec] = &[
+            ProcessorSpec { state: "A", requires: &[], produces: &["init_data"] },
+            ProcessorSpec { state: "B", requires: &["token"], produces: &[] },
+        ];
+        static F: FlowDescriptor = FlowDescriptor {
+            name: "f",
+            states: &["A", "B", "C"],
+            initial: "A",
+            terminals: &["C"],
+            edges: &[
+                Edge { from: "A", to: "B", label: "auto" },
+                Edge { from: "B", to: "C", label: "auto" },
+            ],
+            external_edges: &[],
+            processors: PROCS,
+            flow_data_aliases: &[],
+        };
+        let err = validate(&F).unwrap_err();
+        let found = err.iter().any(|e| matches!(
+            e, FlowError::RequirementMismatch { state: "B", missing } if missing.contains(&"token")
+        ));
+        assert!(found, "expected RequirementMismatch for B, got {:?}", err);
+    }
+
+    /// A→B→C where B produces "token" and C requires "token" → valid.
+    #[test]
+    fn requirement_satisfied_by_upstream_passes() {
+        static PROCS: &[ProcessorSpec] = &[
+            ProcessorSpec { state: "A", requires: &[], produces: &["init_data"] },
+            ProcessorSpec { state: "B", requires: &["init_data"], produces: &["token"] },
+            ProcessorSpec { state: "C", requires: &["token"], produces: &[] },
+        ];
+        static F: FlowDescriptor = FlowDescriptor {
+            name: "f",
+            states: &["A", "B", "C", "DONE"],
+            initial: "A",
+            terminals: &["DONE"],
+            edges: &[
+                Edge { from: "A", to: "B", label: "auto" },
+                Edge { from: "B", to: "C", label: "auto" },
+                Edge { from: "C", to: "DONE", label: "auto" },
+            ],
+            external_edges: &[],
+            processors: PROCS,
+            flow_data_aliases: &[],
+        };
+        validate(&F).expect("clean flow with satisfied requirements should pass");
+    }
+
+    /// Branch paths: one branch satisfies requirements on the common path, the
+    /// other does not → mismatch reported.
+    #[test]
+    fn requirement_mismatch_on_branch_path() {
+        // A → B (produces "x") → [C, D]  C requires "y" (not produced)
+        static PROCS: &[ProcessorSpec] = &[
+            ProcessorSpec { state: "A", requires: &[], produces: &[] },
+            ProcessorSpec { state: "B", requires: &[], produces: &["x"] },
+            ProcessorSpec { state: "C", requires: &["y"], produces: &[] },
+            ProcessorSpec { state: "D", requires: &["x"], produces: &[] },
+        ];
+        static F: FlowDescriptor = FlowDescriptor {
+            name: "f",
+            states: &["A", "B", "C", "D"],
+            initial: "A",
+            terminals: &["C", "D"],
+            edges: &[
+                Edge { from: "A", to: "B", label: "auto" },
+                Edge { from: "B", to: "C", label: "branch_no" },
+                Edge { from: "B", to: "D", label: "branch_yes" },
+            ],
+            external_edges: &[],
+            processors: PROCS,
+            flow_data_aliases: &[],
+        };
+        let err = validate(&F).unwrap_err();
+        let found = err.iter().any(|e| matches!(
+            e, FlowError::RequirementMismatch { state: "C", .. }
+        ));
+        assert!(found, "expected RequirementMismatch for C, got {:?}", err);
+    }
+
+    // ── Rule #7: @FlowData alias uniqueness ──────────────────────────────────
+
+    /// Two context types in the same flow share alias "oidc.token" → DuplicateAlias.
+    #[test]
+    fn duplicate_alias_within_flow_is_detected() {
+        static F: FlowDescriptor = FlowDescriptor {
+            name: "f",
+            states: &["A", "B"],
+            initial: "A",
+            terminals: &["B"],
+            edges: &[Edge { from: "A", to: "B", label: "auto" }],
+            external_edges: &[],
+            processors: &[],
+            flow_data_aliases: &[
+                ("oidc.token", "com.example.TokenA"),
+                ("oidc.token", "com.example.TokenB"),
+            ],
+        };
+        let err = validate(&F).unwrap_err();
+        let found = err.iter().any(|e| matches!(
+            e, FlowError::DuplicateAlias { alias: "oidc.token", .. }
+        ));
+        assert!(found, "expected DuplicateAlias, got {:?}", err);
+    }
+
+    /// Same alias, same FQCN registered twice is not an error.
+    #[test]
+    fn same_alias_same_fqcn_is_allowed() {
+        static F: FlowDescriptor = FlowDescriptor {
+            name: "f",
+            states: &["A", "B"],
+            initial: "A",
+            terminals: &["B"],
+            edges: &[Edge { from: "A", to: "B", label: "auto" }],
+            external_edges: &[],
+            processors: &[],
+            flow_data_aliases: &[
+                ("oidc.token", "com.example.Token"),
+                ("oidc.token", "com.example.Token"),
+            ],
+        };
+        validate(&F).expect("duplicate registration of same alias+fqcn should pass");
+    }
+
+    /// Cross-flow: two flows claim the same alias for different FQCNs.
+    #[test]
+    fn duplicate_alias_across_flows_is_detected() {
+        static FLOW_A: FlowDescriptor = FlowDescriptor {
+            name: "flow_a",
+            states: &["S", "T"],
+            initial: "S",
+            terminals: &["T"],
+            edges: &[Edge { from: "S", to: "T", label: "auto" }],
+            external_edges: &[],
+            processors: &[],
+            flow_data_aliases: &[("shared.alias", "com.example.TypeA")],
+        };
+        static FLOW_B: FlowDescriptor = FlowDescriptor {
+            name: "flow_b",
+            states: &["S", "T"],
+            initial: "S",
+            terminals: &["T"],
+            edges: &[Edge { from: "S", to: "T", label: "auto" }],
+            external_edges: &[],
+            processors: &[],
+            flow_data_aliases: &[("shared.alias", "com.example.TypeB")],
+        };
+        let errs = validate_global_aliases(&[&FLOW_A, &FLOW_B]);
+        let found = errs.iter().any(|e| matches!(
+            e, FlowError::DuplicateAlias { alias: "shared.alias", .. }
+        ));
+        assert!(found, "expected cross-flow DuplicateAlias, got {:?}", errs);
+    }
+
+    /// Two flows using the same alias for the same FQCN is fine.
+    #[test]
+    fn same_alias_same_fqcn_cross_flow_is_allowed() {
+        static FLOW_A: FlowDescriptor = FlowDescriptor {
+            name: "flow_a",
+            states: &["S", "T"],
+            initial: "S",
+            terminals: &["T"],
+            edges: &[Edge { from: "S", to: "T", label: "auto" }],
+            external_edges: &[],
+            processors: &[],
+            flow_data_aliases: &[("shared.token", "com.example.Token")],
+        };
+        static FLOW_B: FlowDescriptor = FlowDescriptor {
+            name: "flow_b",
+            states: &["S", "T"],
+            initial: "S",
+            terminals: &["T"],
+            edges: &[Edge { from: "S", to: "T", label: "auto" }],
+            external_edges: &[],
+            processors: &[],
+            flow_data_aliases: &[("shared.token", "com.example.Token")],
+        };
+        let errs = validate_global_aliases(&[&FLOW_A, &FLOW_B]);
+        assert!(errs.is_empty(), "same alias+fqcn across flows should be allowed, got {:?}", errs);
     }
 }
