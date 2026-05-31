@@ -18,7 +18,7 @@ use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use volta_auth_core::record::AuditLogRecord;
-use volta_auth_core::store::AuditStore;
+use volta_auth_core::store::{AuditStore, OutboxStore};
 
 /// Channel capacity — SSE clients that lag beyond this miss messages.
 const CAPACITY: usize = 256;
@@ -158,6 +158,63 @@ impl AuthEventBus {
         if let Err(e) = audit.insert(record).await {
             tracing::warn!(event = %ev.event_type, error = %e, "audit_logs insert failed");
         }
+        self.publish(ev);
+    }
+
+    /// Publish + persist to `audit_logs` + enqueue into `outbox_events` for
+    /// external webhook delivery (issue #57).
+    ///
+    /// The outbox payload is **PII-minimized**: only `user_id`, `tenant_id`,
+    /// `event_type`, and `timestamp` are included — no email, no IP address,
+    /// no session detail. DB failures are **non-fatal** on both paths.
+    ///
+    /// Webhook subscribers can opt-in by adding an `auth.*` prefix pattern to
+    /// the `events` column of their webhook row (e.g. `auth.login_success`).
+    /// The event_type is normalized to lowercase with `auth.` prefix, so
+    /// `LOGIN_SUCCESS` → `auth.login_success`.
+    pub async fn publish_and_audit_outbox<A, O>(
+        &self,
+        ev: AuthEvent,
+        audit: &A,
+        outbox: &O,
+        actor_ip: Option<String>,
+        target_type: Option<String>,
+        target_id: Option<String>,
+        request_id: Option<Uuid>,
+    ) where
+        A: AuditStore + ?Sized,
+        O: OutboxStore + ?Sized,
+    {
+        // Persist to audit_logs (same as publish_and_audit).
+        let record = AuditLogRecord {
+            id: 0,
+            timestamp: chrono::Utc::now(),
+            event_type: ev.event_type.clone(),
+            actor_id: ev.user_id.as_deref().and_then(|s| Uuid::parse_str(s).ok()),
+            actor_ip,
+            tenant_id: ev.tenant_id.as_deref().and_then(|s| Uuid::parse_str(s).ok()),
+            target_type,
+            target_id,
+            detail: ev.detail.clone(),
+            request_id: request_id.unwrap_or_else(Uuid::new_v4),
+        };
+        if let Err(e) = audit.insert(record).await {
+            tracing::warn!(event = %ev.event_type, error = %e, "audit_logs insert failed");
+        }
+
+        // Enqueue PII-minimized payload into outbox for webhook fan-out.
+        let outbox_event_type = format!("auth.{}", ev.event_type.to_lowercase());
+        let tenant_id_parsed = ev.tenant_id.as_deref().and_then(|s| Uuid::parse_str(s).ok());
+        let payload = serde_json::json!({
+            "event_type": outbox_event_type,
+            "user_id": ev.user_id,
+            "tenant_id": ev.tenant_id,
+            "timestamp": ev.timestamp,
+        });
+        if let Err(e) = outbox.enqueue(tenant_id_parsed, &outbox_event_type, payload).await {
+            tracing::warn!(event = %ev.event_type, error = %e, "outbox enqueue failed (non-fatal)");
+        }
+
         self.publish(ev);
     }
 }
@@ -359,5 +416,136 @@ mod tests {
         bus.publish_and_audit(ev, &audit, None, None, None, None).await;
         let rows = inserts.lock().unwrap();
         assert_eq!(rows[0].detail.as_ref().unwrap()["to"], "t2");
+    }
+
+    // ── publish_and_audit_outbox (issue #57) ──────────────────
+
+    #[derive(Debug, Default)]
+    struct OutboxCall {
+        tenant_id: Option<Uuid>,
+        event_type: String,
+        payload: serde_json::Value,
+    }
+
+    #[derive(Default)]
+    struct MockOutbox {
+        calls: Arc<Mutex<Vec<OutboxCall>>>,
+        fail: bool,
+    }
+
+    use volta_auth_core::record::OutboxRecord;
+
+    #[async_trait]
+    impl OutboxStore for MockOutbox {
+        async fn enqueue(
+            &self,
+            tenant_id: Option<Uuid>,
+            event_type: &str,
+            payload: serde_json::Value,
+        ) -> Result<Uuid, AuthError> {
+            if self.fail { return Err(AuthError::Internal("forced outbox".into())); }
+            self.calls.lock().unwrap().push(OutboxCall {
+                tenant_id,
+                event_type: event_type.to_string(),
+                payload,
+            });
+            Ok(Uuid::new_v4())
+        }
+        async fn claim_pending(&self, _: i64) -> Result<Vec<OutboxRecord>, AuthError> { Ok(vec![]) }
+        async fn mark_published(&self, _: Uuid) -> Result<(), AuthError> { Ok(()) }
+        async fn mark_retry(&self, _: Uuid, _: i32, _: &str) -> Result<(), AuthError> { Ok(()) }
+        async fn delete_by_user(&self, _: Uuid) -> Result<(), AuthError> { Ok(()) }
+    }
+
+    #[tokio::test]
+    async fn outbox_enqueue_called_with_minimized_payload() {
+        let bus = AuthEventBus::new();
+        let audit = MockAudit::default();
+        let outbox = MockOutbox::default();
+        let calls = outbox.calls.clone();
+
+        let uid = Uuid::new_v4();
+        let tid = Uuid::new_v4();
+        let ev = AuthEvent::now("LOGIN_SUCCESS")
+            .with_user(uid.to_string())
+            .with_tenant(tid.to_string())
+            .with_session("sess-xyz");
+        // Give the event a detail field that must NOT appear in outbox payload.
+        let mut ev = ev;
+        ev.detail = Some(serde_json::json!({"ip": "1.2.3.4", "email": "user@example.com"}));
+
+        bus.publish_and_audit_outbox(ev, &audit, &outbox, None, None, None, None).await;
+
+        let rows = calls.lock().unwrap();
+        assert_eq!(rows.len(), 1, "exactly one outbox enqueue");
+        assert_eq!(rows[0].event_type, "auth.login_success", "event_type normalized to auth.* prefix");
+        assert_eq!(rows[0].tenant_id, Some(tid), "tenant_id forwarded");
+
+        let p = &rows[0].payload;
+        assert_eq!(p["event_type"], "auth.login_success");
+        assert_eq!(p["user_id"].as_str(), Some(uid.to_string().as_str()));
+        assert_eq!(p["tenant_id"].as_str(), Some(tid.to_string().as_str()));
+        assert!(p.get("timestamp").is_some(), "timestamp present");
+        // PII check: detail/email must NOT be in outbox payload.
+        assert!(p.get("detail").is_none(), "detail must be stripped from outbox payload (PII)");
+        assert!(p.get("session_id").is_none(), "session_id must not be in outbox payload");
+    }
+
+    #[tokio::test]
+    async fn outbox_enqueue_uses_auth_dot_prefix_for_all_event_types() {
+        let bus = AuthEventBus::new();
+        let audit = MockAudit::default();
+        let outbox = MockOutbox::default();
+        let calls = outbox.calls.clone();
+
+        bus.publish_and_audit_outbox(
+            AuthEvent::now("LOGOUT"),
+            &audit, &outbox,
+            None, None, None, None,
+        ).await;
+
+        let rows = calls.lock().unwrap();
+        assert_eq!(rows[0].event_type, "auth.logout");
+    }
+
+    #[tokio::test]
+    async fn outbox_failure_is_non_fatal_sse_still_fires() {
+        let bus = AuthEventBus::new();
+        let mut rx = bus.subscribe();
+        let audit = MockAudit::default();
+        let outbox = MockOutbox { fail: true, ..Default::default() };
+
+        bus.publish_and_audit_outbox(
+            AuthEvent::now("LOGIN_SUCCESS"),
+            &audit, &outbox,
+            None, None, None, None,
+        ).await;
+
+        // SSE broadcast must still fire despite outbox failure.
+        let got = rx.recv().await.unwrap();
+        assert_eq!(got.event_type, "LOGIN_SUCCESS");
+    }
+
+    #[tokio::test]
+    async fn outbox_audit_both_called() {
+        // Both audit and outbox paths execute in a single call.
+        let bus = AuthEventBus::new();
+        let audit = MockAudit::default();
+        let audit_rows = audit.inserts.clone();
+        let outbox = MockOutbox::default();
+        let outbox_calls = outbox.calls.clone();
+
+        let uid = Uuid::new_v4();
+        bus.publish_and_audit_outbox(
+            AuthEvent::now("LOGIN_SUCCESS").with_user(uid.to_string()),
+            &audit, &outbox,
+            Some("10.0.0.1".into()),
+            Some("SESSION".into()),
+            Some("sess-1".into()),
+            None,
+        ).await;
+
+        assert_eq!(audit_rows.lock().unwrap().len(), 1, "audit row inserted");
+        assert_eq!(outbox_calls.lock().unwrap().len(), 1, "outbox enqueued");
     }
 }
