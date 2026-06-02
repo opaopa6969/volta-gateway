@@ -11,6 +11,8 @@
 > **Companion docs (kept in sync):**
 > - [`docs/architecture.md`](../docs/architecture.md) — "how the pieces fit together"
 > - [`docs/parity.md`](../docs/parity.md) — 96-route Rust ↔ Java parity table
+> - [`docs/beyond-traefik-requirements.md`](../docs/beyond-traefik-requirements.md) — HA/SPOF + 「Traefik を超える」要件（生きた文書）
+> - [`docs/config-persistence.md`](../docs/config-persistence.md) — 設定永続化の設計判断（ファイル overlay vs DB）
 > - [`auth-server/docs/sync-from-java-2026-04-14.md`](../auth-server/docs/sync-from-java-2026-04-14.md) — Java commit → Rust landing trace
 > - [`docs/feedback.md`](../docs/feedback.md) — tramli 3.2 → 3.8 upgrade trail
 >
