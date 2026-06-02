@@ -8,7 +8,8 @@
 //! Phase 1: Trait-based plugin interface (native Rust plugins).
 //! Phase 2: Wasm runtime (wasmtime) for sandboxed plugins.
 
-use bytes::Bytes;
+#![allow(dead_code)]
+
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -196,7 +197,7 @@ pub mod builtin {
         const MAX_CACHE_ENTRIES: usize = 10_000;
 
         fn get_cached(&self, user_id: &str) -> Option<MonetizerBilling> {
-            let mut cache = self.cache.lock().unwrap();
+            let cache = self.cache.lock().unwrap();
             if let Some((billing, ts)) = cache.get(user_id) {
                 if ts.elapsed() < std::time::Duration::from_secs(self.cache_ttl_secs) {
                     return Some(billing.clone());
@@ -314,7 +315,7 @@ impl PluginManager {
     /// Register a native plugin. Transitions: LOADED → VALIDATED → ACTIVE.
     pub fn register(&mut self, config: PluginConfig, plugin: Arc<dyn Plugin>) {
         info!(plugin = plugin.name(), "plugin loaded");
-        let state = PluginState::Validated; // Native plugins are always valid
+        let _state = PluginState::Validated; // Native plugins are always valid
         info!(plugin = plugin.name(), "plugin validated → active");
         self.plugins.push((config, PluginState::Active, plugin));
     }

@@ -51,6 +51,7 @@ pub async fn get_tenant(State(s): State<AppState>, jar: CookieJar, Path(tid): Pa
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 pub struct PatchTenantReq { pub name: Option<String> }
 
 pub async fn patch_tenant(State(s): State<AppState>, jar: CookieJar, Path(tid): Path<Uuid>, Json(_b): Json<PatchTenantReq>) -> Result<Response, ApiError> {
@@ -214,6 +215,7 @@ pub async fn delete_passkey(State(s): State<AppState>, jar: CookieJar, Path((uid
 // ─── User management ──────────────────────────────────────
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 pub struct PatchUserReq { pub display_name: Option<String>, pub locale: Option<String> }
 
 pub async fn patch_user(State(s): State<AppState>, jar: CookieJar, Path(uid): Path<Uuid>, Json(b): Json<PatchUserReq>) -> Result<Response, ApiError> {

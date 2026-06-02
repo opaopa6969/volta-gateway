@@ -14,7 +14,8 @@ use unicode_normalization::UnicodeNormalization;
 ///
 /// Used for hash / HMAC / secret comparison. Fixes issue #21 (early exit leak).
 pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    ring::constant_time::verify_slices_are_equal(a, b).is_ok()
+    use subtle::ConstantTimeEq;
+    a.ct_eq(b).into()
 }
 
 /// Validate a webhook endpoint URL (issue #1 SSRF).

@@ -11,6 +11,7 @@ use crate::state::AppState;
 use volta_auth_core::record::SessionRecord;
 use volta_auth_core::store::SessionStore;
 
+#[allow(dead_code)]
 type HmacSha256 = Hmac<Sha256>;
 
 const COOKIE_NAME: &str = "__volta_session";
@@ -222,6 +223,7 @@ pub fn is_json_accept(headers: &HeaderMap) -> bool {
 
 /// Sign OIDC state parameter with HMAC-SHA256.
 /// Format: `{flow_id}:{return_to}:{invite}:{hmac_hex}`
+#[allow(dead_code)]
 pub fn sign_state(flow_id: &str, return_to: &str, invite: Option<&str>, key: &[u8]) -> String {
     let invite_str = invite.unwrap_or("");
     let payload = format!("{}:{}:{}", flow_id, return_to, invite_str);
@@ -233,6 +235,7 @@ pub fn sign_state(flow_id: &str, return_to: &str, invite: Option<&str>, key: &[u
 
 /// Verify and decode OIDC state parameter.
 /// Returns (flow_id, return_to, invite) if valid.
+#[allow(dead_code)]
 pub fn verify_state(state: &str, key: &[u8]) -> Option<(String, String, Option<String>)> {
     // Format: flow_id:return_to:invite:hmac_hex
     // return_to may contain colons (URLs), so split from the end

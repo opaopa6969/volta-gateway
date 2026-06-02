@@ -73,6 +73,7 @@ impl TelemetrySink for TracingTelemetrySink {
 
 /// Route info for a host.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct RouteInfo {
     pub backends: Vec<String>,
     /// Weights for weighted routing (same length as backends). Empty = equal weight.
@@ -1151,7 +1152,7 @@ impl ProxyService {
             }
 
             // #37: Streaming compression (no cache needed) — zero-copy, bounded memory
-            use tokio_util::io::{ReaderStream, StreamReader};
+            use tokio_util::io::StreamReader;
             use futures::TryStreamExt;
 
             let body_stream = http_body_util::BodyStream::new(body)

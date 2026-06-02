@@ -6,7 +6,8 @@
 //! - Access to AuthResult (post-auth middleware)
 //! - Init/validate lifecycle with serde_json config
 
-use bytes::Bytes;
+#![allow(dead_code)]
+
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -51,13 +52,13 @@ pub trait MiddlewareExtension: Send + Sync {
     fn name(&self) -> &str;
 
     /// Validate config at startup. Return Err to prevent loading.
-    fn validate_config(config: &Value) -> Result<(), String> where Self: Sized { Ok(()) }
+    fn validate_config(_config: &Value) -> Result<(), String> where Self: Sized { Ok(()) }
 
     /// Called after auth, before backend forward.
-    async fn on_request(&self, ctx: &mut ExtensionContext) -> Result<(), ExtensionError> { Ok(()) }
+    async fn on_request(&self, _ctx: &mut ExtensionContext) -> Result<(), ExtensionError> { Ok(()) }
 
     /// Called after backend response, before returning to client.
-    async fn on_response(&self, ctx: &mut ExtensionContext) -> Result<(), ExtensionError> { Ok(()) }
+    async fn on_response(&self, _ctx: &mut ExtensionContext) -> Result<(), ExtensionError> { Ok(()) }
 }
 
 /// Built-in extensions.

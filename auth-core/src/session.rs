@@ -3,7 +3,7 @@
 //! This is the "in-process auth" that replaces the HTTP roundtrip
 //! to volta-auth-proxy /auth/verify.
 
-use crate::jwt::{JwtVerifier, JwtError, VoltaClaims};
+use crate::jwt::{JwtVerifier, JwtError};
 use std::collections::HashMap;
 
 /// Session verification result (compatible with gateway's AuthResult).

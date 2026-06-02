@@ -10,12 +10,11 @@
 //!
 //! JWKS are fetched lazily and cached per-issuer with a 5-minute TTL.
 
-use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
-use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
+use jsonwebtoken::{decode, decode_header, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -217,8 +216,9 @@ pub fn at_hash_matches(access_token: &str, expected: &str) -> bool {
     let digest = Sha256::digest(access_token.as_bytes());
     let half = &digest[..digest.len() / 2];
     let computed = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(half);
-    // constant-time compare via ring
-    ring::constant_time::verify_slices_are_equal(computed.as_bytes(), expected.as_bytes()).is_ok()
+    // constant-time compare via subtle
+    use subtle::ConstantTimeEq;
+    computed.as_bytes().ct_eq(expected.as_bytes()).into()
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -268,7 +268,7 @@ impl Jwk {
 
 /// Serde adapter — accepts either `"aud"` string or `["aud1", "aud2"]` array.
 mod audience {
-    use serde::{Deserialize, Deserializer, Serializer};
+    use serde::{Deserializer, Serializer};
     use serde::de::{self, SeqAccess, Visitor};
     use std::fmt;
 

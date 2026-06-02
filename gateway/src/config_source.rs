@@ -5,7 +5,6 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{info, warn, error};
@@ -24,6 +23,7 @@ pub trait ConfigSource: Send + Sync {
 
 /// Config source type in YAML config.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[allow(dead_code)]
 pub struct ConfigSourceEntry {
     #[serde(rename = "type")]
     pub source_type: String,
