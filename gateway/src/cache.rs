@@ -6,13 +6,13 @@
 //! Only GET/HEAD responses are cached. Cache-Control: no-store is respected.
 
 use bytes::Bytes;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Per-route cache configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CacheConfig {
     #[serde(default)]
     pub enabled: bool,

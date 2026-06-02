@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use tracing::{info, warn};
 
 /// Plugin configuration from YAML.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 pub struct PluginConfig {
     pub name: String,
     /// Plugin type: "native" (built-in) or "wasm" (future)

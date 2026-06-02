@@ -14,6 +14,7 @@ use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
 mod config;
+mod config_overlay;
 mod state;
 mod auth;
 mod proxy;
@@ -29,7 +30,6 @@ mod tls;
 mod dns01;
 mod websocket;
 
-use config::GatewayConfig;
 use auth::VoltaAuthClient;
 use proxy::{HotState, ProxyService};
 
@@ -57,11 +57,22 @@ async fn main() {
         .cloned()
         .unwrap_or_else(|| "volta-gateway.yaml".into());
 
-    let config = GatewayConfig::load(Path::new(&config_path))
+    // API-driven config changes are persisted to an overlay file alongside the
+    // base YAML (override with --overlay <path> or VOLTA_CONFIG_OVERLAY).
+    let overlay_path = args.iter()
+        .position(|a| a == "--overlay")
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+        .or_else(|| std::env::var("VOLTA_CONFIG_OVERLAY").ok())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| config_overlay::default_overlay_path(&config_path));
+
+    let (config_store, config) = config_overlay::ConfigStore::load(Path::new(&config_path), overlay_path)
         .unwrap_or_else(|e| {
             error!("Failed to load config {}: {}", config_path, e);
             std::process::exit(1);
         });
+    let config_store = Arc::new(config_store);
 
     // PH2-4: Config validation
     if let Err(errors) = config.validate() {
@@ -124,42 +135,31 @@ async fn main() {
         shutdown_flag.store(true, Ordering::SeqCst);
     });
 
-    // GW-22: SIGHUP zero-downtime config reload via ArcSwap
+    // GW-22: SIGHUP zero-downtime config reload via ArcSwap.
+    // Re-reads the base YAML from disk and re-applies the persisted overlay.
     #[cfg(unix)]
     {
         let config_path_clone = config_path.clone();
         let hot_reload = hot.clone();
+        let store_reload = config_store.clone();
         tokio::spawn(async move {
             let mut sighup = tokio::signal::unix::signal(
                 tokio::signal::unix::SignalKind::hangup()
             ).expect("failed to register SIGHUP");
             loop {
                 sighup.recv().await;
-                match GatewayConfig::load(std::path::Path::new(&config_path_clone)) {
+                match store_reload.reload() {
                     Ok(new_config) => {
-                        if let Err(errors) = new_config.validate() {
-                            for e in &errors { warn!("reload config error: {e}"); }
-                            warn!("config reload aborted — keeping current config");
-                        } else {
-                            let new_routing = Arc::new(new_config.routing_table());
-                            let new_allowlists = new_config.ip_allowlist_table();
-                            let routes = new_config.routing.len();
-                            let new_cors = new_config.cors_table();
-                            let new_trusted: Vec<ipnet::IpNet> = new_config.server.trusted_proxies.iter()
-                                .filter_map(|s| s.parse().ok()).collect();
-                            hot_reload.store(Arc::new(
-                                HotState::new_full(
-                                    new_routing, new_allowlists,
-                                    new_config.error_pages_dir.as_deref(),
-                                    new_cors, new_trusted,
-                                ),
-                            ));
-                            info!(routes = routes,
-                                "config reloaded from {} — routing updated (zero-downtime)",
-                                config_path_clone);
-                        }
+                        let routes = new_config.routing.len();
+                        config_overlay::rebuild_hot(&new_config, &hot_reload);
+                        info!(routes = routes,
+                            "config reloaded from {} (+overlay) — routing updated (zero-downtime)",
+                            config_path_clone);
                     }
-                    Err(e) => warn!("failed to reload config: {e}"),
+                    Err(errors) => {
+                        for e in &errors { warn!("reload config error: {e}"); }
+                        warn!("config reload aborted — keeping current config");
+                    }
                 }
             }
         });
@@ -268,9 +268,8 @@ async fn main() {
         let force_https = config.server.force_https && config.tls.is_some();
         let tls_port = config.tls.as_ref().map(|t| t.port).unwrap_or(443);
         let hot_admin = hot.clone();
-        let config_path_admin = config_path.clone();
         let shutdown_admin = shutdown.clone();
-        let error_pages_dir_admin = config.error_pages_dir.clone();
+        let store_admin = config_store.clone();
 
         in_flight.fetch_add(1, Ordering::SeqCst);
         metrics.active_connections.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -279,17 +278,15 @@ async fn main() {
             let _permit = permit; // #34: hold semaphore permit until connection ends
             let metrics2 = metrics.clone();
             let hot_admin2 = hot_admin.clone();
-            let config_path_admin2 = config_path_admin.clone();
-            let error_pages_dir_admin2 = error_pages_dir_admin.clone();
             let shutdown_admin2 = shutdown_admin.clone();
+            let store_admin2 = store_admin.clone();
             let service = service_fn(move |req: Request<Incoming>| {
                 let proxy = proxy.clone();
                 let volta_health = volta_health.clone();
                 let metrics = metrics2.clone();
                 let hot_admin = hot_admin2.clone();
-                let config_path_admin = config_path_admin2.clone();
-                let error_pages_dir_admin = error_pages_dir_admin2.clone();
                 let shutdown_admin = shutdown_admin2.clone();
+                let store_admin = store_admin2.clone();
                 let addr = remote_addr;
                 async move {
                     // HTTP → HTTPS redirect (GW-29/GW-38: skip for healthz, metrics, ACME challenge)
@@ -363,7 +360,18 @@ async fn main() {
                             return Ok::<_, hyper::Error>(resp);
                         }
 
-                        match req.uri().path() {
+                        // Helper for JSON admin responses.
+                        fn json_resp(status: u16, body: String) -> hyper::Response<http_body_util::combinators::BoxBody<Bytes, hyper::Error>> {
+                            hyper::Response::builder()
+                                .status(status)
+                                .header("content-type", "application/json")
+                                .body(Full::new(Bytes::from(body)).map_err(|e| match e {}).boxed())
+                                .unwrap()
+                        }
+
+                        // Owned path so PATCH arms can consume the request body.
+                        let admin_path = req.uri().path().to_string();
+                        match admin_path.as_str() {
                             "/admin/routes" => {
                                 let hot = hot_admin.load();
                                 let routes: Vec<serde_json::Value> = hot.routing.iter()
@@ -394,41 +402,76 @@ async fn main() {
                                     .unwrap();
                                 return Ok(resp);
                             }
+                            // Re-read base YAML (+ persisted overlay) and hot-swap routing.
                             "/admin/reload" if req.method() == hyper::Method::POST => {
-                                match GatewayConfig::load(std::path::Path::new(&config_path_admin)) {
+                                match store_admin.reload() {
                                     Ok(new_config) => {
-                                        if let Err(errors) = new_config.validate() {
-                                            let body = format!(r#"{{"error":"validation failed","details":{:?}}}"#, errors);
-                                            let resp = hyper::Response::builder()
-                                                .status(400)
-                                                .header("content-type", "application/json")
-                                                .body(Full::new(Bytes::from(body)).map_err(|e| match e {}).boxed())
-                                                .unwrap();
-                                            return Ok(resp);
-                                        }
-                                        let new_routing = Arc::new(new_config.routing_table());
-                                        let new_allowlists = new_config.ip_allowlist_table();
-                                        let new_cors = new_config.cors_table();
                                         let routes = new_config.routing.len();
-                                        hot_admin.store(Arc::new(HotState::new_with_config(
-                                            new_routing, new_allowlists,
-                                            error_pages_dir_admin.as_deref(), new_cors,
-                                        )));
+                                        config_overlay::rebuild_hot(&new_config, &hot_admin);
                                         info!(routes = routes, "config reloaded via admin API");
-                                        let resp = hyper::Response::builder()
-                                            .status(200)
-                                            .header("content-type", "application/json")
-                                            .body(Full::new(Bytes::from(format!(r#"{{"status":"reloaded","routes":{}}}"#, routes))).map_err(|e| match e {}).boxed())
-                                            .unwrap();
-                                        return Ok(resp);
+                                        return Ok(json_resp(200, format!(r#"{{"status":"reloaded","routes":{}}}"#, routes)));
                                     }
+                                    Err(errors) => {
+                                        let body = serde_json::json!({"error": "validation failed", "details": errors});
+                                        return Ok(json_resp(400, body.to_string()));
+                                    }
+                                }
+                            }
+                            // GET the current effective config (base ⊕ overlay).
+                            "/admin/config" if req.method() == hyper::Method::GET => {
+                                match store_admin.effective_config() {
+                                    Ok(cfg) => return Ok(json_resp(200, serde_json::to_string_pretty(&cfg).unwrap_or_else(|_| "{}".into()))),
                                     Err(e) => {
-                                        let resp = hyper::Response::builder()
-                                            .status(500)
-                                            .header("content-type", "application/json")
-                                            .body(Full::new(Bytes::from(format!(r#"{{"error":"{}"}}"#, e))).map_err(|e| match e {}).boxed())
-                                            .unwrap();
-                                        return Ok(resp);
+                                        let body = serde_json::json!({"error": e});
+                                        return Ok(json_resp(500, body.to_string()));
+                                    }
+                                }
+                            }
+                            // PATCH/POST a JSON merge patch: persist it and hot-apply applicable fields.
+                            "/admin/config" if req.method() == hyper::Method::PATCH || req.method() == hyper::Method::POST => {
+                                let bytes = match req.into_body().collect().await {
+                                    Ok(b) => b.to_bytes(),
+                                    Err(_) => return Ok(json_resp(400, r#"{"error":"failed to read request body"}"#.into())),
+                                };
+                                let patch: serde_json::Value = match serde_json::from_slice(&bytes) {
+                                    Ok(v) => v,
+                                    Err(e) => {
+                                        let body = serde_json::json!({"error": format!("invalid JSON: {}", e)});
+                                        return Ok(json_resp(400, body.to_string()));
+                                    }
+                                };
+                                match store_admin.apply_patch(patch) {
+                                    Ok((effective, result)) => {
+                                        config_overlay::rebuild_hot(&effective, &hot_admin);
+                                        info!(
+                                            hot = ?result.hot_applied,
+                                            restart = ?result.requires_restart,
+                                            "config patched via admin API"
+                                        );
+                                        let body = serde_json::json!({
+                                            "status": "applied",
+                                            "hot_applied": result.hot_applied,
+                                            "requires_restart": result.requires_restart,
+                                        });
+                                        return Ok(json_resp(200, body.to_string()));
+                                    }
+                                    Err(errors) => {
+                                        let body = serde_json::json!({"error": "validation failed", "details": errors});
+                                        return Ok(json_resp(400, body.to_string()));
+                                    }
+                                }
+                            }
+                            // Drop all API-driven changes; revert to the hand-written YAML.
+                            "/admin/config/overlay" if req.method() == hyper::Method::DELETE => {
+                                match store_admin.clear_overlay() {
+                                    Ok(effective) => {
+                                        config_overlay::rebuild_hot(&effective, &hot_admin);
+                                        info!("config overlay cleared via admin API");
+                                        return Ok(json_resp(200, r#"{"status":"overlay cleared"}"#.into()));
+                                    }
+                                    Err(errors) => {
+                                        let body = serde_json::json!({"error": "validation failed", "details": errors});
+                                        return Ok(json_resp(400, body.to_string()));
                                     }
                                 }
                             }

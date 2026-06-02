@@ -3,11 +3,11 @@
 //! Builds a hyper client with mutual TLS (client certificate + CA verification).
 
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// Per-route backend TLS configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BackendTlsConfig {
     /// CA certificate for verifying backend server
     pub ca_cert: String,

@@ -321,6 +321,7 @@ off-by-one bug documented as Java issue #20.
 | CORS                         | Per-route origins, secure-by-default (DD-001: no implicit wildcard) |
 | Custom error pages           | HTML directory with JSON fallback |
 | Hot reload                   | SIGHUP + `POST /admin/reload` — zero-downtime `ArcSwap` |
+| Live config edit + persist   | `PATCH /admin/config` (JSON Merge Patch) → persisted overlay file, hot-applied where possible (`config_overlay.rs`) |
 | Public routes / bypass       | `public: true`; `auth_bypass_paths: [{prefix, backend?}]` |
 | Path rewrite                 | `strip_prefix`, `add_prefix` |
 | Header manipulation          | per-route add/remove on request and response |
@@ -334,7 +335,7 @@ off-by-one bug documented as Java issue #20.
 | Backend health check         | Auto-detect dead backends; skip in LB |
 | mTLS backend                 | Mutual TLS to upstream |
 | Global backpressure          | `Semaphore` on concurrent in-flight requests |
-| Admin API (localhost-only)   | `/admin/{routes,backends,stats,reload,drain}` |
+| Admin API (localhost-only)   | `/admin/{routes,backends,stats,config,reload,drain}` + `DELETE /admin/config/overlay` |
 | `--validate` flag            | Static config validation for CI/CD |
 | L4 proxy (TCP/UDP)           | Port forward; DD-002: no auth enforcement (use `ip_allowlist`) |
 | Metrics                      | Prometheus `/metrics`, 8-bucket latency histogram |
@@ -793,8 +794,27 @@ Behavior:
 | GET    | `/admin/routes`     | Current routing table (localhost-only)                          |
 | GET    | `/admin/backends`   | Backend health + circuit-breaker state                          |
 | GET    | `/admin/stats`      | Per-route RPS, errors, p50/p95/p99 latency                      |
-| POST   | `/admin/reload`     | Trigger config reload (`ArcSwap` swap)                          |
+| GET    | `/admin/config`     | Current effective config (base YAML ⊕ overlay) as JSON          |
+| PATCH  | `/admin/config`     | Apply a JSON Merge Patch; persist to overlay; hot-apply applicable fields (POST is an alias) |
+| DELETE | `/admin/config/overlay` | Drop all API-driven changes; revert to the hand-written YAML |
+| POST   | `/admin/reload`     | Re-read base YAML (+ overlay) and `ArcSwap` swap                |
 | POST   | `/admin/drain`      | Begin graceful shutdown (stop accepting new, finish in-flight)  |
+
+**Config persistence (overlay).** Config changes made through `PATCH /admin/config`
+are persisted as an RFC 7386 JSON Merge Patch in an overlay file next to the
+base YAML (`<config>.overlay.json`; override with `--overlay <path>` or
+`VOLTA_CONFIG_OVERLAY`). The hand-written YAML is never rewritten — it stays the
+authoritative base, and the overlay is re-applied on top at every load, so
+API-driven changes survive restarts. The effective config is
+`deep_merge(base, overlay)`. The patch is validated (`GatewayConfig::validate`)
+and written atomically (temp file → `fsync` → rename) *before* it takes effect;
+a rejected patch leaves both memory and disk untouched (HTTP 400). Fields that a
+[`HotState`](#41-proxy-flow-per-request) rebuild can pick up live — `routing`,
+its nested `cors_origins`/`ip_allowlist`, `error_pages_dir`, and
+`server.trusted_proxies` — are applied immediately and reported under
+`hot_applied`; everything else (`server.port`, `tls`, `l4_proxy`, `plugins`,
+`auth`, …) is persisted but reported under `requires_restart` and takes effect on
+the next start. Implementation: `gateway/src/config_overlay.rs` (`ConfigStore`).
 
 ### 6.3 auth-server HTTP surface (96 routes)
 
@@ -894,6 +914,7 @@ Three canonical files live at the repo root:
 | `volta-gateway.minimal.yaml`    | Smallest viable config for a 2-route SaaS             |
 | `volta-gateway.full.yaml`       | Full reference — every key + its default + a comment  |
 | `volta-gateway.yaml`            | Active workspace config (gitignored in production)    |
+| `<config>.overlay.json`         | Auto-managed: API-driven changes from `PATCH /admin/config` (RFC 7386 merge patch, re-applied on load). Not hand-edited. |
 
 ### 8.2 Minimal schema
 

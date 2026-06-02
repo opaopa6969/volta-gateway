@@ -71,6 +71,7 @@ fn make_proxy(auth_addr: SocketAddr, backend_addr: SocketAddr, host: &str) -> Pr
         pool_max_idle: 4,
         jwt_secret: None,
         cookie_name: None,
+        auth_public_url: None,
     };
     let volta = VoltaAuthClient::new(&auth_config);
 
@@ -103,6 +104,7 @@ fn make_proxy_with_cors(auth_addr: SocketAddr, backend_addr: SocketAddr, host: &
         pool_max_idle: 4,
         jwt_secret: None,
         cookie_name: None,
+        auth_public_url: None,
     };
     let volta = VoltaAuthClient::new(&auth_config);
 
@@ -416,6 +418,7 @@ fn make_proxy_public(backend_addr: SocketAddr, host: &str) -> ProxyService {
         pool_max_idle: 1,
         jwt_secret: None,
         cookie_name: None,
+        auth_public_url: None,
     };
     let volta = VoltaAuthClient::new(&auth_config);
 
@@ -448,6 +451,7 @@ fn make_proxy_with_bypass(auth_addr: SocketAddr, backend_addr: SocketAddr, host:
         pool_max_idle: 4,
         jwt_secret: None,
         cookie_name: None,
+        auth_public_url: None,
     };
     let volta = VoltaAuthClient::new(&auth_config);
 

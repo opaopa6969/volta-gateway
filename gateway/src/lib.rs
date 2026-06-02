@@ -1,5 +1,6 @@
 pub mod cache;
 pub mod config;
+pub mod config_overlay;
 pub mod config_source;
 pub mod state;
 pub mod auth;

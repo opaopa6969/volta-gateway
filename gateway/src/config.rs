@@ -1,4 +1,5 @@
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::ser::SerializeStruct;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -24,13 +25,24 @@ impl<'de> Deserialize<'de> for WeightedBackend {
     }
 }
 
+// Serialize in the explicit weighted form {url, weight} (self-describing,
+// round-trips through the untagged Deserialize above).
+impl Serialize for WeightedBackend {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut s = serializer.serialize_struct("WeightedBackend", 2)?;
+        s.serialize_field("url", &self.url)?;
+        s.serialize_field("weight", &self.weight)?;
+        s.end()
+    }
+}
+
 fn default_weight() -> u32 { 1 }
 
 fn deserialize_backends<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<WeightedBackend>, D::Error> {
     Vec::<WeightedBackend>::deserialize(deserializer)
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[allow(dead_code)]
 pub struct GatewayConfig {
     pub server: ServerConfig,
@@ -74,7 +86,7 @@ pub struct GatewayConfig {
     pub binding: BindingConfig,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct L4ProxyEntry {
     /// Listen port
     pub listen_port: u16,
@@ -85,7 +97,7 @@ pub struct L4ProxyEntry {
     pub backend: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TlsConfig {
     /// Domains for ACME certificate. Must match routing hosts.
     pub domains: Vec<String>,
@@ -114,7 +126,7 @@ pub struct TlsConfig {
 fn default_challenge() -> String { "http-01".into() }
 
 /// #39: Access log configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AccessLogConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -129,7 +141,7 @@ fn default_access_format() -> String { "json".into() }
 
 // ─── #55: Config Schema v3 ─────────────────────────────────
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct TenancyConfig {
     #[serde(default = "default_tenancy_mode")]
     pub mode: String,
@@ -149,7 +161,7 @@ fn default_creation_policy() -> String { "disabled".into() }
 fn default_max_orgs() -> u32 { 1 }
 fn default_org_display() -> String { "Organization".into() }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct TenantRouting {
     #[serde(default = "default_routing_mode")]
     pub mode: String,
@@ -163,7 +175,7 @@ fn default_routing_mode() -> String { "none".into() }
 fn default_slug_header() -> String { "X-Volta-Tenant-Slug".into() }
 fn default_cookie_scope() -> String { "shared".into() }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct AccessConfig {
     #[serde(default = "default_visibility")]
     pub default_visibility: String,
@@ -177,7 +189,7 @@ fn default_actions() -> Vec<String> {
     ["view","open","deploy","terminal","config","admin","delete"].iter().map(|s| s.to_string()).collect()
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct BindingConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -191,7 +203,7 @@ pub struct BindingConfig {
 fn default_on_delete() -> String { "archive".into() }
 fn default_retention() -> u32 { 90 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[allow(dead_code)]
 pub struct ServerConfig {
     #[serde(default = "default_port")]
@@ -209,7 +221,7 @@ pub struct ServerConfig {
     pub trusted_proxies: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AuthConfig {
     #[serde(default = "default_volta_url")]
     pub volta_url: String,
@@ -232,7 +244,7 @@ pub struct AuthConfig {
     pub auth_public_url: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RouteEntry {
     pub host: String,
     /// Single backend (simple)
@@ -291,7 +303,7 @@ pub struct RouteEntry {
     pub backend_tls: Option<crate::mtls::BackendTlsConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct HeaderManipulation {
     #[serde(default)]
     pub add: HashMap<String, String>,
@@ -299,7 +311,7 @@ pub struct HeaderManipulation {
     pub remove: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MirrorConfig {
     /// Shadow backend URL
     pub backend: String,
@@ -308,7 +320,7 @@ pub struct MirrorConfig {
     pub sample_rate: f64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BypassPath {
     pub prefix: String,
     /// Optional backend override for this bypass path.
@@ -338,7 +350,7 @@ impl RouteEntry {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[allow(dead_code)]
 pub struct RateLimitConfig {
     #[serde(default = "default_rps")]
@@ -347,7 +359,7 @@ pub struct RateLimitConfig {
     pub per_ip_rps: u32,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[allow(dead_code)]
 pub struct BackendPoolConfig {
     #[serde(default = "default_pool_idle")]
@@ -356,7 +368,7 @@ pub struct BackendPoolConfig {
     pub idle_timeout_secs: u64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[allow(dead_code)]
 pub struct HealthCheckConfig {
     #[serde(default = "default_hc_interval")]
@@ -365,7 +377,7 @@ pub struct HealthCheckConfig {
     pub path: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[allow(dead_code)]
 pub struct LoggingConfig {
     #[serde(default = "default_log_level")]
@@ -375,6 +387,10 @@ pub struct LoggingConfig {
 }
 
 impl GatewayConfig {
+    /// Load + parse a config straight from a YAML file (no overlay applied).
+    /// The gateway binary loads via [`config_overlay::ConfigStore`] instead, so
+    /// this remains for library consumers and tests.
+    #[allow(dead_code)]
     pub fn load(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         let content = std::fs::read_to_string(path)?;
         let config: GatewayConfig = serde_yaml::from_str(&content)?;
