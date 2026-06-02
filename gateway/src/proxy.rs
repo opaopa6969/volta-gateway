@@ -300,6 +300,7 @@ impl HotState {
         Self { routing, flow_def, error_pages: HashMap::new(), cors: HashMap::new(), trusted_proxies: Vec::new() }
     }
 
+    #[allow(dead_code)]
     pub fn new_with_config(
         routing: Arc<RoutingTable>,
         ip_allowlists: HashMap<String, Vec<ipnet::IpNet>>,

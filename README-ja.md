@@ -156,6 +156,7 @@ Rust 着地点への trace: [`auth-server/docs/sync-from-java-2026-04-14.md`](au
 | CORS | per-route origins, セキュア・バイ・デフォルト |
 | カスタムエラーページ | HTML ディレクトリ + JSON fallback |
 | ホットリロード | SIGHUP + HTTP `/admin/reload` — ゼロダウンタイム (ArcSwap) |
+| ライブ設定変更＋永続化 | `PATCH /admin/config`（JSON Merge Patch）— オーバーレイファイルに永続化し再起動後も保持、可能な項目は即時反映 |
 | パブリックルート | `public: true` で認証スキップ、`auth_bypass_paths` で webhook 対応 |
 | パス書き換え | `strip_prefix`, `add_prefix` で API バージョニング |
 | ヘッダー操作 | ルートごとにリクエスト/レスポンスヘッダーを追加・削除 |
@@ -169,7 +170,7 @@ Rust 着地点への trace: [`auth-server/docs/sync-from-java-2026-04-14.md`](au
 | Backend ヘルスチェック | dead backend 自動検出・LB スキップ |
 | mTLS backend | 内部 zero-trust 用 mutual TLS |
 | バックプレッシャー | グローバル最大同時リクエスト数 (Semaphore) |
-| Admin API | /admin/routes, /admin/backends, /admin/stats, /admin/reload, /admin/drain |
+| Admin API | /admin/routes, /admin/backends, /admin/stats, /admin/config, /admin/reload, /admin/drain |
 | Config 検証 | `volta-gateway --validate config.yaml` (CI/CD 用) |
 | L4 proxy | TCP/UDP ポートフォワーディング |
 | メトリクス | Prometheus /metrics + レイテンシヒストグラム (8 bucket) |

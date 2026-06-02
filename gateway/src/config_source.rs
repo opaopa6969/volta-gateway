@@ -3,7 +3,7 @@
 //! Sources: YAML (default), services.json (#16), Docker labels (#15), HTTP polling (#17).
 //! Each source implements ConfigSource trait and can watch for changes.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -23,7 +23,7 @@ pub trait ConfigSource: Send + Sync {
 }
 
 /// Config source type in YAML config.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ConfigSourceEntry {
     #[serde(rename = "type")]
     pub source_type: String,
@@ -50,7 +50,7 @@ fn default_poll_interval() -> u64 { 30 }
 // ─── #16: services.json Source ──────────────────────────
 
 /// services.json format (volta-platform compatible).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ServiceEntry {
     pub name: String,
     #[serde(default)]

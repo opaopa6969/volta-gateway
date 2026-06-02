@@ -157,6 +157,7 @@ Java commit that landed in Rust: [`auth-server/docs/sync-from-java-2026-04-14.md
 | CORS | Per-route origins, secure-by-default (no implicit wildcard) |
 | Custom error pages | HTML directory with JSON fallback |
 | Hot reload | SIGHUP + HTTP `/admin/reload` — zero-downtime (ArcSwap) |
+| Live config + persist | `PATCH /admin/config` (JSON Merge Patch) — persisted to an overlay file, survives restart, hot-applied where possible |
 | Public routes | `public: true` to skip auth; `auth_bypass_paths` for webhooks |
 | Path rewrite | `strip_prefix`, `add_prefix` for API versioning |
 | Header manipulation | Add/remove request and response headers per route |
@@ -170,7 +171,7 @@ Java commit that landed in Rust: [`auth-server/docs/sync-from-java-2026-04-14.md
 | Backend health check | Auto-detect dead backends, skip in LB |
 | mTLS backend | Mutual TLS for internal zero-trust |
 | Backpressure | Global max concurrent requests (Semaphore) |
-| Admin API | /admin/routes, /admin/backends, /admin/stats, /admin/reload, /admin/drain |
+| Admin API | /admin/routes, /admin/backends, /admin/stats, /admin/config, /admin/reload, /admin/drain |
 | Config validation | `volta-gateway --validate config.yaml` for CI/CD |
 | L4 proxy | TCP/UDP port forwarding |
 | Metrics | Prometheus /metrics + latency histogram (8 buckets) |
