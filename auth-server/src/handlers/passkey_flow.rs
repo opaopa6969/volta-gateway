@@ -13,7 +13,7 @@ use axum::Json;
 use axum_extra::extract::CookieJar;
 use serde::Deserialize;
 use uuid::Uuid;
-use webauthn_rs::prelude::{Passkey, PublicKeyCredential, RegisterPublicKeyCredential};
+use webauthn_rs::prelude::{DiscoverableKey, Passkey, PublicKeyCredential, RegisterPublicKeyCredential};
 
 use crate::error::{no_cache_headers, ApiError};
 use crate::helpers::{extract_session_id, set_session_cookie};
@@ -131,6 +131,147 @@ pub async fn auth_finish(
 
     // Issue a session. `mfa_verified_at = Some(...)` because passkey is an
     // MFA-equivalent authenticator (user verification already performed).
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    SessionStore::create(
+        &s.db,
+        volta_auth_core::record::SessionRecord {
+            session_id: session_id.clone(),
+            user_id: passkey_row.user_id.to_string(),
+            tenant_id: String::new(),
+            return_to: None,
+            created_at: now,
+            last_active_at: now,
+            expires_at: now + s.session_ttl_secs,
+            invalidated_at: None,
+            mfa_verified_at: Some(now),
+            ip_address: None,
+            user_agent: None,
+            csrf_token: None,
+            email: None,
+            tenant_slug: None,
+            roles: vec![],
+            display_name: None,
+        },
+    )
+    .await
+    .map_err(|e| ApiError::internal(&e.to_string()))?;
+
+    s.auth_events.publish_and_audit(
+        crate::auth_events::AuthEvent::now("LOGIN_SUCCESS")
+            .with_user(passkey_row.user_id.to_string())
+            .with_session(session_id.clone()),
+        &s.db,
+        None,
+        Some("SESSION".into()),
+        Some(session_id.clone()),
+        None,
+    ).await;
+
+    let mut resp = Json(serde_json::json!({"ok": true})).into_response();
+    set_session_cookie(&mut resp, &session_id, &s);
+    no_cache_headers(&mut resp);
+    Ok(resp)
+}
+
+// ── discoverable-credential login (username-less) ─────────
+
+/// POST /auth/passkey/discover/start — begin discoverable-credential login.
+///
+/// No body required. Returns a challenge with `allowCredentials=[]` and
+/// `userVerification=required`. The authenticator presents all resident keys
+/// it holds for this RP; the user picks one.
+pub async fn discover_start(
+    State(s): State<AppState>,
+) -> Result<Response, ApiError> {
+    let svc = service(&s)?;
+
+    let (challenge, state) = svc
+        .start_discoverable_authentication()
+        .map_err(|e| ApiError::internal(&e.to_string()))?;
+
+    // No user_id yet — we don't know who is logging in until finish.
+    let challenge_id = persist_challenge(&s, None, "discover", &state).await?;
+
+    let mut resp = Json(serde_json::json!({
+        "challenge_id": challenge_id,
+        "options": challenge,
+    }))
+    .into_response();
+    no_cache_headers(&mut resp);
+    Ok(resp)
+}
+
+#[derive(Deserialize)]
+pub struct DiscoverFinishReq {
+    pub challenge_id: Uuid,
+    pub credential: PublicKeyCredential,
+}
+
+/// POST /auth/passkey/discover/finish — verify discoverable-credential assertion + issue session.
+///
+/// `credential` must contain a `userHandle` (user_unique_id) so the server can
+/// look up the user and their passkeys without requiring an email input.
+pub async fn discover_finish(
+    State(s): State<AppState>,
+    Json(req): Json<DiscoverFinishReq>,
+) -> Result<Response, ApiError> {
+    let svc = service(&s)?;
+
+    let record = PasskeyChallengeStore::consume(&s.db, req.challenge_id)
+        .await
+        .map_err(|e| ApiError::internal(&e.to_string()))?
+        .ok_or_else(|| ApiError::bad_request("INVALID_CHALLENGE", "unknown or expired challenge"))?;
+    if record.kind != "discover" {
+        return Err(ApiError::bad_request("INVALID_CHALLENGE", "wrong ceremony kind"));
+    }
+    let discover_state = decode_state(&record.state)?;
+
+    // Extract the user_unique_id from the credential's userHandle.
+    let (user_unique_id, _cred_id_bytes) = svc
+        .identify_discoverable_authentication(&req.credential)
+        .map_err(|_| ApiError::unauthorized("PASSKEY_FAILED", "missing or invalid userHandle in credential"))?;
+
+    // Load the user and their passkeys by user_unique_id (== user.id).
+    let user = UserStore::find_by_id(&s.db, user_unique_id)
+        .await
+        .map_err(|e| ApiError::internal(&e.to_string()))?
+        .ok_or_else(|| ApiError::unauthorized("PASSKEY_FAILED", "no matching credential"))?;
+
+    let records = PasskeyStore::list_by_user(&s.db, user.id)
+        .await
+        .map_err(|e| ApiError::internal(&e.to_string()))?;
+    let passkeys = passkeys_from_records(&records)?;
+    if passkeys.is_empty() {
+        return Err(ApiError::unauthorized("PASSKEY_FAILED", "no matching credential"));
+    }
+    let discoverable_keys: Vec<DiscoverableKey> = passkeys.iter().map(DiscoverableKey::from).collect();
+
+    let result = svc
+        .finish_discoverable_authentication(&req.credential, discover_state, &discoverable_keys)
+        .map_err(|_| ApiError::unauthorized("PASSKEY_FAILED", "assertion verification failed"))?;
+
+    // Update atomic sign counter (clone-detection, same as username-bound flow).
+    let cred_id_bytes: &[u8] = result.cred_id().as_ref();
+    let passkey_row = PasskeyStore::find_by_credential_id(&s.db, cred_id_bytes)
+        .await
+        .map_err(|e| ApiError::internal(&e.to_string()))?
+        .ok_or_else(|| ApiError::unauthorized("PASSKEY_FAILED", "credential not on file"))?;
+
+    let applied = PasskeyStore::update_counter(&s.db, passkey_row.id, result.counter() as i64)
+        .await
+        .map_err(|e| ApiError::internal(&e.to_string()))?;
+    if !applied {
+        return Err(ApiError::unauthorized(
+            "PASSKEY_FAILED",
+            "sign-counter rejected — possible replay or cloned authenticator",
+        ));
+    }
+
+    // Issue a session (passkey = MFA-equivalent; set mfa_verified_at).
     let session_id = uuid::Uuid::new_v4().to_string();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
