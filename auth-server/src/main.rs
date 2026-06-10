@@ -70,13 +70,29 @@ async fn main() {
 
     // Backlog P2 #9: validate every flow descriptor before serving traffic.
     // Any violation (unreachable state, cycle in Auto/Branch graph, multi-
-    // external edge, terminal with outgoing) fails the process.
-    for desc in handlers::viz::flow_descriptors() {
-        if let Err(errors) = volta_auth_core::flow::validate::validate(&desc) {
+    // external edge, terminal with outgoing, requires/produces mismatch, or
+    // duplicate @FlowData alias) fails the process.
+    let descriptors = handlers::viz::flow_descriptors();
+    for desc in &descriptors {
+        if let Err(errors) = volta_auth_core::flow::validate::validate(desc) {
             for err in &errors {
                 tracing::error!(flow = desc.name, "flow validation failed: {:?}", err);
             }
             eprintln!("flow '{}' failed validation with {} error(s)", desc.name, errors.len());
+            std::process::exit(1);
+        }
+    }
+    // Rule #7 cross-flow: every @FlowData alias must be globally unique.
+    {
+        let refs: Vec<&volta_auth_core::flow::validate::FlowDescriptor> =
+            descriptors.iter().collect();
+        let alias_errors =
+            volta_auth_core::flow::validate::validate_global_aliases(&refs);
+        if !alias_errors.is_empty() {
+            for err in &alias_errors {
+                tracing::error!("cross-flow alias validation failed: {:?}", err);
+            }
+            eprintln!("cross-flow alias validation failed with {} error(s)", alias_errors.len());
             std::process::exit(1);
         }
     }
