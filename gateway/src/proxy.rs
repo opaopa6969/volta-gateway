@@ -370,6 +370,15 @@ struct CircuitState {
     open: bool,
 }
 
+/// Public view of a backend's circuit-breaker state, for the admin API.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CircuitStatus {
+    pub backend: String,
+    /// "closed" | "open" | "half-open"
+    pub state: String,
+    pub failures: u32,
+}
+
 impl CircuitBreaker {
     fn new(threshold: u32, recovery_secs: u64) -> Self {
         Self {
@@ -412,6 +421,59 @@ impl CircuitBreaker {
             state.open = true;
         }
     }
+
+    /// Force a backend's circuit closed (clears failures + open flag).
+    /// Used by `POST /admin/backends/{id}/reset` to recover from a false-positive
+    /// open. Returns true if the backend had a tracked (non-closed) state.
+    pub fn reset(&self, backend: &str) -> bool {
+        let mut map = self.backends.lock().unwrap();
+        map.remove(backend).is_some()
+    }
+
+    /// Snapshot of every tracked backend's circuit state for the admin API.
+    /// Backends that have never failed are *not* tracked and therefore implicitly
+    /// "closed"; callers that also know the configured backend set should treat
+    /// absent entries as closed.
+    pub fn status(&self) -> Vec<CircuitStatus> {
+        let map = self.backends.lock().unwrap();
+        map.iter()
+            .map(|(backend, state)| {
+                let st = if !state.open {
+                    "closed"
+                } else if state.last_failure.elapsed()
+                    >= std::time::Duration::from_secs(self.recovery_secs)
+                {
+                    "half-open"
+                } else {
+                    "open"
+                };
+                CircuitStatus {
+                    backend: backend.clone(),
+                    state: st.to_string(),
+                    failures: state.failures,
+                }
+            })
+            .collect()
+    }
+
+    /// Circuit state string for a single backend (None/closed treated as "closed").
+    pub fn state_of(&self, backend: &str) -> String {
+        let map = self.backends.lock().unwrap();
+        match map.get(backend) {
+            None => "closed".to_string(),
+            Some(state) => {
+                if !state.open {
+                    "closed".to_string()
+                } else if state.last_failure.elapsed()
+                    >= std::time::Duration::from_secs(self.recovery_secs)
+                {
+                    "half-open".to_string()
+                } else {
+                    "open".to_string()
+                }
+            }
+        }
+    }
 }
 
 /// Core proxy service. Drives each request through the tramli SM engine.
@@ -426,7 +488,7 @@ pub struct ProxyService {
     pub hot: Arc<ArcSwap<HotState>>,
     pub rate_limiter: RateLimiter,
     pub backend_selector: BackendSelector,
-    circuit_breaker: CircuitBreaker,
+    pub circuit_breaker: CircuitBreaker,
     pub metrics: Arc<crate::metrics::Metrics>,
     pub plugin_manager: Arc<crate::plugin::PluginManager>,
     pub response_cache: crate::cache::ResponseCache,
@@ -1277,4 +1339,83 @@ fn rate_limited_response(request_id: &str) -> Response<BoxBody<Bytes, hyper::Err
         .header("x-request-id", request_id)
         .body(body.map_err(|e| match e {}).boxed())
         .unwrap()
+}
+
+#[cfg(test)]
+mod circuit_breaker_tests {
+    use super::*;
+
+    #[test]
+    fn untracked_backend_is_closed_and_available() {
+        let cb = CircuitBreaker::new(3, 30);
+        let url = "http://127.0.0.1:3000";
+        assert!(cb.is_available(url));
+        assert_eq!(cb.state_of(url), "closed");
+        assert!(cb.status().is_empty(), "untracked backends are not listed");
+    }
+
+    #[test]
+    fn opens_after_threshold_then_status_reports_open() {
+        let cb = CircuitBreaker::new(3, 30);
+        let url = "http://127.0.0.1:3000";
+        cb.record_failure(url);
+        cb.record_failure(url);
+        // Below threshold: still closed/available.
+        assert!(cb.is_available(url));
+        assert_eq!(cb.state_of(url), "closed");
+        cb.record_failure(url); // hits threshold (3)
+        assert_eq!(cb.state_of(url), "open");
+        assert!(!cb.is_available(url), "open circuit blocks requests");
+
+        let status = cb.status();
+        assert_eq!(status.len(), 1);
+        assert_eq!(status[0].backend, url);
+        assert_eq!(status[0].state, "open");
+        assert_eq!(status[0].failures, 3);
+    }
+
+    #[test]
+    fn reset_force_closes_open_circuit() {
+        let cb = CircuitBreaker::new(2, 30);
+        let url = "http://127.0.0.1:3000";
+        cb.record_failure(url);
+        cb.record_failure(url);
+        assert_eq!(cb.state_of(url), "open");
+        assert!(!cb.is_available(url));
+
+        // External admin reset → immediately closed + available again.
+        let was_tracked = cb.reset(url);
+        assert!(was_tracked, "reset reports it cleared a tracked state");
+        assert_eq!(cb.state_of(url), "closed");
+        assert!(cb.is_available(url), "circuit available immediately after reset");
+        assert!(cb.status().is_empty(), "no tracked state after reset");
+    }
+
+    #[test]
+    fn reset_untracked_backend_is_noop_returns_false() {
+        let cb = CircuitBreaker::new(2, 30);
+        assert!(!cb.reset("http://127.0.0.1:9999"));
+    }
+
+    #[test]
+    fn half_open_after_recovery_window() {
+        // recovery_secs = 0 → the recovery window has already elapsed, so an open
+        // circuit immediately reports half-open and allows a trial request.
+        let cb = CircuitBreaker::new(1, 0);
+        let url = "http://127.0.0.1:3000";
+        cb.record_failure(url); // threshold 1 → open
+        assert_eq!(cb.state_of(url), "half-open");
+        assert!(cb.is_available(url), "half-open allows a trial request");
+    }
+
+    #[test]
+    fn record_success_clears_circuit() {
+        let cb = CircuitBreaker::new(2, 30);
+        let url = "http://127.0.0.1:3000";
+        cb.record_failure(url);
+        cb.record_failure(url);
+        assert_eq!(cb.state_of(url), "open");
+        cb.record_success(url);
+        assert_eq!(cb.state_of(url), "closed");
+    }
 }

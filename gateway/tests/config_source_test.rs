@@ -433,3 +433,72 @@ config_sources:
     assert_eq!(config.config_sources[1].source_type, "http");
     assert_eq!(config.config_sources[1].poll_interval_secs, 60);
 }
+
+// ─── SIGHUP × services.json root-cause fix (Phase 1) ────
+//
+// rebuild_hot (SIGHUP / admin reload) used to rebuild HotState from the static
+// YAML only, so services.json-derived routes vanished until the next watcher
+// push. spawn_watchers now publishes its routes into a shared DynamicRoutes
+// snapshot, and rebuild_hot_with_dynamic re-merges them on rebuild.
+
+#[tokio::test]
+async fn sighup_rebuild_keeps_services_json_routes() {
+    use std::sync::Arc;
+    use arc_swap::ArcSwap;
+    use volta_gateway::config::GatewayConfig;
+    use volta_gateway::config_source::{create_sources, spawn_watchers};
+    use volta_gateway::config_overlay::{new_dynamic_routes, rebuild_hot_with_dynamic};
+    use volta_gateway::proxy::HotState;
+
+    // Static YAML route + a services.json config source.
+    let dir = std::env::temp_dir().join(format!("volta_sighup_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let svc_path = dir.join("services.json");
+    std::fs::write(&svc_path, r#"[{"name": "console", "host": "console.example.com", "port": 3789}]"#).unwrap();
+
+    let yaml = format!(r#"
+server:
+  port: 8080
+auth:
+  volta_url: http://localhost:7070
+routing:
+  - host: static.example.com
+    backend: http://localhost:3000
+config_sources:
+  - type: services-json
+    path: "{}"
+    prod_host: "192.168.1.50"
+"#, svc_path.display());
+    let config: GatewayConfig = serde_yaml::from_str(&yaml).unwrap();
+
+    // Build the initial HotState (static only), then start watchers which publish
+    // the services.json route into both HotState and the shared dynamic snapshot.
+    let hot: Arc<ArcSwap<HotState>> = Arc::new(ArcSwap::from_pointee(
+        HotState::new(Arc::new(config.routing_table())),
+    ));
+    let dynamic = new_dynamic_routes();
+    let sources = create_sources(&config.config_sources);
+    spawn_watchers(sources, hot.clone(), &config, dynamic.clone());
+
+    // Wait for the initial services.json load to land in HotState.
+    let mut merged_ok = false;
+    for _ in 0..50 {
+        if hot.load().routing.contains_key("console.example.com") {
+            merged_ok = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(merged_ok, "services.json route should appear in HotState after watcher start");
+    assert!(hot.load().routing.contains_key("static.example.com"));
+
+    // Simulate a SIGHUP: rebuild HotState from the (reloaded) static config while
+    // re-merging the dynamic snapshot.
+    rebuild_hot_with_dynamic(&config, &hot, &dynamic);
+
+    let snap = hot.load();
+    assert!(snap.routing.contains_key("static.example.com"),
+        "static route survives SIGHUP rebuild");
+    assert!(snap.routing.contains_key("console.example.com"),
+        "services.json route survives SIGHUP rebuild (root-cause fix — was the bug)");
+}

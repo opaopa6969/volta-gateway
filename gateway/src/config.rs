@@ -228,6 +228,11 @@ pub struct ServerConfig {
     /// is used as client IP instead of X-Forwarded-For.
     #[serde(default)]
     pub trusted_proxies: Vec<String>,
+    /// Graceful drain timeout: on SIGTERM/Ctrl+C, stop accepting new
+    /// connections and wait up to this many seconds for in-flight requests to
+    /// finish before forcing shutdown. Default: 30s.
+    #[serde(default = "default_drain_timeout")]
+    pub drain_timeout_secs: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -886,6 +891,24 @@ routing:
         assert_eq!(cfg.server.read_timeout_secs, 10);
         assert_eq!(cfg.server.request_timeout_secs, 30);
         assert!(!cfg.server.force_https);
+        // GW-15: graceful drain timeout default is 30s.
+        assert_eq!(cfg.server.drain_timeout_secs, 30);
+    }
+
+    #[test]
+    fn drain_timeout_secs_is_configurable() {
+        let yaml = r#"
+server:
+  port: 8080
+  drain_timeout_secs: 5
+auth:
+  volta_url: "http://localhost:7070"
+routing:
+  - host: "example.com"
+    backend: "http://a:3000"
+"#;
+        let cfg: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.server.drain_timeout_secs, 5);
     }
 
     #[test]
@@ -980,6 +1003,7 @@ routing:
 fn default_port() -> u16 { 8080 }
 fn default_read_timeout() -> u64 { 10 }
 fn default_request_timeout() -> u64 { 30 }
+fn default_drain_timeout() -> u64 { 30 }
 fn default_volta_url() -> String { "http://localhost:7070".into() }
 fn default_verify_path() -> String { "/auth/verify".into() }
 fn default_auth_timeout() -> u64 { 500 }

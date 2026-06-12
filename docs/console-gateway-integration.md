@@ -180,17 +180,22 @@ volta-gateway   ── config_sources.path=/etc/volta/services.json （read-only
 gateway には別経路の reload トリガとして **SIGHUP**（base YAML + overlay の再読込）がある。これと
 services.json watch は **別系統**で、現状の実装では次の関係になる：
 
-- **SIGHUP**（`main.rs` の `rebuild_hot`）… base YAML / overlay（`/admin/config` の永続化分）から
-  `HotState` を**静的ルートだけで作り直す**。`config_sources` のソース watcher は **起動時に一度だけ** spawn
-  されており、SIGHUP では **再 spawn されない**。
+- **SIGHUP**（`main.rs` の `rebuild_hot_with_dynamic`）… base YAML / overlay（`/admin/config` の永続化分）から
+  `HotState` を作り直す際に、**config source（services.json 等）由来の動的ルートも再マージ**する。
+  `config_sources` のソース watcher は起動時に一度だけ spawn され SIGHUP では再 spawn されないが、
+  watcher が publish した最新の動的ルートは共有スナップショット（`DynamicRoutes` = `ArcSwap<RoutingTable>`）に
+  保持されており、SIGHUP/admin reload の rebuild でそこから読み直して静的ルートにマージする。
 - **services.json watch / 初回ロード**（`spawn_watchers` → 各ソースの merge タスク）… 静的ルートに
-  services.json 由来の動的ルートを **マージ**して `HotState` を差し替える。
+  services.json 由来の動的ルートを **マージ**して `HotState` を差し替えると同時に、その動的ルートを
+  共有スナップショットへ publish する。
 
-> **注意（既知の相互作用）**: `rebuild_hot` は静的ルートのみで `HotState` を再構築するため、SIGHUP 直後は
-> services.json 由来のルートが一時的に消える。`watch: true` なら次回のファイル変更で復帰するが、変更が無ければ
-> 復帰しない。安全側の運用は **(a) services.json 由来のサービスは watch: true にして SIGHUP 後にファイルを
-> touch する**、または **(b) services.json の更新と gateway の SIGHUP を混在させない**。動的ルートを SIGHUP
-> でも保持する改善は別 issue（BT-CP 系）で扱う。
+> **根治済み（旧・既知の相互作用）**: 以前は `rebuild_hot` が静的ルートのみで `HotState` を再構築していたため、
+> SIGHUP 直後に services.json 由来のルートが一時的に消えていた。現在は `rebuild_hot_with_dynamic` が共有
+> スナップショットから動的ルートを再マージするため、**watch の有無に関わらず SIGHUP / `/admin/reload` /
+> `/admin/config` PATCH の後も services.json ルートは消えない**。ホスト衝突時は動的（config source）ルートが
+> 静的ルートを上書きする（`spawn_watchers` のマージ優先度と一致）。回帰テスト:
+> `config_overlay::tests::rebuild_hot_with_dynamic_keeps_services_json_routes` と
+> 結合テスト `sighup_rebuild_keeps_services_json_routes`。
 
 役割の整理：「**サービスの増減 = services.json + watch で自動反映**」「**gateway 自体の設定変更
 （tls / plugins / rate_limit / server 等）= YAML/overlay 編集 + SIGHUP（or 再起動）**」。`watch: false` 運用では

@@ -19,7 +19,7 @@ use arc_swap::ArcSwap;
 use serde_json::Value;
 
 use crate::config::GatewayConfig;
-use crate::proxy::HotState;
+use crate::proxy::{HotState, RoutingTable};
 
 /// Outcome of applying a patch: which changed keys took effect live vs.
 /// which were saved but need a restart.
@@ -195,10 +195,58 @@ fn classify_patch(patch: &Value) -> ApplyResult {
     result
 }
 
+/// Shared, lock-free snapshot of the routes contributed by *dynamic* config
+/// sources (services.json, Docker labels, HTTP polling).
+///
+/// PH1 root-cause fix: SIGHUP (and admin reload/patch) rebuild [`HotState`] from
+/// the static YAML only. Without keeping the latest config-source routes
+/// somewhere durable, those routes vanished from the routing table until the
+/// next watcher push. The config-source merge task publishes its current routes
+/// here, and [`rebuild_hot`] re-merges them on top of the static routes so a
+/// rebuild never drops services.json-derived routes.
+pub type DynamicRoutes = Arc<ArcSwap<RoutingTable>>;
+
+/// Create an empty dynamic-routes snapshot.
+pub fn new_dynamic_routes() -> DynamicRoutes {
+    Arc::new(ArcSwap::from_pointee(RoutingTable::new()))
+}
+
 /// Rebuild [`HotState`] from the effective config and atomically swap it in.
 /// Mirrors the startup path in `main.rs` and the `/admin/reload` handler.
+///
+/// Dynamic config-source routes are *not* preserved by this variant — prefer
+/// [`rebuild_hot_with_dynamic`] when a `DynamicRoutes` snapshot is available.
+#[allow(dead_code)]
 pub fn rebuild_hot(cfg: &GatewayConfig, hot: &Arc<ArcSwap<HotState>>) {
-    let routing = Arc::new(cfg.routing_table());
+    rebuild_hot_inner(cfg, hot, None);
+}
+
+/// Like [`rebuild_hot`] but re-merges the current config-source routes on top of
+/// the static YAML routes, so a SIGHUP / admin reload never drops them.
+/// Dynamic routes win on host conflicts (same precedence as the watcher merge).
+pub fn rebuild_hot_with_dynamic(
+    cfg: &GatewayConfig,
+    hot: &Arc<ArcSwap<HotState>>,
+    dynamic: &DynamicRoutes,
+) {
+    let snapshot = dynamic.load_full();
+    rebuild_hot_inner(cfg, hot, Some(&snapshot));
+}
+
+fn rebuild_hot_inner(
+    cfg: &GatewayConfig,
+    hot: &Arc<ArcSwap<HotState>>,
+    dynamic: Option<&RoutingTable>,
+) {
+    let mut routing = cfg.routing_table();
+    if let Some(dyn_routes) = dynamic {
+        // Dynamic (config-source) routes overwrite static on host conflict,
+        // matching config_source::spawn_watchers merge precedence.
+        for (host, info) in dyn_routes.iter() {
+            routing.insert(host.clone(), info.clone());
+        }
+    }
+    let routing = Arc::new(routing);
     let allowlists = cfg.ip_allowlist_table();
     let cors = cfg.cors_table();
     let trusted_proxies: Vec<ipnet::IpNet> = cfg.server.trusted_proxies.iter()
@@ -362,5 +410,91 @@ routing:
     fn classify_tls_requires_restart() {
         let r = classify_patch(&serde_json::json!({"tls": {"domains": ["x.com"]}}));
         assert_eq!(r.requires_restart, vec!["tls".to_string()]);
+    }
+
+    // ── rebuild_hot_with_dynamic: SIGHUP × services.json root-cause fix ──
+
+    /// Build a one-route RoutingTable for a host/backend by parsing a tiny config
+    /// (avoids hand-constructing the large RouteInfo struct in tests).
+    fn dynamic_table(host: &str, backend: &str) -> RoutingTable {
+        let yaml = format!(
+            "server:\n  port: 8080\nauth:\n  volta_url: \"http://localhost:7070\"\nrouting:\n  - host: \"{host}\"\n    backend: \"{backend}\"\n"
+        );
+        let cfg: GatewayConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.routing_table()
+    }
+
+    /// Effective config from the test BASE_YAML (single static route example.com).
+    fn base_config() -> GatewayConfig {
+        serde_yaml::from_str(BASE_YAML).unwrap()
+    }
+
+    #[test]
+    fn rebuild_hot_drops_dynamic_routes_without_snapshot() {
+        // Demonstrates the OLD (buggy) behavior: a plain rebuild keeps only the
+        // static routes — services.json-derived routes vanish.
+        let cfg = base_config();
+        let hot: Arc<ArcSwap<HotState>> = Arc::new(ArcSwap::from_pointee(
+            HotState::new(Arc::new(dynamic_table("svc.example.com", "http://127.0.0.1:9100"))),
+        ));
+        rebuild_hot(&cfg, &hot);
+        let snap = hot.load();
+        assert!(snap.routing.contains_key("example.com"), "static route present");
+        assert!(!snap.routing.contains_key("svc.example.com"),
+            "plain rebuild_hot drops dynamic route (the bug)");
+    }
+
+    #[test]
+    fn rebuild_hot_with_dynamic_keeps_services_json_routes() {
+        // ROOT-CAUSE FIX: after a SIGHUP-equivalent rebuild, services.json routes
+        // published into the shared snapshot survive alongside the static routes.
+        let cfg = base_config();
+        let hot: Arc<ArcSwap<HotState>> = Arc::new(ArcSwap::from_pointee(
+            HotState::new(Arc::new(RoutingTable::new())),
+        ));
+
+        // Config-source watcher publishes its routes here.
+        let dynamic = new_dynamic_routes();
+        dynamic.store(Arc::new(dynamic_table("svc.example.com", "http://127.0.0.1:9100")));
+
+        rebuild_hot_with_dynamic(&cfg, &hot, &dynamic);
+
+        let snap = hot.load();
+        assert!(snap.routing.contains_key("example.com"),
+            "static YAML route survives SIGHUP rebuild");
+        assert!(snap.routing.contains_key("svc.example.com"),
+            "services.json route survives SIGHUP rebuild (root-cause fix)");
+    }
+
+    #[test]
+    fn rebuild_hot_with_dynamic_route_wins_on_host_conflict() {
+        // Dynamic (config-source) route overrides the static one on host conflict,
+        // matching config_source::spawn_watchers merge precedence.
+        let cfg = base_config(); // static example.com → http://127.0.0.1:3000
+        let hot: Arc<ArcSwap<HotState>> = Arc::new(ArcSwap::from_pointee(
+            HotState::new(Arc::new(RoutingTable::new())),
+        ));
+        let dynamic = new_dynamic_routes();
+        dynamic.store(Arc::new(dynamic_table("example.com", "http://127.0.0.1:9999")));
+
+        rebuild_hot_with_dynamic(&cfg, &hot, &dynamic);
+
+        let snap = hot.load();
+        let info = snap.routing.get("example.com").expect("route present");
+        assert!(info.backends.iter().any(|b| b.contains("9999")),
+            "dynamic backend wins on host conflict, got {:?}", info.backends);
+    }
+
+    #[test]
+    fn rebuild_hot_with_empty_dynamic_keeps_static_only() {
+        let cfg = base_config();
+        let hot: Arc<ArcSwap<HotState>> = Arc::new(ArcSwap::from_pointee(
+            HotState::new(Arc::new(RoutingTable::new())),
+        ));
+        let dynamic = new_dynamic_routes(); // empty
+        rebuild_hot_with_dynamic(&cfg, &hot, &dynamic);
+        let snap = hot.load();
+        assert_eq!(snap.routing.len(), 1);
+        assert!(snap.routing.contains_key("example.com"));
     }
 }

@@ -136,14 +136,35 @@ async fn main() {
     let listener = TcpListener::bind(addr).await.unwrap();
     info!(addr = %addr, "listening");
 
-    // ─── GW-5: Graceful shutdown ────────────────────────
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let shutdown_flag = shutdown.clone();
+    // Shared snapshot of config-source (services.json/docker/http) routes so a
+    // SIGHUP / admin reload can re-merge them instead of dropping them.
+    let dynamic_routes = config_overlay::new_dynamic_routes();
 
-    // Spawn shutdown signal listener
+    // ─── GW-5/GW-15: Graceful shutdown + drain ──────────
+    // `shutdown` flips when a SIGTERM/Ctrl+C/admin-drain is received: the accept
+    // loop stops taking new connections and /healthz starts returning 503 so the
+    // upstream LB/CF stops routing new traffic to this instance.
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let drain_timeout_secs = config.server.drain_timeout_secs;
+
+    // Spawn shutdown signal listener: Ctrl+C and (unix) SIGTERM.
+    let shutdown_flag = shutdown.clone();
     tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
-        info!("shutdown signal received — draining connections...");
+        #[cfg(unix)]
+        {
+            let mut sigterm = tokio::signal::unix::signal(
+                tokio::signal::unix::SignalKind::terminate()
+            ).expect("failed to register SIGTERM");
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => info!("Ctrl+C received — draining connections..."),
+                _ = sigterm.recv() => info!("SIGTERM received — draining connections..."),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            tokio::signal::ctrl_c().await.ok();
+            info!("Ctrl+C received — draining connections...");
+        }
         shutdown_flag.store(true, Ordering::SeqCst);
     });
 
@@ -154,6 +175,7 @@ async fn main() {
         let config_path_clone = config_path.clone();
         let hot_reload = hot.clone();
         let store_reload = config_store.clone();
+        let dynamic_reload = dynamic_routes.clone();
         tokio::spawn(async move {
             let mut sighup = tokio::signal::unix::signal(
                 tokio::signal::unix::SignalKind::hangup()
@@ -163,7 +185,9 @@ async fn main() {
                 match store_reload.reload() {
                     Ok(new_config) => {
                         let routes = new_config.routing.len();
-                        config_overlay::rebuild_hot(&new_config, &hot_reload);
+                        // Root-cause fix: re-merge config-source (services.json)
+                        // routes so SIGHUP doesn't transiently drop them.
+                        config_overlay::rebuild_hot_with_dynamic(&new_config, &hot_reload, &dynamic_reload);
                         info!(routes = routes,
                             "config reloaded from {} (+overlay) — routing updated (zero-downtime)",
                             config_path_clone);
@@ -226,23 +250,27 @@ async fn main() {
     if !config.config_sources.is_empty() {
         let sources = config_source::create_sources(&config.config_sources);
         info!(count = sources.len(), "starting config source watchers");
-        config_source::spawn_watchers(sources, hot.clone(), &config);
+        config_source::spawn_watchers(sources, hot.clone(), &config, dynamic_routes.clone());
     }
 
     let mut drain_deadline: Option<tokio::time::Instant> = None;
 
     loop {
         if shutdown.load(Ordering::SeqCst) {
-            // GW-15: drain with 30s timeout
+            // GW-15: stop accepting + wait for in-flight connections to finish,
+            // bounded by server.drain_timeout_secs (default 30s). /healthz is
+            // already returning 503 (see the `shutdown` check in the handler) so
+            // the upstream LB/CF drains new traffic away from this instance.
             let deadline = *drain_deadline.get_or_insert(
-                tokio::time::Instant::now() + std::time::Duration::from_secs(30));
+                tokio::time::Instant::now() + std::time::Duration::from_secs(drain_timeout_secs));
             let remaining = in_flight.load(Ordering::SeqCst);
             if remaining == 0 {
                 info!("all connections drained — shutting down");
                 break;
             }
             if tokio::time::Instant::now() >= deadline {
-                warn!(remaining = remaining, "drain timeout (30s) — forcing shutdown");
+                warn!(remaining = remaining, drain_timeout_secs,
+                    "drain timeout — forcing shutdown");
                 break;
             }
             info!(remaining = remaining, "waiting for in-flight connections...");
@@ -283,6 +311,7 @@ async fn main() {
         let shutdown_admin = shutdown.clone();
         let store_admin = config_store.clone();
         let admin_token = admin_token.clone();
+        let dynamic_admin = dynamic_routes.clone();
 
         in_flight.fetch_add(1, Ordering::SeqCst);
         metrics.active_connections.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -294,6 +323,7 @@ async fn main() {
             let shutdown_admin2 = shutdown_admin.clone();
             let store_admin2 = store_admin.clone();
             let admin_token2 = admin_token.clone();
+            let dynamic_admin2 = dynamic_admin.clone();
             let service = service_fn(move |req: Request<Incoming>| {
                 let proxy = proxy.clone();
                 let volta_health = volta_health.clone();
@@ -302,6 +332,7 @@ async fn main() {
                 let shutdown_admin = shutdown_admin2.clone();
                 let store_admin = store_admin2.clone();
                 let admin_token = admin_token2.clone();
+                let dynamic_admin = dynamic_admin2.clone();
                 let addr = remote_addr;
                 async move {
                     // HTTP → HTTPS redirect (GW-29/GW-38: skip for healthz, metrics, ACME challenge)
@@ -356,6 +387,17 @@ async fn main() {
                     }
 
                     if req.uri().path() == "/healthz" {
+                        // GW-15: during graceful drain, report 503 so the upstream
+                        // LB/CF stops sending new traffic while in-flight requests
+                        // finish.
+                        if shutdown_admin.load(Ordering::SeqCst) {
+                            let resp = hyper::Response::builder()
+                                .status(503)
+                                .header("content-type", "application/json")
+                                .body(Full::new(Bytes::from(r#"{"status":"draining","volta":"unknown"}"#)).map_err(|e| match e {}).boxed())
+                                .unwrap();
+                            return Ok::<_, hyper::Error>(resp);
+                        }
                         let volta_ok = volta_health.health().await;
                         let body = format!(
                             r#"{{"status":"{}","volta":"{}"}}"#,
@@ -389,6 +431,29 @@ async fn main() {
                                 .unwrap()
                         }
 
+                        // Minimal percent-decoder for path segments (e.g. the
+                        // backend URL in /admin/backends/{id}/reset). Decodes %XX
+                        // and treats '+' literally (path, not query).
+                        fn percent_decode(s: &str) -> String {
+                            let bytes = s.as_bytes();
+                            let mut out = Vec::with_capacity(bytes.len());
+                            let mut i = 0;
+                            while i < bytes.len() {
+                                if bytes[i] == b'%' && i + 2 < bytes.len() {
+                                    let hi = (bytes[i + 1] as char).to_digit(16);
+                                    let lo = (bytes[i + 2] as char).to_digit(16);
+                                    if let (Some(h), Some(l)) = (hi, lo) {
+                                        out.push((h * 16 + l) as u8);
+                                        i += 3;
+                                        continue;
+                                    }
+                                }
+                                out.push(bytes[i]);
+                                i += 1;
+                            }
+                            String::from_utf8_lossy(&out).into_owned()
+                        }
+
                         // BT-SEC-7: Authenticate /admin/* requests.
                         let is_mutating = req.method() != hyper::Method::GET;
                         let auth_header = req.headers()
@@ -414,6 +479,29 @@ async fn main() {
 
                         // Owned path so PATCH arms can consume the request body.
                         let admin_path = req.uri().path().to_string();
+
+                        // POST /admin/backends/{id}/reset — force a backend's
+                        // circuit breaker closed (recover from a false-positive open).
+                        // {id} is the (percent-encoded) backend URL.
+                        if req.method() == hyper::Method::POST {
+                            if let Some(rest) = admin_path.strip_prefix("/admin/backends/") {
+                                if let Some(id_enc) = rest.strip_suffix("/reset") {
+                                    let backend = percent_decode(id_enc);
+                                    let was_tracked = proxy.circuit_breaker.reset(&backend);
+                                    let state = proxy.circuit_breaker.state_of(&backend);
+                                    info!(backend = %backend, was_tracked,
+                                        "circuit breaker reset via admin API");
+                                    let body = serde_json::json!({
+                                        "status": "reset",
+                                        "backend": backend,
+                                        "was_open": was_tracked,
+                                        "circuit_state": state,
+                                    });
+                                    return Ok(json_resp(200, body.to_string()));
+                                }
+                            }
+                        }
+
                         match admin_path.as_str() {
                             "/admin/routes" => {
                                 let hot = hot_admin.load();
@@ -433,10 +521,28 @@ async fn main() {
                                 return Ok(resp);
                             }
                             "/admin/backends" => {
+                                // Health (alive/dead) from the active health checker plus
+                                // each backend's circuit-breaker state and failure count.
                                 let health = proxy.backend_selector.health_status();
-                                let entries: Vec<serde_json::Value> = health.iter()
-                                    .map(|(url, alive)| serde_json::json!({"url": url, "alive": alive}))
-                                    .collect();
+                                let cb = proxy.circuit_breaker.status();
+                                let cb_by_url: std::collections::HashMap<&str, &proxy::CircuitStatus> =
+                                    cb.iter().map(|c| (c.backend.as_str(), c)).collect();
+                                // Union of all known backend URLs (health-tracked ∪ CB-tracked).
+                                let mut urls: std::collections::BTreeSet<String> = health.keys().cloned().collect();
+                                for c in &cb { urls.insert(c.backend.clone()); }
+                                let entries: Vec<serde_json::Value> = urls.iter().map(|url| {
+                                    let alive = *health.get(url).unwrap_or(&true);
+                                    let (cb_state, failures) = match cb_by_url.get(url.as_str()) {
+                                        Some(c) => (c.state.as_str(), c.failures),
+                                        None => ("closed", 0),
+                                    };
+                                    serde_json::json!({
+                                        "url": url,
+                                        "alive": alive,
+                                        "circuit_state": cb_state,
+                                        "circuit_failures": failures,
+                                    })
+                                }).collect();
                                 let body = serde_json::to_string(&entries).unwrap_or_else(|_| "[]".into());
                                 let resp = hyper::Response::builder()
                                     .status(200)
@@ -450,7 +556,7 @@ async fn main() {
                                 match store_admin.reload() {
                                     Ok(new_config) => {
                                         let routes = new_config.routing.len();
-                                        config_overlay::rebuild_hot(&new_config, &hot_admin);
+                                        config_overlay::rebuild_hot_with_dynamic(&new_config, &hot_admin, &dynamic_admin);
                                         info!(routes = routes, "config reloaded via admin API");
                                         return Ok(json_resp(200, format!(r#"{{"status":"reloaded","routes":{}}}"#, routes)));
                                     }
@@ -485,7 +591,7 @@ async fn main() {
                                 };
                                 match store_admin.apply_patch(patch) {
                                     Ok((effective, result)) => {
-                                        config_overlay::rebuild_hot(&effective, &hot_admin);
+                                        config_overlay::rebuild_hot_with_dynamic(&effective, &hot_admin, &dynamic_admin);
                                         info!(
                                             hot = ?result.hot_applied,
                                             restart = ?result.requires_restart,
@@ -508,7 +614,7 @@ async fn main() {
                             "/admin/config/overlay" if req.method() == hyper::Method::DELETE => {
                                 match store_admin.clear_overlay() {
                                     Ok(effective) => {
-                                        config_overlay::rebuild_hot(&effective, &hot_admin);
+                                        config_overlay::rebuild_hot_with_dynamic(&effective, &hot_admin, &dynamic_admin);
                                         info!("config overlay cleared via admin API");
                                         return Ok(json_resp(200, r#"{"status":"overlay cleared"}"#.into()));
                                     }

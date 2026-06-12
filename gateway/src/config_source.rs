@@ -634,10 +634,15 @@ impl ConfigSource for HttpPollingSource {
 ///
 /// Each source's watch() sends Vec<RouteEntry> on change.
 /// The watcher merges dynamic routes with static YAML routes and updates HotState.
+/// `dynamic` is a shared snapshot of the routes contributed by config sources;
+/// the merge task publishes the latest dynamic routes there so a SIGHUP / admin
+/// reload (which rebuilds HotState from static YAML) can re-merge them instead
+/// of dropping them. See [`crate::config_overlay::rebuild_hot_with_dynamic`].
 pub fn spawn_watchers(
     sources: Vec<Box<dyn ConfigSource>>,
     hot: Arc<arc_swap::ArcSwap<crate::proxy::HotState>>,
     config: &crate::config::GatewayConfig,
+    dynamic: crate::config_overlay::DynamicRoutes,
 ) {
     use crate::proxy::HotState;
 
@@ -665,13 +670,12 @@ pub fn spawn_watchers(
         let static_cors = static_cors.clone();
         let trusted_proxies = trusted_proxies.clone();
         let error_pages_dir = error_pages_dir.clone();
+        let dynamic = dynamic.clone();
 
         tokio::spawn(async move {
             while let Some(dynamic_routes) = rx.recv().await {
-                // Start from static routes
-                let mut merged = (*static_routing).clone();
-
-                // Merge dynamic routes (dynamic overwrites static on host conflict)
+                // Convert this source's routes into RouteInfo entries.
+                let mut this_source: crate::proxy::RoutingTable = std::collections::HashMap::new();
                 for route in &dynamic_routes {
                     let info = crate::proxy::RouteInfo {
                         backends: route.all_backends(),
@@ -691,7 +695,24 @@ pub fn spawn_watchers(
                         cache: route.cache.clone(),
                         backend_tls: route.backend_tls.clone(),
                     };
-                    merged.insert(route.host.to_lowercase(), info);
+                    this_source.insert(route.host.to_lowercase(), info);
+                }
+
+                // Publish the union of all config-source routes into the shared
+                // snapshot so SIGHUP / admin reload can re-merge them. We merge
+                // this source's routes into the existing snapshot (multiple
+                // sources accumulate; last writer wins per host).
+                let mut all_dynamic = (*dynamic.load_full()).clone();
+                for (host, info) in &this_source {
+                    all_dynamic.insert(host.clone(), info.clone());
+                }
+                let dynamic_total = all_dynamic.len();
+                dynamic.store(Arc::new(all_dynamic.clone()));
+
+                // Rebuild HotState = static ⊕ all dynamic (dynamic wins on host).
+                let mut merged = (*static_routing).clone();
+                for (host, info) in &all_dynamic {
+                    merged.insert(host.clone(), info.clone());
                 }
 
                 let route_count = merged.len();
@@ -707,6 +728,7 @@ pub fn spawn_watchers(
                 info!(
                     source = %name,
                     dynamic = dynamic_routes.len(),
+                    dynamic_total = dynamic_total,
                     total = route_count,
                     "routes merged from config source"
                 );
