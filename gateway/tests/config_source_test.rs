@@ -76,6 +76,184 @@ fn services_json_invalid_json_returns_error() {
     assert!(result.is_err());
 }
 
+// ─── Console (volta-platform) format (#16) ─────────────
+
+const CONSOLE_FIXTURE: &str = include_str!("fixtures/console_services.json");
+
+#[test]
+fn console_format_converts_seed_entries() {
+    let source = volta_gateway::config_source::ServicesJsonSource::new("/dummy", "192.168.1.50");
+    let routes = source.parse_services(CONSOLE_FIXTURE).unwrap();
+
+    // 5 services in fixture: 2 skipped (nexus prod.enabled=false,
+    // intellij-xpra cloudflare.enabled=false) → 3 routes.
+    assert_eq!(routes.len(), 3, "disabled services must be skipped");
+
+    let by_host = |h: &str| routes.iter().find(|r| r.host == h)
+        .unwrap_or_else(|| panic!("missing route {h}"));
+
+    // netmahg: public via top-level public + access.visibility=public.
+    let mahjong = by_host("mahjong.unlaxer.org");
+    assert_eq!(mahjong.backend.as_ref().unwrap(), "http://192.168.1.50:7074");
+    assert!(mahjong.public);
+    assert!(mahjong.app_id.is_none(), "public service gets no app_id");
+
+    // work-os: authenticated (cloudflare.authentication) + not public → app_id = key.
+    let work = by_host("work.unlaxer.org");
+    assert_eq!(work.backend.as_ref().unwrap(), "http://192.168.1.50:5043");
+    assert!(!work.public);
+    assert_eq!(work.app_id.as_deref(), Some("work-os"));
+
+    // japanpost-history: explicit env.host overrides default backend host,
+    // public, and an auth bypass path.
+    let post = by_host("postcode.unlaxer.org");
+    assert_eq!(post.backend.as_ref().unwrap(), "http://192.168.1.50:7073");
+    assert!(post.public);
+    assert_eq!(post.auth_bypass_paths.len(), 1);
+    assert_eq!(post.auth_bypass_paths[0].prefix, "/api/lookup/");
+}
+
+#[test]
+fn console_format_skips_disabled_without_failing() {
+    let source = volta_gateway::config_source::ServicesJsonSource::new("/dummy", "10.0.0.1");
+    // nexus (prod.enabled=false) and intellij-xpra (cloudflare.enabled=false)
+    // must not appear, but the whole parse must still succeed.
+    let routes = source.parse_services(CONSOLE_FIXTURE).unwrap();
+    assert!(routes.iter().all(|r| r.host != "nexus.unlaxer.org"));
+    assert!(!routes.is_empty());
+}
+
+#[test]
+fn console_format_missing_port_is_skipped_not_fatal() {
+    let source = volta_gateway::config_source::ServicesJsonSource::new("/dummy", "10.0.0.1");
+    // A service with a prod env but no port can't form a backend → skip,
+    // while the convertible neighbour still comes through.
+    let json = r#"{
+        "broken": {
+            "environments": { "prod": { "runtime": "systemd" } },
+            "cloudflare": { "enabled": true, "hostname": "broken.unlaxer.org" }
+        },
+        "ok": {
+            "environments": { "prod": { "port": 9000 } },
+            "cloudflare": { "enabled": true, "hostname": "ok.unlaxer.org" }
+        }
+    }"#;
+    let routes = source.parse_services(json).unwrap();
+    assert_eq!(routes.len(), 1);
+    assert_eq!(routes[0].host, "ok.unlaxer.org");
+}
+
+#[test]
+fn console_format_per_env_hostname_takes_precedence() {
+    let source = volta_gateway::config_source::ServicesJsonSource::new("/dummy", "10.0.0.1");
+    let json = r#"{
+        "svc": {
+            "environments": { "prod": { "port": 8080 } },
+            "cloudflare": {
+                "enabled": true,
+                "hostname": "fallback.unlaxer.org",
+                "hostnames": { "prod": "prod.unlaxer.org" }
+            }
+        }
+    }"#;
+    let routes = source.parse_services(json).unwrap();
+    assert_eq!(routes.len(), 1);
+    assert_eq!(routes[0].host, "prod.unlaxer.org");
+}
+
+#[test]
+fn legacy_array_format_still_works() {
+    // The array format must keep parsing unchanged after console support.
+    let source = volta_gateway::config_source::ServicesJsonSource::new("/dummy", "192.168.1.50");
+    let json = r#"[{"name": "console", "port": 3789}]"#;
+    let routes = source.parse_services(json).unwrap();
+    assert_eq!(routes.len(), 1);
+    assert_eq!(routes[0].host, "console.unlaxer.org");
+    assert_eq!(routes[0].backend.as_ref().unwrap(), "http://192.168.1.50:3789");
+}
+
+// ─── services.json watch / hot-reload (#16) ────────────
+
+#[tokio::test]
+async fn services_json_watch_initial_load_and_reload() {
+    use std::io::Write;
+    use tokio::sync::mpsc;
+
+    // Write a temp services.json (console format).
+    let dir = std::env::temp_dir().join(format!("volta-watch-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("services.json");
+    let write = |body: &str| {
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(body.as_bytes()).unwrap();
+    };
+    write(r#"{"a": {"environments": {"prod": {"port": 1000}},
+        "cloudflare": {"enabled": true, "hostname": "a.unlaxer.org"}}}"#);
+
+    let source = volta_gateway::config_source::ServicesJsonSource::new(
+        path.to_str().unwrap(), "127.0.0.1").with_watch(true);
+
+    let (tx, mut rx) = mpsc::channel(4);
+    let handle = tokio::spawn(async move {
+        use volta_gateway::config_source::ConfigSource;
+        source.watch(tx).await;
+    });
+
+    // Initial load arrives immediately.
+    let first = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        .await.expect("initial load timed out").unwrap();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].host, "a.unlaxer.org");
+
+    // Modify the file → poll-based watch picks it up.
+    // Sleep past the mtime granularity / poll interval before rewriting.
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    write(r#"{
+        "a": {"environments": {"prod": {"port": 1000}},
+            "cloudflare": {"enabled": true, "hostname": "a.unlaxer.org"}},
+        "b": {"environments": {"prod": {"port": 2000}},
+            "cloudflare": {"enabled": true, "hostname": "b.unlaxer.org"}}
+    }"#);
+
+    let second = tokio::time::timeout(std::time::Duration::from_secs(8), rx.recv())
+        .await.expect("reload timed out").unwrap();
+    assert_eq!(second.len(), 2, "watch should pick up the added service");
+
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn services_json_no_watch_loads_once_then_stops() {
+    use std::io::Write;
+    use tokio::sync::mpsc;
+
+    let dir = std::env::temp_dir().join(format!("volta-nowatch-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("services.json");
+    {
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(br#"[{"name": "x", "port": 1234}]"#).unwrap();
+    }
+
+    // Default (watch=false): one push, then the watch task returns.
+    let source = volta_gateway::config_source::ServicesJsonSource::new(
+        path.to_str().unwrap(), "127.0.0.1");
+
+    let (tx, mut rx) = mpsc::channel(4);
+    {
+        use volta_gateway::config_source::ConfigSource;
+        source.watch(tx).await; // returns after the single initial load
+    }
+
+    let first = rx.recv().await.unwrap();
+    assert_eq!(first.len(), 1);
+    // Channel closed (sender dropped) → no further messages.
+    assert!(rx.recv().await.is_none());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ─── Docker Labels Parsing (#15) ───────────────────────
 
 #[test]

@@ -1,0 +1,52 @@
+{
+  "netmahg": {
+    "name": "NetMahg",
+    "type": "node",
+    "source": { "type": "local", "path": "netmahg" },
+    "public": true,
+    "access": { "visibility": "public" },
+    "environments": {
+      "prod": { "runtime": "systemd", "enabled": true, "port": 7074 }
+    },
+    "cloudflare": { "enabled": true, "hostname": "mahjong.unlaxer.org" }
+  },
+  "work-os": {
+    "name": "Work OS",
+    "type": "node",
+    "source": { "type": "local", "path": "work-os" },
+    "environments": {
+      "prod": { "runtime": "systemd", "port": 5043 }
+    },
+    "cloudflare": {
+      "enabled": true,
+      "hostname": "work.unlaxer.org",
+      "authentication": { "primary": { "type": "email" } }
+    }
+  },
+  "japanpost-history": {
+    "name": "JapanPost History",
+    "type": "node",
+    "source": { "type": "local", "path": "japanpost-history" },
+    "public": true,
+    "auth_bypass_paths": ["/api/lookup/"],
+    "environments": {
+      "prod": { "runtime": "systemd", "port": 7073, "host": "192.168.1.50" }
+    },
+    "cloudflare": { "enabled": true, "hostname": "postcode.unlaxer.org" }
+  },
+  "nexus": {
+    "name": "Nexus",
+    "type": "docker",
+    "source": { "type": "docker", "url": "sonatype/nexus3" },
+    "environments": {
+      "prod": { "runtime": "docker", "enabled": false, "port": 8081 }
+    },
+    "cloudflare": { "enabled": true, "hostname": "nexus.unlaxer.org" }
+  },
+  "intellij-xpra": {
+    "name": "IntelliJ Xpra",
+    "type": "docker",
+    "source": { "type": "docker", "url": "example/intellij" },
+    "cloudflare": { "enabled": false }
+  }
+}

@@ -49,7 +49,9 @@ fn default_poll_interval() -> u64 { 30 }
 
 // ─── #16: services.json Source ──────────────────────────
 
-/// services.json format (volta-platform compatible).
+/// Legacy flat-array services.json format (gateway-native).
+///
+/// `[ {"name": "console", "port": 3789}, ... ]`
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ServiceEntry {
     pub name: String,
@@ -69,18 +71,220 @@ pub struct ServiceEntry {
     pub app_id: Option<String>,
 }
 
+// ─── Console (volta-platform) services.json format ──────
+//
+// The real console config (`volta-platform/config/services.json`) is a keyed
+// object: `{ "<service-key>": { ...service... }, ... }`. We only consume the
+// subset of fields needed to build a route, and tolerate every other field via
+// `#[serde(default)]` so future console additions don't break the gateway.
+
+/// One service in the console keyed-object format.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConsoleService {
+    #[serde(default)]
+    pub environments: HashMap<String, ConsoleEnvironment>,
+    #[serde(default)]
+    pub cloudflare: Option<ConsoleCloudflare>,
+    #[serde(default)]
+    pub public: Option<bool>,
+    #[serde(default)]
+    pub access: Option<ConsoleAccess>,
+    #[serde(default)]
+    pub auth_bypass_paths: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConsoleEnvironment {
+    /// Whether this environment is active. Absent = active (services in the
+    /// seed routinely omit it while clearly being live).
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub port: Option<u16>,
+    /// Optional literal host/IP for the backend (schema's legacy `host`).
+    #[serde(default)]
+    pub host: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConsoleCloudflare {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub hostname: Option<String>,
+    /// Per-environment hostnames; takes precedence over `hostname`.
+    #[serde(default)]
+    pub hostnames: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub auth_required: Option<bool>,
+    #[serde(default)]
+    pub authentication: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConsoleAccess {
+    #[serde(default)]
+    pub visibility: Option<String>,
+    #[serde(default)]
+    pub public: Option<bool>,
+}
+
 pub struct ServicesJsonSource {
     path: String,
+    /// Default backend host used when a service does not declare an explicit
+    /// `environments.<env>.host`.
     prod_host: String,
+    /// Which environment key to read from the console format (default `prod`).
+    prod_env: String,
+    /// When true, keep polling the file for changes after the initial load.
+    /// Default false — a single load at startup, no hot-reload.
+    watch: bool,
 }
 
 impl ServicesJsonSource {
     pub fn new(path: &str, prod_host: &str) -> Self {
-        Self { path: path.to_string(), prod_host: prod_host.to_string() }
+        Self::with_env(path, prod_host, "prod")
     }
 
+    pub fn with_env(path: &str, prod_host: &str, prod_env: &str) -> Self {
+        Self {
+            path: path.to_string(),
+            prod_host: prod_host.to_string(),
+            prod_env: prod_env.to_string(),
+            watch: false,
+        }
+    }
+
+    /// Enable file-watch (poll-based hot reload).
+    pub fn with_watch(mut self, watch: bool) -> Self {
+        self.watch = watch;
+        self
+    }
+
+    /// Parse services.json. Auto-detects the format:
+    ///   - JSON object → console (volta-platform) keyed format
+    ///   - JSON array  → legacy flat-array format
     pub fn parse_services(&self, content: &str) -> Result<Vec<RouteEntry>, String> {
-        let services: Vec<ServiceEntry> = serde_json::from_str(content)
+        let value: serde_json::Value = serde_json::from_str(content)
+            .map_err(|e| format!("services.json parse error: {}", e))?;
+
+        match value {
+            serde_json::Value::Object(_) => self.parse_console(value),
+            serde_json::Value::Array(_) => self.parse_legacy_array(value),
+            _ => Err("services.json must be a JSON object (console) or array (legacy)".into()),
+        }
+    }
+
+    /// Console keyed-object format. Unconvertible entries are warn-logged and
+    /// skipped so one bad service never takes down the whole table.
+    fn parse_console(&self, value: serde_json::Value) -> Result<Vec<RouteEntry>, String> {
+        let map: HashMap<String, ConsoleService> = serde_json::from_value(value)
+            .map_err(|e| format!("console services.json parse error: {}", e))?;
+
+        let mut routes = Vec::new();
+        for (key, svc) in &map {
+            match self.console_to_route(key, svc) {
+                Ok(Some(route)) => routes.push(route),
+                Ok(None) => { /* intentionally skipped (disabled) — logged inside */ }
+                Err(reason) => {
+                    warn!(source = "services-json", service = %key, reason = %reason,
+                        "skipping service (not convertible to a route)");
+                }
+            }
+        }
+        // Stable ordering for deterministic reloads/tests.
+        routes.sort_by(|a, b| a.host.cmp(&b.host));
+        Ok(routes)
+    }
+
+    /// Convert one console service into a route.
+    /// `Ok(None)` = deliberately skipped (disabled); `Err` = could not convert.
+    fn console_to_route(&self, key: &str, svc: &ConsoleService) -> Result<Option<RouteEntry>, String> {
+        let cf = svc.cloudflare.as_ref();
+
+        // cloudflare.enabled == false → not exposed through the gateway.
+        if let Some(cf) = cf {
+            if cf.enabled == Some(false) {
+                info!(source = "services-json", service = %key,
+                    "skip: cloudflare.enabled=false");
+                return Ok(None);
+            }
+        }
+
+        // prod environment: required for a backend.
+        let env = svc.environments.get(&self.prod_env)
+            .ok_or_else(|| format!("no '{}' environment", self.prod_env))?;
+
+        if env.enabled == Some(false) {
+            info!(source = "services-json", service = %key,
+                env = %self.prod_env, "skip: environment enabled=false");
+            return Ok(None);
+        }
+
+        let port = env.port.ok_or_else(|| "no port in environment".to_string())?;
+
+        // Route host: cloudflare.hostnames[env] > cloudflare.hostname.
+        let host = cf
+            .and_then(|cf| {
+                cf.hostnames.as_ref()
+                    .and_then(|m| m.get(&self.prod_env).cloned())
+                    .or_else(|| cf.hostname.clone())
+            })
+            .ok_or_else(|| "no cloudflare.hostname".to_string())?;
+
+        // Backend host: explicit env.host wins, else the configured default.
+        let backend_host = env.host.clone().unwrap_or_else(|| self.prod_host.clone());
+        let backend = format!("http://{}:{}", backend_host, port);
+
+        // public: top-level `public` OR access.visibility == "public" OR access.public.
+        let public = svc.public == Some(true)
+            || svc.access.as_ref().is_some_and(|a| {
+                a.public == Some(true)
+                    || a.visibility.as_deref() == Some("public")
+            });
+
+        // app_id (X-Volta-App-Id for ForwardAuth): set the service key when the
+        // service is authenticated and not public.
+        let authenticated = cf.is_some_and(|cf| {
+            cf.authentication.is_some() || cf.auth_required == Some(true)
+        });
+        let app_id = if authenticated && !public {
+            Some(key.to_string())
+        } else {
+            None
+        };
+
+        let bypass_paths = svc.auth_bypass_paths.clone().unwrap_or_default()
+            .into_iter()
+            .map(|p| crate::config::BypassPath { prefix: p, backend: None })
+            .collect();
+
+        Ok(Some(RouteEntry {
+            host,
+            backend: Some(backend),
+            backends: vec![],
+            app_id,
+            ip_allowlist: vec![],
+            cors_origins: vec![],
+            path_prefix: None,
+            strip_prefix: None,
+            add_prefix: None,
+            request_headers: None,
+            response_headers: None,
+            geo_allowlist: vec![],
+            geo_denylist: vec![],
+            public,
+            auth_bypass_paths: bypass_paths,
+            mirror: None,
+            timeout_secs: None,
+            cache: None,
+            backend_tls: None,
+        }))
+    }
+
+    /// Legacy flat-array format (gateway-native).
+    fn parse_legacy_array(&self, value: serde_json::Value) -> Result<Vec<RouteEntry>, String> {
+        let services: Vec<ServiceEntry> = serde_json::from_value(value)
             .map_err(|e| format!("services.json parse error: {}", e))?;
 
         let mut routes = Vec::new();
@@ -134,11 +338,30 @@ impl ConfigSource for ServicesJsonSource {
     }
 
     async fn watch(&self, tx: mpsc::Sender<Vec<RouteEntry>>) {
-        // Simple poll-based watch (inotify would be better but requires extra dep)
+        // Initial load — always push once so routes appear at startup even when
+        // file-watching is disabled.
+        match self.load() {
+            Ok(routes) => {
+                info!(source = "services-json", routes = routes.len(), "initial load");
+                if tx.send(routes).await.is_err() { return; }
+            }
+            Err(e) => warn!(source = "services-json", error = %e, "initial load failed"),
+        }
+
+        // Hot-reload is opt-in (`config_sources[].watch: true`). Poll-based,
+        // same low-risk interval approach as HTTP polling — avoids adding the
+        // `notify` crate as a dependency.
+        if !self.watch {
+            return;
+        }
+
         let path = self.path.clone();
         let prod_host = self.prod_host.clone();
+        let prod_env = self.prod_env.clone();
         let mut last_modified = std::fs::metadata(&path).ok()
             .and_then(|m| m.modified().ok());
+
+        info!(source = "services-json", path = %path, "watching for changes (poll)");
 
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -148,7 +371,7 @@ impl ConfigSource for ServicesJsonSource {
 
             if current != last_modified {
                 last_modified = current;
-                let source = ServicesJsonSource::new(&path, &prod_host);
+                let source = ServicesJsonSource::with_env(&path, &prod_host, &prod_env);
                 match source.load() {
                     Ok(routes) => {
                         info!(source = "services-json", routes = routes.len(), "config changed");
@@ -501,8 +724,12 @@ pub fn create_sources(entries: &[ConfigSourceEntry]) -> Vec<Box<dyn ConfigSource
             "services-json" => {
                 let path = entry.path.as_deref().unwrap_or("services.json");
                 let host = entry.prod_host.as_deref().unwrap_or("localhost");
-                sources.push(Box::new(ServicesJsonSource::new(path, host)));
-                info!(source = "services-json", path = path, "config source registered");
+                let env = entry.prod_env.as_deref().unwrap_or("prod");
+                sources.push(Box::new(
+                    ServicesJsonSource::with_env(path, host, env).with_watch(entry.watch),
+                ));
+                info!(source = "services-json", path = path, prod_env = env,
+                    watch = entry.watch, "config source registered");
             }
             "docker-labels" => {
                 let socket = entry.docker_socket.as_deref().unwrap_or("/var/run/docker.sock");
