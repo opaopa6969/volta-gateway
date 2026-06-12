@@ -4974,6 +4974,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "subtle",
  "tokio",
  "tokio-rustls",
  "tokio-test",

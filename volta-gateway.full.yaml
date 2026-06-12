@@ -13,6 +13,11 @@ auth:
   timeout_ms: 500                   # Auth request timeout
   pool_max_idle: 32                 # Connection pool idle per host
 
+admin:                              # BT-SEC-7: Admin API auth (loopback-only)
+  # Bearer token required for all /admin/* requests. Env VOLTA_ADMIN_TOKEN
+  # overrides this value. If unset: reads stay loopback-only, writes → 403.
+  token: REPLACE_WITH_LONG_RANDOM_TOKEN
+
 routing:
   - host: app.example.com       # Hostname (lowercased internally)
     backend: http://localhost:3000  # Single backend

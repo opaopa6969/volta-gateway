@@ -84,6 +84,9 @@ pub struct GatewayConfig {
     /// #55: Binding configuration (Layer 4).
     #[serde(default)]
     pub binding: BindingConfig,
+    /// BT-SEC-7: Admin API authentication.
+    #[serde(default)]
+    pub admin: AdminConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -390,6 +393,34 @@ pub struct LoggingConfig {
     pub level: String,
     #[serde(default = "default_log_format")]
     pub format: String,
+}
+
+/// BT-SEC-7: Admin API authentication config.
+///
+/// When `token` (or env `VOLTA_ADMIN_TOKEN`) is set, every `/admin/*` request
+/// must carry a matching `Authorization: Bearer <token>` header. When unset,
+/// the admin API stays loopback-only and all mutating (non-GET) endpoints are
+/// rejected with 403.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[allow(dead_code)]
+pub struct AdminConfig {
+    /// Bearer token required for /admin/* requests. The env var
+    /// `VOLTA_ADMIN_TOKEN` takes precedence over this YAML value.
+    #[serde(default)]
+    pub token: Option<String>,
+}
+
+impl AdminConfig {
+    /// Resolve the effective admin token. `VOLTA_ADMIN_TOKEN` (if non-empty)
+    /// overrides the YAML value. Returns `None` when neither is set.
+    pub fn effective_token(&self) -> Option<String> {
+        if let Ok(env_tok) = std::env::var("VOLTA_ADMIN_TOKEN") {
+            if !env_tok.is_empty() {
+                return Some(env_tok);
+            }
+        }
+        self.token.as_ref().filter(|t| !t.is_empty()).cloned()
+    }
 }
 
 impl GatewayConfig {

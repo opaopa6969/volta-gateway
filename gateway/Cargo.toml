@@ -57,6 +57,9 @@ rustls-pemfile = "2"
 # Async trait
 async-trait = "0.1"
 
+# BT-SEC-7: constant-time comparison for admin token
+subtle = "2"
+
 # JSON (for config sources)
 serde_json = "1"
 

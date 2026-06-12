@@ -171,7 +171,7 @@ Java commit that landed in Rust: [`auth-server/docs/sync-from-java-2026-04-14.md
 | Backend health check | Auto-detect dead backends, skip in LB |
 | mTLS backend | Mutual TLS for internal zero-trust |
 | Backpressure | Global max concurrent requests (Semaphore) |
-| Admin API | /admin/routes, /admin/backends, /admin/stats, /admin/config, /admin/reload, /admin/drain |
+| Admin API | /admin/routes, /admin/backends, /admin/stats, /admin/config, /admin/reload, /admin/drain — loopback-only + Bearer token auth (`admin.token` / `VOLTA_ADMIN_TOKEN`) |
 | Config validation | `volta-gateway --validate config.yaml` for CI/CD |
 | L4 proxy | TCP/UDP port forwarding |
 | Metrics | Prometheus /metrics + latency histogram (8 buckets) |
@@ -188,6 +188,11 @@ server:
 auth:
   volta_url: http://localhost:7070   # volta-auth-proxy
   timeout_ms: 500                    # fail-closed: volta down → 502
+
+admin:
+  # Bearer token for /admin/* (loopback-only). Env VOLTA_ADMIN_TOKEN overrides this.
+  # If unset: read endpoints stay loopback-only; mutating endpoints return 403.
+  token: REPLACE_WITH_LONG_RANDOM_TOKEN
 
 routing:
   - host: app.example.com
@@ -212,6 +217,7 @@ Full config reference: `volta-gateway.full.yaml`
 | **SM VALIDATED state** | Host header poisoning, path traversal, oversized requests |
 | **Auth check** | Unauthenticated access (fail-closed: volta down → 502) |
 | **Response strip** | Backend X-Volta-* header forgery (headers stripped from response) |
+| **Admin API auth** (BT-SEC-7) | Unauthorized config/control access — loopback-only + constant-time Bearer token (`admin.token` / `VOLTA_ADMIN_TOKEN`); no token ⇒ writes disabled (403) |
 
 ## Architecture
 

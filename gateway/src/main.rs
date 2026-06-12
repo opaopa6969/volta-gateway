@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
+mod admin_auth;
 mod config;
 mod config_overlay;
 mod state;
@@ -118,6 +119,17 @@ async fn main() {
     let metrics = Arc::new(metrics::Metrics::new());
     let plugin_mgr = Arc::new(plugin::PluginManager::load_from_config(&config.plugins));
     let proxy = ProxyService::new(volta.clone(), hot.clone(), metrics.clone(), plugin_mgr);
+
+    // BT-SEC-7: Admin API auth. When a token is configured (YAML or env
+    // VOLTA_ADMIN_TOKEN), every /admin/* request must present a matching
+    // `Authorization: Bearer <token>`. When unset, the admin API stays
+    // loopback-only and all mutating (non-GET) endpoints are disabled.
+    let admin_token: Arc<Option<String>> = Arc::new(config.admin.effective_token());
+    if admin_token.is_some() {
+        info!("admin API authentication enabled (Bearer token required)");
+    } else {
+        warn!("admin token未設定のため書き込みAPI無効 (set admin.token or VOLTA_ADMIN_TOKEN to enable mutating /admin/* endpoints)");
+    }
 
     info!(port = config.server.port, "volta-gateway starting");
 
@@ -270,6 +282,7 @@ async fn main() {
         let hot_admin = hot.clone();
         let shutdown_admin = shutdown.clone();
         let store_admin = config_store.clone();
+        let admin_token = admin_token.clone();
 
         in_flight.fetch_add(1, Ordering::SeqCst);
         metrics.active_connections.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -280,6 +293,7 @@ async fn main() {
             let hot_admin2 = hot_admin.clone();
             let shutdown_admin2 = shutdown_admin.clone();
             let store_admin2 = store_admin.clone();
+            let admin_token2 = admin_token.clone();
             let service = service_fn(move |req: Request<Incoming>| {
                 let proxy = proxy.clone();
                 let volta_health = volta_health.clone();
@@ -287,6 +301,7 @@ async fn main() {
                 let hot_admin = hot_admin2.clone();
                 let shutdown_admin = shutdown_admin2.clone();
                 let store_admin = store_admin2.clone();
+                let admin_token = admin_token2.clone();
                 let addr = remote_addr;
                 async move {
                     // HTTP → HTTPS redirect (GW-29/GW-38: skip for healthz, metrics, ACME challenge)
@@ -367,6 +382,29 @@ async fn main() {
                                 .header("content-type", "application/json")
                                 .body(Full::new(Bytes::from(body)).map_err(|e| match e {}).boxed())
                                 .unwrap()
+                        }
+
+                        // BT-SEC-7: Authenticate /admin/* requests.
+                        let is_mutating = req.method() != hyper::Method::GET;
+                        let auth_header = req.headers()
+                            .get(hyper::header::AUTHORIZATION)
+                            .and_then(|v| v.to_str().ok());
+                        match admin_auth::decide(admin_token.as_ref().as_deref(), auth_header, is_mutating) {
+                            admin_auth::AdminAuth::Allow => {}
+                            admin_auth::AdminAuth::Unauthorized => {
+                                warn!(path = %req.uri().path(), "admin API: unauthorized (bad/missing Bearer token)");
+                                let resp = hyper::Response::builder()
+                                    .status(401)
+                                    .header("content-type", "application/json")
+                                    .header("www-authenticate", "Bearer")
+                                    .body(Full::new(Bytes::from(r#"{"error":"unauthorized"}"#)).map_err(|e| match e {}).boxed())
+                                    .unwrap();
+                                return Ok(resp);
+                            }
+                            admin_auth::AdminAuth::WriteDisabled => {
+                                warn!(path = %req.uri().path(), "admin API: write rejected (admin token未設定)");
+                                return Ok(json_resp(403, r#"{"error":"mutating admin API disabled: configure admin.token or VOLTA_ADMIN_TOKEN"}"#.into()));
+                            }
                         }
 
                         // Owned path so PATCH arms can consume the request body.

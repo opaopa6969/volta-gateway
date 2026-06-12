@@ -170,7 +170,7 @@ Rust 着地点への trace: [`auth-server/docs/sync-from-java-2026-04-14.md`](au
 | Backend ヘルスチェック | dead backend 自動検出・LB スキップ |
 | mTLS backend | 内部 zero-trust 用 mutual TLS |
 | バックプレッシャー | グローバル最大同時リクエスト数 (Semaphore) |
-| Admin API | /admin/routes, /admin/backends, /admin/stats, /admin/config, /admin/reload, /admin/drain |
+| Admin API | /admin/routes, /admin/backends, /admin/stats, /admin/config, /admin/reload, /admin/drain — loopback 限定 + Bearer トークン認証 (`admin.token` / `VOLTA_ADMIN_TOKEN`) |
 | Config 検証 | `volta-gateway --validate config.yaml` (CI/CD 用) |
 | L4 proxy | TCP/UDP ポートフォワーディング |
 | メトリクス | Prometheus /metrics + レイテンシヒストグラム (8 bucket) |
@@ -187,6 +187,11 @@ server:
 auth:
   volta_url: http://localhost:7070   # volta-auth-proxy
   timeout_ms: 500                    # フェイルクローズド: volta ダウン → 502
+
+admin:
+  # /admin/* 用 Bearer トークン (loopback 限定)。環境変数 VOLTA_ADMIN_TOKEN が優先。
+  # 未設定時: 読み取りは loopback 限定で許可、書き込み系は 403 で無効化。
+  token: REPLACE_WITH_LONG_RANDOM_TOKEN
 
 routing:
   - host: app.example.com
