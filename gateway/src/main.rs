@@ -341,7 +341,12 @@ async fn main() {
 
                     // PH2-3: /metrics endpoint
                     if req.uri().path() == "/metrics" {
-                        let body = metrics.render();
+                        // DD-005 縮退運転: auth フォールバック発動回数を追加で公開。
+                        let body = format!(
+                            "{}# HELP auth_degraded_total Auth degraded-mode fallbacks (auth-proxy down, served via in-process JWT)\n# TYPE auth_degraded_total counter\nauth_degraded_total {}\n",
+                            metrics.render(),
+                            volta_health.degraded_total(),
+                        );
                         let resp = hyper::Response::builder()
                             .status(200)
                             .header("content-type", "text/plain; version=0.0.4")

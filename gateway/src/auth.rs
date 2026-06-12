@@ -4,6 +4,7 @@ use hyper_util::rt::TokioExecutor;
 use http_body_util::Empty;
 use bytes::Bytes;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -43,6 +44,11 @@ pub struct VoltaAuthClient {
     session_verifier: Option<volta_auth_core::session::SessionVerifier>,
     /// #51: Public-facing auth URL for redirect allowlist (e.g. https://auth.example.com).
     auth_public_url: Option<String>,
+    /// DD-005 縮退運転: auth-proxy ダウン時に in-process JWT 検証へフォールバックする。
+    /// デフォルト off（fail-closed のまま）。env `VOLTA_AUTH_DEGRADED_MODE=true` で opt-in。
+    degraded_mode: bool,
+    /// 縮退フォールバック発動回数（メトリクス auth_degraded_total）。
+    degraded_total: Arc<AtomicU64>,
 }
 
 impl VoltaAuthClient {
@@ -59,6 +65,29 @@ impl VoltaAuthClient {
             volta_auth_core::session::SessionVerifier::new(jwt, cookie_name)
         });
 
+        // DD-005 縮退運転: env opt-in（config 関連ファイルは別エージェント担当のため env で切替）。
+        // VOLTA_AUTH_DEGRADED_MODE=1/true/yes/on で有効。デフォルト off（安全側）。
+        let degraded_mode = std::env::var("VOLTA_AUTH_DEGRADED_MODE")
+            .map(|v| {
+                let v = v.trim().to_ascii_lowercase();
+                matches!(v.as_str(), "1" | "true" | "yes" | "on")
+            })
+            .unwrap_or(false);
+        if degraded_mode {
+            if session_verifier.is_some() {
+                tracing::warn!(
+                    "auth degraded mode ENABLED: on auth-proxy failure, requests with a valid \
+                     in-process-verifiable session JWT will be allowed (existing sessions only; \
+                     new logins still require auth-proxy)"
+                );
+            } else {
+                tracing::warn!(
+                    "auth degraded mode requested (VOLTA_AUTH_DEGRADED_MODE) but no jwt_secret \
+                     configured — fallback cannot verify sessions, staying fail-closed"
+                );
+            }
+        }
+
         Self {
             client,
             base_url: config.volta_url.clone(),
@@ -68,6 +97,46 @@ impl VoltaAuthClient {
             cache_ttl: Duration::from_secs(5),
             session_verifier,
             auth_public_url: config.auth_public_url.clone(),
+            degraded_mode,
+            degraded_total: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    /// 縮退フォールバック発動回数（メトリクス auth_degraded_total 用）。
+    pub fn degraded_total(&self) -> u64 {
+        self.degraded_total.load(Ordering::Relaxed)
+    }
+
+    /// DD-005 縮退運転のフォールバック判定。
+    /// auth-proxy 由来の `AuthResult::Error` を受け取り、
+    /// - degraded_mode off → そのまま fail-closed（Error を返す）
+    /// - degraded_mode on + 有効セッション JWT → Authenticated（warn ログ + メトリクス）
+    /// - degraded_mode on + JWT 無し/期限切れ/検証失敗 → fail-closed（Error を維持）
+    fn degraded_fallback(&self, host: &str, cookie: Option<&str>, err_msg: String) -> AuthResult {
+        if !self.degraded_mode {
+            return AuthResult::Error(err_msg);
+        }
+        let verifier = match self.session_verifier.as_ref() {
+            Some(v) => v,
+            // jwt_secret 未設定なら検証手段が無いので fail-closed のまま。
+            None => return AuthResult::Error(err_msg),
+        };
+
+        use volta_auth_core::session::SessionResult;
+        match verifier.verify_cookie(cookie) {
+            SessionResult::Valid(headers) => {
+                let n = self.degraded_total.fetch_add(1, Ordering::Relaxed) + 1;
+                tracing::warn!(
+                    host = %host,
+                    auth_error = %err_msg,
+                    auth_degraded_total = n,
+                    "auth degraded fallback: auth-proxy down, allowing request via in-process \
+                     session JWT verify (existing session)"
+                );
+                AuthResult::Authenticated(headers)
+            }
+            // JWT 無し/期限切れ/検証失敗 → auth-proxy 無しでは新規認可できないため fail-closed。
+            _ => AuthResult::Error(err_msg),
         }
     }
 
@@ -193,6 +262,14 @@ impl VoltaAuthClient {
             Err(_) => AuthResult::Error("volta auth timeout".into()),
         };
 
+        // DD-005 縮退運転: auth-proxy がダウン（timeout/5xx → AuthResult::Error）した場合、
+        // degraded_mode が有効かつ有効なセッション JWT を持つリクエストだけ in-process 検証で通す。
+        // JWT 無し/期限切れ/検証失敗は従来通り fail-closed（Error を維持）。
+        let auth_result = match auth_result {
+            AuthResult::Error(msg) => self.degraded_fallback(host, cookie, msg),
+            other => other,
+        };
+
         // #33: Cache successful auth results (5s TTL)
         if matches!(auth_result, AuthResult::Authenticated(_)) {
             let mut cache = self.auth_cache.lock().unwrap();
@@ -245,4 +322,131 @@ fn sanitize_redirect(url: &str, auth_public_url: Option<&str>) -> String {
     }
     // Reject everything else (external sites)
     "/login".to_string()
+}
+
+#[cfg(test)]
+mod degraded_tests {
+    use super::*;
+    use crate::config::AuthConfig;
+    use volta_auth_core::jwt::{JwtIssuer, VoltaClaims};
+
+    const SECRET: &str = "test-secret-key-at-least-32-bytes!!";
+
+    fn empty_claims(sub: &str) -> VoltaClaims {
+        VoltaClaims {
+            sub: sub.into(),
+            email: None, tenant_id: None, tenant_slug: None,
+            roles: None, name: None, app_id: None,
+            iat: None, exp: None,
+        }
+    }
+
+    fn base_config() -> AuthConfig {
+        AuthConfig {
+            volta_url: "http://127.0.0.1:9".into(), // unreachable port → forces HTTP error
+            verify_path: "/auth/verify".into(),
+            timeout_ms: 200,
+            pool_max_idle: 4,
+            jwt_secret: Some(SECRET.into()),
+            cookie_name: Some("__volta_session".into()),
+            auth_public_url: None,
+        }
+    }
+
+    /// Build a client with degraded_mode forced to a known value (bypasses env).
+    fn client(degraded: bool) -> VoltaAuthClient {
+        let mut c = VoltaAuthClient::new(&base_config());
+        c.degraded_mode = degraded;
+        c
+    }
+
+    /// Build a client with jwt_secret = None (no in-process verifier available).
+    fn client_no_secret(degraded: bool) -> VoltaAuthClient {
+        let mut cfg = base_config();
+        cfg.jwt_secret = None;
+        let mut c = VoltaAuthClient::new(&cfg);
+        c.degraded_mode = degraded;
+        c
+    }
+
+    fn valid_cookie() -> String {
+        // JwtIssuer は iat/exp を now/now+ttl で自動設定する → 有効なトークン。
+        let issuer = JwtIssuer::new_hs256(SECRET.as_bytes(), 3600);
+        let mut c = empty_claims("user-degraded");
+        c.email = Some("d@test.com".into());
+        c.roles = Some("MEMBER".into());
+        let token = issuer.issue(&c).unwrap();
+        format!("__volta_session={}; foo=bar", token)
+    }
+
+    // ── degraded_fallback: the core decision ──────────────────────
+
+    #[test]
+    fn down_with_valid_jwt_passes_when_degraded_on() {
+        let c = client(true);
+        let r = c.degraded_fallback("h", Some(&valid_cookie()), "timeout".into());
+        match r {
+            AuthResult::Authenticated(h) => {
+                assert_eq!(h.get("x-volta-user-id").unwrap(), "user-degraded");
+            }
+            other => panic!("expected Authenticated, got {:?}", other),
+        }
+        assert_eq!(c.degraded_total(), 1, "metric must increment");
+    }
+
+    #[test]
+    fn down_without_jwt_is_rejected_when_degraded_on() {
+        let c = client(true);
+        let r = c.degraded_fallback("h", None, "timeout".into());
+        assert!(matches!(r, AuthResult::Error(_)), "no JWT → fail-closed");
+        assert_eq!(c.degraded_total(), 0);
+    }
+
+    #[test]
+    fn down_with_invalid_jwt_is_rejected_when_degraded_on() {
+        let c = client(true);
+        let bad = "__volta_session=not.a.real.jwt";
+        let r = c.degraded_fallback("h", Some(bad), "timeout".into());
+        assert!(matches!(r, AuthResult::Error(_)), "invalid JWT → fail-closed");
+        assert_eq!(c.degraded_total(), 0);
+    }
+
+    #[test]
+    fn degraded_off_always_fail_closed_even_with_valid_jwt() {
+        let c = client(false);
+        let r = c.degraded_fallback("h", Some(&valid_cookie()), "timeout".into());
+        assert!(matches!(r, AuthResult::Error(_)),
+            "degraded_mode off → always fail-closed");
+        assert_eq!(c.degraded_total(), 0);
+    }
+
+    #[test]
+    fn degraded_on_but_no_secret_stays_fail_closed() {
+        // jwt_secret 未設定 → 検証手段が無いので valid に見えても通さない。
+        let c = client_no_secret(true);
+        let r = c.degraded_fallback("h", Some(&valid_cookie()), "timeout".into());
+        assert!(matches!(r, AuthResult::Error(_)));
+        assert_eq!(c.degraded_total(), 0);
+    }
+
+    // ── end-to-end via check(): auth-proxy unreachable ────────────
+    // jwt_secret 設定時、有効 JWT は Phase 0 の早期 in-process 検証で通る
+    // （auth-proxy ダウンに依存せず生存する）ことを確認。
+
+    #[tokio::test]
+    async fn check_valid_session_survives_proxy_down() {
+        let c = client(true);
+        let cookie = valid_cookie();
+        let r = c.check("h", "/", "https", Some(&cookie), None, None).await;
+        assert!(matches!(r, AuthResult::Authenticated(_)),
+            "valid session must survive auth-proxy outage");
+    }
+
+    #[tokio::test]
+    async fn check_no_session_proxy_down_fail_closed_when_off() {
+        let c = client(false);
+        // クッキー無し → Phase 0 は NoSession で fall-through → HTTP 失敗 → degraded off → Error
+        let r = c.check("h", "/", "https", None, None, None).await;
+        assert!(matches!(r, AuthResult::Error(_)));
+    }
 }
