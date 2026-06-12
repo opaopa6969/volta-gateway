@@ -100,11 +100,12 @@ in [`auth-server/README.md`](../auth-server/README.md).
 
 ## 5. Unified binary — zero auth hop
 
-`volta-bin` bundles the gateway and `auth-core` into one process. Auth checks
-become ~1 µs in-process function calls instead of a ~250 µs HTTP roundtrip.
+The `volta-bin/` crate (package name `volta`) bundles the gateway and
+`auth-core` into one process. Auth checks become ~1 µs in-process function
+calls instead of a ~250 µs HTTP roundtrip.
 
 ```bash
-cargo run --release -p volta-bin -- my-config.yaml
+cargo run --release -p volta -- my-config.yaml
 ```
 
 Enable in config:

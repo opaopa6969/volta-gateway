@@ -239,11 +239,11 @@ Traefik users ask this first. Here's why:
 
 **volta-gateway's choice:** one YAML file, validated at startup. Every route, middleware, and backend in one place. `cargo run -- config.yaml` fails fast on invalid config — no silent misrouting.
 
-For teams that need Docker label discovery: [Config Sources](#config-sources) support services.json, Docker labels, and HTTP polling with live reload.
+For teams that need Docker label discovery: the Config Sources feature (see [Configuration](#configuration)) supports services.json, Docker labels, and HTTP polling with live reload.
 
 ## vs Traefik (benchmarked)
 
-Same-condition benchmark: localhost mock auth + mock backend. Traefik v3.4 (Docker) + ForwardAuth vs volta-gateway (native release). [Full results](benches/e2e_results.md)
+Same-condition benchmark: localhost mock auth + mock backend. Traefik v3.4 (Docker) + ForwardAuth vs volta-gateway (native release). [Full results](gateway/benches/e2e_results.md)
 
 | Metric | volta-gateway | Traefik + ForwardAuth | |
 |--------|--------------|----------------------|---|
@@ -391,10 +391,10 @@ cargo test -p volta-auth-core --features postgres -- --ignored
 
 ### Unified binary (volta-bin)
 
-Single binary combining gateway + auth-core. Auth checks run in-process (~1μs) instead of HTTP roundtrip (~250μs).
+Single binary combining gateway + auth-core (the `volta-bin/` crate, package name `volta`). Auth checks run in-process (~1μs) instead of HTTP roundtrip (~250μs).
 
 ```bash
-cargo run -p volta-bin -- config.yaml
+cargo run -p volta -- config.yaml
 ```
 
 ## Requirements

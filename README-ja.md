@@ -238,11 +238,11 @@ Traefik ユーザーが最初に聞く質問。
 
 **volta-gateway の選択:** 1 YAML ファイル、起動時に検証。全ルート・ミドルウェア・バックエンドが一箇所に。不正な config は起動時に即エラー。
 
-Docker label 検出が必要なチームは [Config Sources](#config-sources) で services.json / Docker labels / HTTP polling + ライブリロードに対応。
+Docker label 検出が必要なチームは Config Sources 機能（[設定](#設定)参照）で services.json / Docker labels / HTTP polling + ライブリロードに対応。
 
 ## vs Traefik (実測済み)
 
-同条件ベンチマーク: localhost mock auth + mock backend。Traefik v3.4 (Docker) + ForwardAuth vs volta-gateway (native release)。[詳細結果](benches/e2e_results.md)
+同条件ベンチマーク: localhost mock auth + mock backend。Traefik v3.4 (Docker) + ForwardAuth vs volta-gateway (native release)。[詳細結果](gateway/benches/e2e_results.md)
 
 | 指標 | volta-gateway | Traefik + ForwardAuth | |
 |------|--------------|----------------------|---|

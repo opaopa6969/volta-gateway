@@ -98,12 +98,12 @@ cargo run --release -p volta-gateway -- my-config.yaml
 
 ## 5. 統合バイナリ — 認証ホップ 0
 
-`volta-bin` は gateway と `auth-core` を 1 プロセスに束ねる。認証検査は
+`volta-bin/` クレート（パッケージ名は `volta`）は gateway と `auth-core` を 1 プロセスに束ねる。認証検査は
 ~1 µs の in-process 関数呼び出しになり、HTTP ラウンドトリップ (~250 µs) を
 完全排除。
 
 ```bash
-cargo run --release -p volta-bin -- my-config.yaml
+cargo run --release -p volta -- my-config.yaml
 ```
 
 有効化するには:
