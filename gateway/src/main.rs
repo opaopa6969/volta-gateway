@@ -14,6 +14,7 @@ use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
 mod admin_auth;
+mod lifecycle;
 mod config;
 mod config_overlay;
 mod state;
@@ -258,7 +259,7 @@ async fn main() {
     let mut drain_deadline: Option<tokio::time::Instant> = None;
 
     loop {
-        if shutdown.load(Ordering::SeqCst) {
+        if !lifecycle::should_accept_new(shutdown.load(Ordering::SeqCst)) {
             // GW-15: stop accepting + wait for in-flight connections to finish,
             // bounded by server.drain_timeout_secs (default 30s). /healthz is
             // already returning 503 (see the `shutdown` check in the handler) so
@@ -391,37 +392,17 @@ async fn main() {
                     if req.uri().path() == "/healthz" {
                         // GW-15: during graceful drain, report 503 so the upstream
                         // LB/CF stops sending new traffic while in-flight requests
-                        // finish.
-                        if shutdown_admin.load(Ordering::SeqCst) {
-                            let resp = hyper::Response::builder()
-                                .status(503)
-                                .header("content-type", "application/json")
-                                .body(Full::new(Bytes::from(r#"{"status":"draining","volta":"unknown"}"#)).map_err(|e| match e {}).boxed())
-                                .unwrap();
-                            return Ok::<_, hyper::Error>(resp);
-                        }
-                        let volta_ok = volta_health.health().await;
-                        let body = format!(
-                            r#"{{"status":"{}","volta":"{}"}}"#,
-                            if volta_ok { "ok" } else { "degraded" },
-                            if volta_ok { "ok" } else { "down" },
-                        );
-                        let resp = hyper::Response::builder()
-                            .status(if volta_ok { 200 } else { 503 })
-                            .header("content-type", "application/json")
-                            .body(Full::new(Bytes::from(body)).map_err(|e| match e {}).boxed())
-                            .unwrap();
-                        return Ok::<_, hyper::Error>(resp);
+                        // finish. The auth probe is skipped while draining.
+                        let draining = shutdown_admin.load(Ordering::SeqCst);
+                        let volta_ok = if draining { false } else { volta_health.health().await };
+                        let status = lifecycle::healthz_status(draining, volta_ok);
+                        return Ok::<_, hyper::Error>(lifecycle::healthz_response(status));
                     }
 
                     // PROD-2/3: Admin API (localhost only)
                     if req.uri().path().starts_with("/admin/") {
-                        if !addr.ip().is_loopback() {
-                            let resp = hyper::Response::builder()
-                                .status(403)
-                                .body(Full::new(Bytes::from(r#"{"error":"admin API is localhost only"}"#)).map_err(|e| match e {}).boxed())
-                                .unwrap();
-                            return Ok::<_, hyper::Error>(resp);
+                        if !lifecycle::admin_loopback_allowed(addr.ip().is_loopback()) {
+                            return Ok::<_, hyper::Error>(lifecycle::admin_loopback_denied_response());
                         }
 
                         // Helper for JSON admin responses.

@@ -1,4 +1,5 @@
 pub mod admin_auth;
+pub mod lifecycle;
 pub mod cache;
 pub mod config;
 pub mod config_overlay;
