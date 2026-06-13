@@ -9,6 +9,71 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::config::AuthConfig;
+use volta_auth_core::jwks::{JwksCache, MultiVerifier};
+use volta_auth_core::jwt::JwtError;
+use volta_auth_core::session::SessionResult;
+
+/// In-process session verifier wrapping a [`MultiVerifier`] (RS256 jwks/pem →
+/// HS256). Extracts the session cookie value and maps verification to a
+/// [`SessionResult`], mirroring auth-core's `SessionVerifier` but with the
+/// multi-algorithm chain and optional JWKS async refresh.
+#[derive(Clone)]
+pub struct SessionMultiVerifier {
+    verifier: MultiVerifier,
+    cookie_name: String,
+}
+
+impl SessionMultiVerifier {
+    fn new(verifier: MultiVerifier, cookie_name: &str) -> Self {
+        Self { verifier, cookie_name: cookie_name.to_string() }
+    }
+
+    /// Extract the named cookie value from a `Cookie:` header string.
+    fn extract<'a>(&self, cookie_header: &'a str) -> Option<&'a str> {
+        for pair in cookie_header.split(';') {
+            let pair = pair.trim();
+            if let Some(rest) = pair.strip_prefix(&self.cookie_name) {
+                if let Some(value) = rest.strip_prefix('=') {
+                    return Some(value);
+                }
+            }
+        }
+        None
+    }
+
+    fn map(result: Result<volta_auth_core::jwt::VoltaClaims, JwtError>) -> SessionResult {
+        match result {
+            Ok(claims) => SessionResult::Valid(claims.to_volta_headers()),
+            Err(JwtError::Expired) => SessionResult::Expired,
+            Err(e) => SessionResult::Invalid(e.to_string()),
+        }
+    }
+
+    /// Sync verification — JWKS uses only cached keys (no network). Retained as
+    /// a non-async API for callers/tests; the proxy hot path uses the async
+    /// variant so JWKS can refresh on a kid miss.
+    #[allow(dead_code)]
+    pub fn verify_cookie(&self, cookie_header: Option<&str>) -> SessionResult {
+        let token = match cookie_header.and_then(|c| self.extract(c)) {
+            Some(t) => t,
+            None => return SessionResult::NoSession,
+        };
+        Self::map(self.verifier.verify_sync(token))
+    }
+
+    /// Async verification — JWKS may force-refresh on a kid miss.
+    pub async fn verify_cookie_async(&self, cookie_header: Option<&str>) -> SessionResult {
+        let token = match cookie_header.and_then(|c| self.extract(c)) {
+            Some(t) => t.to_string(),
+            None => return SessionResult::NoSession,
+        };
+        Self::map(self.verifier.verify_async(&token).await)
+    }
+
+    fn jwks(&self) -> Option<&JwksCache> {
+        self.verifier.jwks()
+    }
+}
 
 /// Result of volta /auth/verify call.
 #[derive(Debug, Clone)]
@@ -41,7 +106,8 @@ pub struct VoltaAuthClient {
     auth_cache: Arc<Mutex<HashMap<u64, AuthCacheEntry>>>,
     cache_ttl: Duration,
     /// DD-005 Phase 0: In-process JWT session verifier (optional).
-    session_verifier: Option<volta_auth_core::session::SessionVerifier>,
+    /// RS256(jwks/pem) → HS256(secret) chain, keyed off the session cookie.
+    session_verifier: Option<SessionMultiVerifier>,
     /// #51: Public-facing auth URL for redirect allowlist (e.g. https://auth.example.com).
     auth_public_url: Option<String>,
     /// DD-005 縮退運転: auth-proxy ダウン時に in-process JWT 検証へフォールバックする。
@@ -57,22 +123,62 @@ impl VoltaAuthClient {
             .pool_max_idle_per_host(config.pool_max_idle)
             .build_http();
 
-        // DD-005 Phase 0: Build in-process JWT verifier if secret is configured
-        let session_verifier = config.jwt_secret.as_ref().map(|secret| {
-            let jwt = volta_auth_core::jwt::JwtVerifier::new_hs256(secret.as_bytes());
-            let cookie_name = config.cookie_name.as_deref().unwrap_or("__volta_session");
-            tracing::info!("in-process JWT verify enabled (cookie: {})", cookie_name);
-            volta_auth_core::session::SessionVerifier::new(jwt, cookie_name)
-        });
+        // DD-005: Build the in-process verifier chain (RS256 jwks/pem → HS256).
+        // auth-proxy issues RS256 (iss=volta-auth, aud=volta-apps); HS256 stays
+        // as a backward-compat fallback when a shared secret is configured.
+        let cookie_name = config.cookie_name.as_deref().unwrap_or("__volta_session");
+        let mut builder = MultiVerifier::builder();
+        let mut have_source = false;
+        let mut jwks_url_log: Option<String> = None;
 
-        // DD-005 縮退運転: env opt-in（config 関連ファイルは別エージェント担当のため env で切替）。
-        // VOLTA_AUTH_DEGRADED_MODE=1/true/yes/on で有効。デフォルト off（安全側）。
-        let degraded_mode = std::env::var("VOLTA_AUTH_DEGRADED_MODE")
-            .map(|v| {
-                let v = v.trim().to_ascii_lowercase();
-                matches!(v.as_str(), "1" | "true" | "yes" | "on")
-            })
-            .unwrap_or(false);
+        // RS256 via JWKS (preferred when present).
+        if let Some(url) = config.jwks_url.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            builder = builder.jwks(JwksCache::new(url));
+            have_source = true;
+            jwks_url_log = Some(url.to_string());
+            tracing::info!(jwks_url = url, "in-process RS256 JWKS verify enabled");
+        }
+        // RS256 via static public-key PEM (inline or file path).
+        match config.resolve_public_key_pem() {
+            Some(Ok(pem)) => match builder.rsa_pem(&pem) {
+                Ok(b) => {
+                    builder = b;
+                    have_source = true;
+                    tracing::info!("in-process RS256 PEM verify enabled");
+                }
+                Err((b, e)) => {
+                    builder = b;
+                    tracing::error!(error = %e, "jwt_public_key_pem invalid — RS256 PEM disabled");
+                }
+            },
+            Some(Err(e)) => tracing::error!(error = %e, "jwt_public_key_pem unreadable — RS256 PEM disabled"),
+            None => {}
+        }
+        // HS256 via shared secret (backward compat).
+        if let Some(secret) = config.jwt_secret.as_ref().filter(|s| !s.is_empty()) {
+            builder = builder.hs256(secret.as_bytes());
+            have_source = true;
+            tracing::info!("in-process HS256 (jwt_secret) verify enabled");
+        }
+        // iss/aud enforcement for RS256.
+        if let Some(iss) = config.jwt_issuer.as_ref().filter(|s| !s.is_empty()) {
+            builder = builder.issuer(iss.clone());
+        }
+        if let Some(aud) = config.jwt_audience.as_ref().filter(|s| !s.is_empty()) {
+            builder = builder.audience(aud.clone());
+        }
+
+        let session_verifier = if have_source {
+            tracing::info!(cookie = cookie_name, "in-process session verify enabled");
+            Some(SessionMultiVerifier::new(builder.build(), cookie_name))
+        } else {
+            None
+        };
+        let _ = jwks_url_log;
+
+        // DD-005 縮退運転: config の degraded_mode（env VOLTA_AUTH_DEGRADED_MODE が
+        // 優先フォールバック）。デフォルト off（安全側）。
+        let degraded_mode = config.degraded_mode_enabled();
         if degraded_mode {
             if session_verifier.is_some() {
                 tracing::warn!(
@@ -82,8 +188,9 @@ impl VoltaAuthClient {
                 );
             } else {
                 tracing::warn!(
-                    "auth degraded mode requested (VOLTA_AUTH_DEGRADED_MODE) but no jwt_secret \
-                     configured — fallback cannot verify sessions, staying fail-closed"
+                    "auth degraded mode requested but no in-process verifier configured \
+                     (set auth.jwks_url / jwt_public_key_pem / jwt_secret) — fallback cannot \
+                     verify sessions, staying fail-closed"
                 );
             }
         }
@@ -107,23 +214,33 @@ impl VoltaAuthClient {
         self.degraded_total.load(Ordering::Relaxed)
     }
 
+    /// Spawn the JWKS background refresher when a `jwks_url` is configured.
+    /// Call once at startup (after the tokio runtime is up). No-op otherwise.
+    pub fn spawn_jwks_refresher(&self) {
+        if let Some(verifier) = self.session_verifier.as_ref() {
+            if let Some(jwks) = verifier.jwks() {
+                tracing::info!(jwks_url = jwks.url(), "starting JWKS background refresher");
+                jwks.spawn_refresher();
+            }
+        }
+    }
+
     /// DD-005 縮退運転のフォールバック判定。
     /// auth-proxy 由来の `AuthResult::Error` を受け取り、
     /// - degraded_mode off → そのまま fail-closed（Error を返す）
     /// - degraded_mode on + 有効セッション JWT → Authenticated（warn ログ + メトリクス）
     /// - degraded_mode on + JWT 無し/期限切れ/検証失敗 → fail-closed（Error を維持）
-    fn degraded_fallback(&self, host: &str, cookie: Option<&str>, err_msg: String) -> AuthResult {
+    async fn degraded_fallback(&self, host: &str, cookie: Option<&str>, err_msg: String) -> AuthResult {
         if !self.degraded_mode {
             return AuthResult::Error(err_msg);
         }
         let verifier = match self.session_verifier.as_ref() {
             Some(v) => v,
-            // jwt_secret 未設定なら検証手段が無いので fail-closed のまま。
+            // 検証手段が無いので fail-closed のまま。
             None => return AuthResult::Error(err_msg),
         };
 
-        use volta_auth_core::session::SessionResult;
-        match verifier.verify_cookie(cookie) {
+        match verifier.verify_cookie_async(cookie).await {
             SessionResult::Valid(headers) => {
                 let n = self.degraded_total.fetch_add(1, Ordering::Relaxed) + 1;
                 tracing::warn!(
@@ -153,10 +270,10 @@ impl VoltaAuthClient {
         app_id: Option<&str>,
         client_ip: Option<&str>,
     ) -> AuthResult {
-        // DD-005 Phase 0: In-process JWT verify (skip HTTP roundtrip)
+        // DD-005 Phase 0: In-process JWT verify (skip HTTP roundtrip).
+        // async path → JWKS may force-refresh on a cold cache / kid miss.
         if let Some(ref verifier) = self.session_verifier {
-            use volta_auth_core::session::SessionResult;
-            match verifier.verify_cookie(cookie) {
+            match verifier.verify_cookie_async(cookie).await {
                 SessionResult::Valid(headers) => {
                     tracing::trace!(host = %host, "auth: in-process JWT verify OK");
                     return AuthResult::Authenticated(headers);
@@ -266,7 +383,7 @@ impl VoltaAuthClient {
         // degraded_mode が有効かつ有効なセッション JWT を持つリクエストだけ in-process 検証で通す。
         // JWT 無し/期限切れ/検証失敗は従来通り fail-closed（Error を維持）。
         let auth_result = match auth_result {
-            AuthResult::Error(msg) => self.degraded_fallback(host, cookie, msg),
+            AuthResult::Error(msg) => self.degraded_fallback(host, cookie, msg).await,
             other => other,
         };
 
@@ -350,6 +467,11 @@ mod degraded_tests {
             jwt_secret: Some(SECRET.into()),
             cookie_name: Some("__volta_session".into()),
             auth_public_url: None,
+            degraded_mode: false,
+            jwt_public_key_pem: None,
+            jwks_url: None,
+            jwt_issuer: None,
+            jwt_audience: None,
         }
     }
 
@@ -381,10 +503,10 @@ mod degraded_tests {
 
     // ── degraded_fallback: the core decision ──────────────────────
 
-    #[test]
-    fn down_with_valid_jwt_passes_when_degraded_on() {
+    #[tokio::test]
+    async fn down_with_valid_jwt_passes_when_degraded_on() {
         let c = client(true);
-        let r = c.degraded_fallback("h", Some(&valid_cookie()), "timeout".into());
+        let r = c.degraded_fallback("h", Some(&valid_cookie()), "timeout".into()).await;
         match r {
             AuthResult::Authenticated(h) => {
                 assert_eq!(h.get("x-volta-user-id").unwrap(), "user-degraded");
@@ -394,37 +516,37 @@ mod degraded_tests {
         assert_eq!(c.degraded_total(), 1, "metric must increment");
     }
 
-    #[test]
-    fn down_without_jwt_is_rejected_when_degraded_on() {
+    #[tokio::test]
+    async fn down_without_jwt_is_rejected_when_degraded_on() {
         let c = client(true);
-        let r = c.degraded_fallback("h", None, "timeout".into());
+        let r = c.degraded_fallback("h", None, "timeout".into()).await;
         assert!(matches!(r, AuthResult::Error(_)), "no JWT → fail-closed");
         assert_eq!(c.degraded_total(), 0);
     }
 
-    #[test]
-    fn down_with_invalid_jwt_is_rejected_when_degraded_on() {
+    #[tokio::test]
+    async fn down_with_invalid_jwt_is_rejected_when_degraded_on() {
         let c = client(true);
         let bad = "__volta_session=not.a.real.jwt";
-        let r = c.degraded_fallback("h", Some(bad), "timeout".into());
+        let r = c.degraded_fallback("h", Some(bad), "timeout".into()).await;
         assert!(matches!(r, AuthResult::Error(_)), "invalid JWT → fail-closed");
         assert_eq!(c.degraded_total(), 0);
     }
 
-    #[test]
-    fn degraded_off_always_fail_closed_even_with_valid_jwt() {
+    #[tokio::test]
+    async fn degraded_off_always_fail_closed_even_with_valid_jwt() {
         let c = client(false);
-        let r = c.degraded_fallback("h", Some(&valid_cookie()), "timeout".into());
+        let r = c.degraded_fallback("h", Some(&valid_cookie()), "timeout".into()).await;
         assert!(matches!(r, AuthResult::Error(_)),
             "degraded_mode off → always fail-closed");
         assert_eq!(c.degraded_total(), 0);
     }
 
-    #[test]
-    fn degraded_on_but_no_secret_stays_fail_closed() {
-        // jwt_secret 未設定 → 検証手段が無いので valid に見えても通さない。
+    #[tokio::test]
+    async fn degraded_on_but_no_secret_stays_fail_closed() {
+        // 検証手段が無い → valid に見えても通さない。
         let c = client_no_secret(true);
-        let r = c.degraded_fallback("h", Some(&valid_cookie()), "timeout".into());
+        let r = c.degraded_fallback("h", Some(&valid_cookie()), "timeout".into()).await;
         assert!(matches!(r, AuthResult::Error(_)));
         assert_eq!(c.degraded_total(), 0);
     }
@@ -448,5 +570,178 @@ mod degraded_tests {
         // クッキー無し → Phase 0 は NoSession で fall-through → HTTP 失敗 → degraded off → Error
         let r = c.check("h", "/", "https", None, None, None).await;
         assert!(matches!(r, AuthResult::Error(_)));
+    }
+
+    // ── degraded_mode config / env precedence ─────────────────────
+
+    /// A serial guard so env-var-mutating tests don't race each other.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn degraded_mode_from_config_yaml_true() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("VOLTA_AUTH_DEGRADED_MODE");
+        let mut cfg = base_config();
+        cfg.degraded_mode = true;
+        assert!(cfg.degraded_mode_enabled(), "yaml true → enabled");
+        cfg.degraded_mode = false;
+        assert!(!cfg.degraded_mode_enabled(), "yaml false → disabled");
+    }
+
+    #[test]
+    fn degraded_mode_env_overrides_yaml() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let mut cfg = base_config();
+        // env true overrides yaml false
+        cfg.degraded_mode = false;
+        std::env::set_var("VOLTA_AUTH_DEGRADED_MODE", "on");
+        assert!(cfg.degraded_mode_enabled(), "env on → enabled despite yaml false");
+        // env false overrides yaml true
+        cfg.degraded_mode = true;
+        std::env::set_var("VOLTA_AUTH_DEGRADED_MODE", "0");
+        assert!(!cfg.degraded_mode_enabled(), "env 0 → disabled despite yaml true");
+        // empty env → falls back to yaml
+        std::env::set_var("VOLTA_AUTH_DEGRADED_MODE", "");
+        cfg.degraded_mode = true;
+        assert!(cfg.degraded_mode_enabled(), "empty env → yaml value");
+        std::env::remove_var("VOLTA_AUTH_DEGRADED_MODE");
+    }
+
+    #[test]
+    fn client_reads_degraded_from_config_when_env_unset() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("VOLTA_AUTH_DEGRADED_MODE");
+        let mut cfg = base_config();
+        cfg.degraded_mode = true;
+        let c = VoltaAuthClient::new(&cfg);
+        assert!(c.degraded_mode, "config degraded_mode=true wired into client");
+    }
+
+    // ── RS256 in-process verification ─────────────────────────────
+
+    const RSA_PRIV: &str = include_str!("testdata/rsa_priv.pem");
+    const RSA_PUB: &str = include_str!("testdata/rsa_pub.pem");
+
+    fn rs256_cookie(iss: Option<&str>, aud: Option<&str>) -> String {
+        use jsonwebtoken::{encode, EncodingKey, Header, Algorithm};
+        #[derive(serde::Serialize)]
+        struct Body {
+            sub: String,
+            email: String,
+            roles: String,
+            iat: u64,
+            exp: u64,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            iss: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            aud: Option<String>,
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let body = Body {
+            sub: "rs-user".into(),
+            email: "rs@test.com".into(),
+            roles: "MEMBER".into(),
+            iat: now,
+            exp: now + 3600,
+            iss: iss.map(String::from),
+            aud: aud.map(String::from),
+        };
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some("test-kid".into());
+        let key = EncodingKey::from_rsa_pem(RSA_PRIV.as_bytes()).unwrap();
+        let token = encode(&header, &body, &key).unwrap();
+        format!("__volta_session={}", token)
+    }
+
+    /// Config wired with an inline RS256 public-key PEM (no HS256), degraded on.
+    fn rs256_config() -> AuthConfig {
+        let mut cfg = base_config();
+        cfg.jwt_secret = None; // RS256 only
+        cfg.jwt_public_key_pem = Some(RSA_PUB.into());
+        cfg.jwt_issuer = Some("volta-auth".into());
+        cfg.jwt_audience = Some("volta-apps".into());
+        cfg
+    }
+
+    #[tokio::test]
+    async fn rs256_valid_token_survives_proxy_down() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("VOLTA_AUTH_DEGRADED_MODE");
+        let mut c = VoltaAuthClient::new(&rs256_config());
+        c.degraded_mode = true;
+        let cookie = rs256_cookie(Some("volta-auth"), Some("volta-apps"));
+        // auth-proxy unreachable → Phase 0 in-process RS256 verify must pass.
+        let r = c.check("h", "/", "https", Some(&cookie), None, None).await;
+        match r {
+            AuthResult::Authenticated(h) => {
+                assert_eq!(h.get("x-volta-user-id").unwrap(), "rs-user");
+            }
+            other => panic!("expected Authenticated, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn rs256_tampered_token_is_rejected() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("VOLTA_AUTH_DEGRADED_MODE");
+        let mut c = VoltaAuthClient::new(&rs256_config());
+        c.degraded_mode = true;
+        let cookie = rs256_cookie(Some("volta-auth"), Some("volta-apps"));
+        // Corrupt a char in the signature (last segment).
+        let mut parts: Vec<&str> = cookie.split('.').collect();
+        let sig = parts[2].to_string();
+        let mut chars: Vec<char> = sig.chars().collect();
+        let mid = chars.len() / 2;
+        chars[mid] = if chars[mid] == 'A' { 'B' } else { 'A' };
+        let bad_sig: String = chars.into_iter().collect();
+        parts[2] = &bad_sig;
+        let tampered = parts.join(".");
+        let r = c.check("h", "/", "https", Some(&tampered), None, None).await;
+        assert!(matches!(r, AuthResult::Error(_)),
+            "tampered RS256 token must fail-closed (proxy down)");
+    }
+
+    #[tokio::test]
+    async fn rs256_wrong_issuer_rejected() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("VOLTA_AUTH_DEGRADED_MODE");
+        let mut c = VoltaAuthClient::new(&rs256_config());
+        c.degraded_mode = true;
+        let cookie = rs256_cookie(Some("evil-issuer"), Some("volta-apps"));
+        let r = c.check("h", "/", "https", Some(&cookie), None, None).await;
+        assert!(matches!(r, AuthResult::Error(_)),
+            "wrong iss must be rejected");
+    }
+
+    #[test]
+    fn resolve_public_key_pem_inline_and_path() {
+        // inline PEM
+        let mut cfg = base_config();
+        cfg.jwt_public_key_pem = Some(RSA_PUB.into());
+        let got = cfg.resolve_public_key_pem().unwrap().unwrap();
+        assert!(String::from_utf8_lossy(&got).contains("BEGIN PUBLIC KEY"));
+        // file path
+        cfg.jwt_public_key_pem = Some("src/testdata/rsa_pub.pem".into());
+        let got = cfg.resolve_public_key_pem().unwrap().unwrap();
+        assert!(String::from_utf8_lossy(&got).contains("BEGIN PUBLIC KEY"));
+        // unset
+        cfg.jwt_public_key_pem = None;
+        assert!(cfg.resolve_public_key_pem().is_none());
+    }
+
+    /// HS256 backward-compat still works alongside RS256 config.
+    #[tokio::test]
+    async fn hs256_backward_compat_alongside_rs256() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("VOLTA_AUTH_DEGRADED_MODE");
+        let mut cfg = base_config(); // has jwt_secret (HS256)
+        cfg.jwt_public_key_pem = Some(RSA_PUB.into());
+        let mut c = VoltaAuthClient::new(&cfg);
+        c.degraded_mode = true;
+        // HS256 cookie (signed with SECRET) must still verify via the chain.
+        let r = c.check("h", "/", "https", Some(&valid_cookie()), None, None).await;
+        assert!(matches!(r, AuthResult::Authenticated(_)),
+            "HS256 token must still verify when RS256 is also configured");
     }
 }

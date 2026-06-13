@@ -256,6 +256,62 @@ pub struct AuthConfig {
     /// Redirects from auth-proxy to this origin are allowed through sanitize_redirect.
     #[serde(default)]
     pub auth_public_url: Option<String>,
+    /// DD-005 縮退運転 (degraded mode): on auth-proxy failure, fall back to
+    /// in-process JWT verification for requests that carry a still-valid session.
+    /// Default false (fail-closed). The env var `VOLTA_AUTH_DEGRADED_MODE`
+    /// (1/true/yes/on) overrides this YAML value, mirroring `admin.token`.
+    #[serde(default)]
+    pub degraded_mode: bool,
+    /// RS256 public key for in-process verification. Either an inline PEM
+    /// (`-----BEGIN PUBLIC KEY-----…`) or a path to a `.pem` file. auth-proxy
+    /// issues RS256 tokens, so this (or `jwks_url`) is the production path.
+    #[serde(default)]
+    pub jwt_public_key_pem: Option<String>,
+    /// JWKS endpoint URL for RS256 key discovery (e.g.
+    /// `http://auth-proxy:8080/.well-known/jwks.json`). When set it takes
+    /// precedence over `jwt_public_key_pem` and is refreshed on a TTL.
+    #[serde(default)]
+    pub jwks_url: Option<String>,
+    /// Expected `iss` claim for RS256 tokens (auth-proxy uses `volta-auth`).
+    /// When unset, the issuer is not enforced.
+    #[serde(default)]
+    pub jwt_issuer: Option<String>,
+    /// Expected `aud` claim for RS256 tokens (auth-proxy uses `volta-apps`).
+    /// When unset, the audience is not enforced.
+    #[serde(default)]
+    pub jwt_audience: Option<String>,
+}
+
+impl AuthConfig {
+    /// Resolve the effective degraded-mode flag. `VOLTA_AUTH_DEGRADED_MODE`
+    /// (1/true/yes/on, case-insensitive) overrides the YAML value when set to a
+    /// non-empty value; otherwise the YAML `degraded_mode` is used.
+    pub fn degraded_mode_enabled(&self) -> bool {
+        if let Ok(raw) = std::env::var("VOLTA_AUTH_DEGRADED_MODE") {
+            let v = raw.trim().to_ascii_lowercase();
+            if !v.is_empty() {
+                return matches!(v.as_str(), "1" | "true" | "yes" | "on");
+            }
+        }
+        self.degraded_mode
+    }
+
+    /// Resolve the RS256 public-key PEM bytes from `jwt_public_key_pem`, which
+    /// may be either an inline PEM or a file path. Returns `None` when unset.
+    pub fn resolve_public_key_pem(&self) -> Option<Result<Vec<u8>, String>> {
+        let raw = self.jwt_public_key_pem.as_ref()?.trim().to_string();
+        if raw.is_empty() {
+            return None;
+        }
+        if raw.contains("-----BEGIN") {
+            return Some(Ok(raw.into_bytes()));
+        }
+        // Treat as a filesystem path.
+        Some(
+            std::fs::read(&raw)
+                .map_err(|e| format!("failed to read jwt_public_key_pem '{raw}': {e}")),
+        )
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

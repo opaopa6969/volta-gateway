@@ -116,6 +116,8 @@ async fn main() {
         HotState::new_full(routing, ip_allowlists, config.error_pages_dir.as_deref(), cors, trusted_proxies),
     ));
     let volta = VoltaAuthClient::new(&config.auth);
+    // DD-005: start the JWKS background refresher (no-op unless auth.jwks_url set).
+    volta.spawn_jwks_refresher();
     let metrics = Arc::new(metrics::Metrics::new());
     let plugin_mgr = Arc::new(plugin::PluginManager::load_from_config(&config.plugins));
     let proxy = ProxyService::new(volta.clone(), hot.clone(), metrics.clone(), plugin_mgr);

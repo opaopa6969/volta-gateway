@@ -4966,6 +4966,7 @@ dependencies = [
  "hyper-util",
  "instant-acme",
  "ipnet",
+ "jsonwebtoken",
  "rcgen 0.13.2",
  "reqwest",
  "rustls",

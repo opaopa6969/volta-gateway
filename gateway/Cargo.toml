@@ -78,6 +78,8 @@ uuid = { version = "1", features = ["v4"] }
 [dev-dependencies]
 tokio-test = "0.4"
 criterion = { version = "0.5", features = ["html_reports"] }
+# RS256 token minting for in-process verification tests.
+jsonwebtoken = "9"
 
 [[bench]]
 name = "proxy_bench"

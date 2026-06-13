@@ -3,6 +3,7 @@
 //! Phase 0-5 complete. SAML → Java sidecar (DD-005).
 
 pub mod jwt;
+pub mod jwks;
 pub mod session;
 pub mod error;
 pub mod record;

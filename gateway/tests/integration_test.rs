@@ -72,6 +72,11 @@ fn make_proxy(auth_addr: SocketAddr, backend_addr: SocketAddr, host: &str) -> Pr
         jwt_secret: None,
         cookie_name: None,
         auth_public_url: None,
+        degraded_mode: false,
+        jwt_public_key_pem: None,
+        jwks_url: None,
+        jwt_issuer: None,
+        jwt_audience: None,
     };
     let volta = VoltaAuthClient::new(&auth_config);
 
@@ -105,6 +110,11 @@ fn make_proxy_with_cors(auth_addr: SocketAddr, backend_addr: SocketAddr, host: &
         jwt_secret: None,
         cookie_name: None,
         auth_public_url: None,
+        degraded_mode: false,
+        jwt_public_key_pem: None,
+        jwks_url: None,
+        jwt_issuer: None,
+        jwt_audience: None,
     };
     let volta = VoltaAuthClient::new(&auth_config);
 
@@ -419,6 +429,11 @@ fn make_proxy_public(backend_addr: SocketAddr, host: &str) -> ProxyService {
         jwt_secret: None,
         cookie_name: None,
         auth_public_url: None,
+        degraded_mode: false,
+        jwt_public_key_pem: None,
+        jwks_url: None,
+        jwt_issuer: None,
+        jwt_audience: None,
     };
     let volta = VoltaAuthClient::new(&auth_config);
 
@@ -452,6 +467,11 @@ fn make_proxy_with_bypass(auth_addr: SocketAddr, backend_addr: SocketAddr, host:
         jwt_secret: None,
         cookie_name: None,
         auth_public_url: None,
+        degraded_mode: false,
+        jwt_public_key_pem: None,
+        jwks_url: None,
+        jwt_issuer: None,
+        jwt_audience: None,
     };
     let volta = VoltaAuthClient::new(&auth_config);
 
