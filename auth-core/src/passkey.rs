@@ -6,6 +6,7 @@
 use url::Url;
 use webauthn_rs::prelude::*;
 use webauthn_rs::Webauthn;
+use webauthn_rs_core::proto::ResidentKeyRequirement;
 
 use crate::error::AuthError;
 
@@ -62,14 +63,31 @@ impl PasskeyService {
         user_display_name: &str,
         existing_credentials: Option<Vec<CredentialID>>,
     ) -> Result<(CreationChallengeResponse, PasskeyRegistration), AuthError> {
-        self.webauthn
+        let (mut ccr, state) = self
+            .webauthn
             .start_passkey_registration(
                 user_unique_id,
                 user_name,
                 user_display_name,
                 existing_credentials,
             )
-            .map_err(|e| AuthError::Internal(format!("passkey reg start: {}", e)))
+            .map_err(|e| AuthError::Internal(format!("passkey reg start: {}", e)))?;
+
+        // Force discoverable (resident) credentials. webauthn-rs'
+        // start_passkey_registration emits residentKey=discouraged, which makes
+        // platform authenticators (Windows Hello PIN, Touch ID) create a
+        // *non-discoverable* credential. Such a credential never appears as
+        // "this device" in the username-less (discoverable) login flow at
+        // /login — only roaming options (phone/security key) show up.
+        // Overriding to residentKey=required guarantees a discoverable passkey.
+        // The paired finish state is unaffected (it does not reject resident
+        // credentials). See docs/passkey-resident-key.md.
+        if let Some(sel) = ccr.public_key.authenticator_selection.as_mut() {
+            sel.resident_key = Some(ResidentKeyRequirement::Required);
+            sel.require_resident_key = true;
+        }
+
+        Ok((ccr, state))
     }
 
     /// Finish passkey registration: verify the client's attestation response.

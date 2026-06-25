@@ -4903,6 +4903,7 @@ dependencies = [
  "url",
  "uuid",
  "webauthn-rs",
+ "webauthn-rs-core",
 ]
 
 [[package]]

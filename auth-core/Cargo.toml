@@ -7,7 +7,7 @@ description = "Auth core library — session verification, JWT, policy engine, O
 [features]
 default = []
 postgres = ["sqlx"]
-webauthn = ["webauthn-rs"]
+webauthn = ["webauthn-rs", "webauthn-rs-core"]
 
 [dependencies]
 # JWT
@@ -58,6 +58,10 @@ sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid"
 
 # WebAuthn/Passkey (optional — enable with `features = ["webauthn"]`)
 webauthn-rs = { version = "0.6.0-dev", features = ["danger-allow-state-serialisation", "conditional-ui"], optional = true }
+# Needed to reference ResidentKeyRequirement when forcing discoverable passkeys
+# (the high-level webauthn-rs prelude does not re-export it). Same version as
+# webauthn-rs, already present transitively.
+webauthn-rs-core = { version = "0.6.0-dev", optional = true }
 
 [dev-dependencies]
 testcontainers = "0.23"
