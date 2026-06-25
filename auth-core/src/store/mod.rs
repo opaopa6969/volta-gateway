@@ -7,6 +7,7 @@ mod flow;
 mod mfa;
 mod idp_config;
 mod oidc_flow;
+mod notification_job;
 mod passkey_challenge;
 mod platform;
 
@@ -22,6 +23,7 @@ pub use flow::FlowPersistence;
 pub use mfa::{MfaStore, RecoveryCodeStore, MagicLinkStore, SigningKeyStore};
 pub use idp_config::{IdpConfigStore, M2mClientStore, PasskeyStore};
 pub use oidc_flow::OidcFlowStore;
+pub use notification_job::NotificationJobStore;
 pub use passkey_challenge::{PasskeyChallengeRecord, PasskeyChallengeStore};
 pub use platform::{
     WebhookStore, OutboxStore, WebhookDeliveryStore,

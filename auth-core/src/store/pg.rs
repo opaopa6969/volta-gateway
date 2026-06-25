@@ -1502,3 +1502,108 @@ impl PgStore {
         Ok((items, total))
     }
 }
+
+// ─── NotificationJobStore (Phase 2: notification outbox) ───────────────────
+
+#[async_trait::async_trait]
+impl crate::store::NotificationJobStore for PgStore {
+    async fn enqueue(
+        &self,
+        channel: &str,
+        recipient: &str,
+        template_id: &str,
+        payload: serde_json::Value,
+        correlation_id: Option<&str>,
+    ) -> Result<uuid::Uuid, AuthError> {
+        // Idempotent on correlation_id. A NULL correlation_id never conflicts
+        // (Postgres treats NULLs as distinct) so anonymous jobs always insert;
+        // a duplicate correlation_id returns the existing job id.
+        let row: (uuid::Uuid,) = sqlx::query_as(
+            "INSERT INTO notification_jobs (channel, recipient, template_id, payload, correlation_id) \
+             VALUES ($1, $2, $3, $4, $5) \
+             ON CONFLICT (correlation_id) DO UPDATE SET correlation_id = EXCLUDED.correlation_id \
+             RETURNING id",
+        )
+        .bind(channel)
+        .bind(recipient)
+        .bind(template_id)
+        .bind(&payload)
+        .bind(correlation_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(AuthError::from)?;
+        Ok(row.0)
+    }
+
+    async fn claim_pending(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<crate::record::NotificationJobRecord>, AuthError> {
+        sqlx::query_as::<_, crate::record::NotificationJobRecord>(
+            "SELECT id, channel, recipient, template_id, payload, correlation_id, status, \
+                    attempt_count, next_attempt_at, created_at, sent_at, last_error \
+             FROM notification_jobs \
+             WHERE status = 'pending' AND next_attempt_at <= now() \
+             ORDER BY created_at LIMIT $1",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(AuthError::from)
+    }
+
+    async fn mark_sent(&self, id: uuid::Uuid) -> Result<(), AuthError> {
+        sqlx::query("UPDATE notification_jobs SET status='sent', sent_at=now() WHERE id=$1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(AuthError::from)?;
+        Ok(())
+    }
+
+    async fn mark_retry(&self, id: uuid::Uuid, attempt: i32, error: &str) -> Result<(), AuthError> {
+        sqlx::query(
+            "UPDATE notification_jobs \
+             SET attempt_count=$1, last_error=$2, next_attempt_at=now()+make_interval(secs=>$3) \
+             WHERE id=$4",
+        )
+        .bind(attempt)
+        .bind(error)
+        .bind((attempt as f64) * 30.0)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(AuthError::from)?;
+        Ok(())
+    }
+
+    async fn mark_failed(&self, id: uuid::Uuid, error: &str) -> Result<(), AuthError> {
+        sqlx::query("UPDATE notification_jobs SET status='failed', last_error=$1 WHERE id=$2")
+            .bind(error)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(AuthError::from)?;
+        Ok(())
+    }
+
+    async fn log(&self, r: crate::record::NotificationLogRecord) -> Result<(), AuthError> {
+        sqlx::query(
+            "INSERT INTO notification_logs \
+                (job_id, channel, provider, recipient, template_id, outcome, message_id, error) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        )
+        .bind(r.job_id)
+        .bind(&r.channel)
+        .bind(&r.provider)
+        .bind(&r.recipient)
+        .bind(&r.template_id)
+        .bind(&r.outcome)
+        .bind(&r.message_id)
+        .bind(&r.error)
+        .execute(&self.pool)
+        .await
+        .map_err(AuthError::from)?;
+        Ok(())
+    }
+}

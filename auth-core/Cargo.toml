@@ -45,7 +45,7 @@ tramli = "3.8"
 tramli-plugins = "3.6.1"
 
 # UUID
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "serde"] }
 
 # URL
 url = "2"
