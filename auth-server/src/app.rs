@@ -13,7 +13,10 @@ use crate::state::AppState;
 pub fn build_router(state: AppState) -> Router {
     // #7, #10: per-endpoint rate limiters, keyed by client IP.
     // (Java: OIDC 10/min, MFA verify 5/min, passkey 5/min, invite 20/min.)
-    let rl_oidc = RateLimiter::new("oidc", 10, Duration::from_secs(60));
+    // OIDC: 30/min/IP. /login renders + starts a flow on every GET, so a few
+    // page reloads must not lock a legitimate user out (Java limited only the
+    // IdP redirect; Rust counts the page load too).
+    let rl_oidc = RateLimiter::new("oidc", 30, Duration::from_secs(60));
     let rl_mfa = RateLimiter::new("mfa", 5, Duration::from_secs(60));
     let rl_passkey = RateLimiter::new("passkey", 5, Duration::from_secs(60));
     let rl_invite = RateLimiter::new("invite", 20, Duration::from_secs(60));
