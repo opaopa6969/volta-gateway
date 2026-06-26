@@ -50,6 +50,9 @@ function b64urlToBuf(s){s=s.replace(/-/g,'+').replace(/_/g,'/');const p=s.length
 function bufToB64url(buf){const u=new Uint8Array(buf);let s='';for(let i=0;i<u.length;i++)s+=String.fromCharCode(u[i]);return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
 function assertionJSON(c){const r=c.response;return {id:c.id,rawId:bufToB64url(c.rawId),type:c.type,extensions:c.getClientExtensionResults?c.getClientExtensionResults():{},response:{authenticatorData:bufToB64url(r.authenticatorData),clientDataJSON:bufToB64url(r.clientDataJSON),signature:bufToB64url(r.signature),userHandle:r.userHandle?bufToB64url(r.userHandle):null}};}
 function attestationJSON(c){const r=c.response;return {id:c.id,rawId:bufToB64url(c.rawId),type:c.type,extensions:c.getClientExtensionResults?c.getClientExtensionResults():{},response:{attestationObject:bufToB64url(r.attestationObject),clientDataJSON:bufToB64url(r.clientDataJSON)}};}
+// Phase 3: translate opaque WebAuthn / server errors into next-action guidance.
+function passkeyErr(err){const n=err&&err.name;if(n==='NotAllowedError')return '中断またはタイムアウトしました。もう一度お試しください。';if(n==='InvalidStateError')return 'このデバイスには既にパスキーが登録されています。';if(n==='AbortError')return '操作がキャンセルされました。';if(n==='SecurityError')return 'セキュリティエラー（ドメイン設定をご確認ください）。';if(n==='NotSupportedError')return 'このブラウザ/端末はパスキーに対応していません。';return (err&&err.message)||'エラーが発生しました。';}
+async function serverErrText(resp,fallback){try{const e=await resp.json();if(e&&e.error&&e.error.message){const m=e.error.message;if(/no matching credential/i.test(m))return 'このアカウントのパスキーが見つかりません。先に登録してください。';if(/verification failed/i.test(m))return 'パスキーの検証に失敗しました。';return m;}}catch(_){}return fallback+' ('+resp.status+')';}
 "#;
 
 const PAGE_STYLE: &str = r#"<style>body{font-family:system-ui,sans-serif;max-width:22rem;margin:4rem auto;padding:0 1rem;text-align:center}h1{font-size:1.3rem}.btn{display:block;width:100%;padding:.8rem;margin:.6rem 0;border:1px solid #ccc;border-radius:8px;background:#fff;font-size:1rem;cursor:pointer;text-decoration:none;color:#222;box-sizing:border-box}.btn.g{background:#4285f4;color:#fff;border-color:#4285f4}#status{margin-top:1rem;min-height:1.2em;font-size:.9rem}</style>"#;
@@ -82,16 +85,48 @@ pub async fn login(
         return resp;
     }
 
-    // Choice page (parity with Java /login): Google OR discoverable passkey.
+    // Google-style login (passkey-ux-design.md):
+    //  - Phase 1: conditional UI — passkeys surface in the input's autofill on
+    //    load (mediation:'conditional'); no button hunt. Explicit button stays
+    //    as a modal fallback. One conditional get() is aborted before a modal
+    //    get() to avoid the "request already pending" conflict.
+    //  - Phase 3: WebAuthn/server errors translated to next-action guidance.
     let template = r#"<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ログイン</title>__STYLE__</head><body>
 <h1>Volta にログイン</h1>
+<input id="uname" name="username" autocomplete="username webauthn" placeholder="メールアドレス（パスキー候補が表示されます）" style="width:100%;padding:.7rem;margin:.4rem 0;border:1px solid #ccc;border-radius:8px;box-sizing:border-box;font-size:.95rem">
 <a class="btn g" href="__AUTH_URL__">Google でログイン</a>
-<button class="btn" onclick="passkeyLogin()">パスキーでログイン</button>
+<button class="btn" id="pk-btn" onclick="passkeyLogin()">パスキーでログイン</button>
 <div id="status"></div>
 <script>
 const RETURN_TO = __RETURN_TO__;
 __WEBAUTHN_JS__
-async function passkeyLogin(){const st=document.getElementById('status');st.style.color='#b00';st.textContent='';try{const r=await fetch('/auth/passkey/discover/start',{method:'POST',headers:{'Accept':'application/json'}});if(!r.ok)throw new Error('開始に失敗('+r.status+')');const d=await r.json();const pk=d.options.publicKey;pk.challenge=b64urlToBuf(pk.challenge);(pk.allowCredentials||[]).forEach(c=>c.id=b64urlToBuf(c.id));const cred=await navigator.credentials.get({publicKey:pk});const fr=await fetch('/auth/passkey/discover/finish',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({challenge_id:d.challenge_id,credential:assertionJSON(cred)})});if(!fr.ok){const e=await fr.json().catch(()=>({}));throw new Error((e.error&&e.error.message)||('finish '+fr.status));}window.location.href=RETURN_TO;}catch(err){st.textContent='パスキーログイン失敗: '+err.message;}}
+let condAC = null;
+async function discoverAndFinish(pk, challenge_id, mediation, signal){
+  pk.challenge=b64urlToBuf(pk.challenge);
+  (pk.allowCredentials||[]).forEach(c=>c.id=b64urlToBuf(c.id));
+  const opts={publicKey:pk};
+  if(mediation) opts.mediation=mediation;
+  if(signal) opts.signal=signal;
+  const cred=await navigator.credentials.get(opts);
+  const fr=await fetch('/auth/passkey/discover/finish',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({challenge_id,credential:assertionJSON(cred)})});
+  if(!fr.ok) throw new Error(await serverErrText(fr,'ログインに失敗'));
+  window.location.href=RETURN_TO;
+}
+// Phase 1: conditional UI (autofill). Silent — never shows errors.
+async function startConditional(){
+  try{
+    if(!window.PublicKeyCredential||!PublicKeyCredential.isConditionalMediationAvailable)return;
+    if(!(await PublicKeyCredential.isConditionalMediationAvailable()))return;
+    const r=await fetch('/auth/passkey/discover/start',{method:'POST',headers:{'Accept':'application/json'}});
+    if(!r.ok)return;
+    const d=await r.json();
+    condAC=new AbortController();
+    await discoverAndFinish(d.options.publicKey,d.challenge_id,'conditional',condAC.signal);
+  }catch(_){/* autofill aborted / no selection — stay on page silently */}
+}
+// Explicit modal fallback (button).
+async function passkeyLogin(){const st=document.getElementById('status');st.style.color='#b00';st.textContent='';try{if(condAC){condAC.abort();condAC=null;}const r=await fetch('/auth/passkey/discover/start',{method:'POST',headers:{'Accept':'application/json'}});if(!r.ok)throw new Error('開始に失敗('+r.status+')');const d=await r.json();await discoverAndFinish(d.options.publicKey,d.challenge_id,null,null);}catch(err){st.textContent='パスキーログイン失敗: '+passkeyErr(err);}}
+startConditional();
 </script></body></html>"#;
     let html = template
         .replace("__STYLE__", PAGE_STYLE)
@@ -113,13 +148,21 @@ pub async fn root(State(state): State<AppState>, jar: CookieJar) -> Response {
             let email = session.email.unwrap_or_default();
             let template = r#"<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Volta Auth</title>__STYLE__</head><body>
 <h1>サインイン済み</h1><p>__EMAIL__</p>
-<button class="btn" onclick="registerPasskey()">このデバイスにパスキーを登録</button>
+<div id="enroll" style="display:none;border:1px solid #4285f4;border-radius:8px;padding:1rem;margin:.6rem 0;background:#f5f9ff">
+<p style="margin:.2rem 0">次回からパスワード無しでログインできます。</p>
+<button class="btn g" onclick="registerPasskey()">このデバイスにパスキーを登録</button>
+</div>
+<button class="btn" id="reg-btn" onclick="registerPasskey()" style="display:none">このデバイスにパスキーを登録</button>
 <a class="btn" href="/auth/logout">サインアウト</a>
 <div id="status"></div>
 <script>
 const USER_ID = "__USER_ID__";
 __WEBAUTHN_JS__
-async function registerPasskey(){const st=document.getElementById('status');st.style.color='#b00';st.textContent='';try{const r=await fetch('/api/v1/users/'+USER_ID+'/passkeys/register/start',{method:'POST',headers:{'Accept':'application/json','content-type':'application/json'},body:'{}'});if(!r.ok)throw new Error('開始に失敗('+r.status+')');const d=await r.json();const pk=d.options.publicKey;pk.challenge=b64urlToBuf(pk.challenge);pk.user.id=b64urlToBuf(pk.user.id);(pk.excludeCredentials||[]).forEach(c=>c.id=b64urlToBuf(c.id));const cred=await navigator.credentials.create({publicKey:pk});const fr=await fetch('/api/v1/users/'+USER_ID+'/passkeys/register/finish',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({challenge_id:d.challenge_id,name:'My Passkey',credential:attestationJSON(cred)})});if(!fr.ok){const e=await fr.json().catch(()=>({}));throw new Error((e.error&&e.error.message)||('finish '+fr.status));}st.style.color='#070';st.textContent='パスキー登録完了！サインアウトして「パスキーでログイン」を試せます。';}catch(err){st.textContent='登録失敗: '+err.message;}}
+async function registerPasskey(){const st=document.getElementById('status');st.style.color='#b00';st.textContent='登録中...';try{const r=await fetch('/api/v1/users/'+USER_ID+'/passkeys/register/start',{method:'POST',headers:{'Accept':'application/json','content-type':'application/json'},body:'{}'});if(!r.ok)throw new Error(await serverErrText(r,'開始に失敗'));const d=await r.json();const pk=d.options.publicKey;pk.challenge=b64urlToBuf(pk.challenge);pk.user.id=b64urlToBuf(pk.user.id);(pk.excludeCredentials||[]).forEach(c=>c.id=b64urlToBuf(c.id));const cred=await navigator.credentials.create({publicKey:pk});const fr=await fetch('/api/v1/users/'+USER_ID+'/passkeys/register/finish',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({challenge_id:d.challenge_id,name:'My Passkey',credential:attestationJSON(cred)})});if(!fr.ok)throw new Error(await serverErrText(fr,'登録に失敗'));st.style.color='#070';st.textContent='パスキー登録完了！サインアウトして「パスキーでログイン」を試せます。';document.getElementById('enroll').style.display='none';}catch(err){st.textContent='登録失敗: '+passkeyErr(err);}}
+// Phase 2: only suggest enrollment when a platform authenticator exists AND the
+// user has no passkey yet. Otherwise just expose the plain register button.
+async function maybeOfferEnroll(){try{if(!window.PublicKeyCredential){document.getElementById('reg-btn').style.display='block';return;}const uvpaa=await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();const lr=await fetch('/api/v1/users/'+USER_ID+'/passkeys',{headers:{'Accept':'application/json'}});const list=lr.ok?await lr.json():[];const count=Array.isArray(list)?list.length:0;if(uvpaa&&count===0){document.getElementById('enroll').style.display='block';}else{document.getElementById('reg-btn').style.display='block';}}catch(_){document.getElementById('reg-btn').style.display='block';}}
+maybeOfferEnroll();
 </script></body></html>"#;
             let html = template
                 .replace("__STYLE__", PAGE_STYLE)

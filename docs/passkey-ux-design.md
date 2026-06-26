@@ -191,6 +191,8 @@ flowchart TD
 
 現状のバックエンド（`/auth/passkey/discover/*`, `/api/v1/users/{id}/passkeys/register/*`）は**そのまま使える**。変更は主にフロント（`/login` と `/` のHTML/JS）。
 
+> **実装状況**: Phase 1（Conditional UI）・Phase 2（自動エンロール提案）・Phase 3（エラー翻訳）は `handlers/oidc.rs` に実装済み。Phase 4（計測）は未着手。
+
 ```mermaid
 flowchart LR
     P1["Phase 1<br/>Conditional UI"] --> P2["Phase 2<br/>自動エンロール提案"] --> P3["Phase 3<br/>エラー翻訳"] --> P4["Phase 4<br/>計測・調整"]
