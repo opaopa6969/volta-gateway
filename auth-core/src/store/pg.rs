@@ -793,7 +793,7 @@ impl MagicLinkStore for PgStore {
         sqlx::query(
             "INSERT INTO magic_links (email, token, expires_at) \
              VALUES ($1, $2, now() + make_interval(mins => $3))"
-        ).bind(email).bind(token).bind(ttl_minutes as f64)
+        ).bind(email).bind(token).bind(ttl_minutes as i32)
         .execute(&self.pool).await.map_err(AuthError::from)?;
         Ok(())
     }
@@ -1605,5 +1605,84 @@ impl crate::store::NotificationJobStore for PgStore {
         .await
         .map_err(AuthError::from)?;
         Ok(())
+    }
+}
+
+// ─── EmailVerificationTokenStore (Phase 2) ─────────────────────────────────
+
+#[async_trait::async_trait]
+impl crate::store::EmailVerificationTokenStore for PgStore {
+    async fn issue(
+        &self,
+        email: &str,
+        token_hash: &str,
+        ttl_minutes: i64,
+        flow_id: Option<uuid::Uuid>,
+    ) -> Result<uuid::Uuid, AuthError> {
+        let row: (uuid::Uuid,) = sqlx::query_as(
+            "INSERT INTO email_verification_tokens (email, token_hash, flow_id, expires_at, last_sent_at) \
+             VALUES ($1, $2, $3, now() + make_interval(mins => $4), now()) \
+             RETURNING id",
+        )
+        .bind(email)
+        .bind(token_hash)
+        .bind(flow_id)
+        .bind(ttl_minutes as i32)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(AuthError::from)?;
+        Ok(row.0)
+    }
+
+    async fn consume(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<crate::record::EmailVerificationTokenRecord>, AuthError> {
+        sqlx::query_as::<_, crate::record::EmailVerificationTokenRecord>(
+            "UPDATE email_verification_tokens SET used_at = now() \
+             WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now() \
+             RETURNING id, email, token_hash, flow_id, expires_at, used_at, \
+                       attempt_count, resend_count, last_sent_at, created_at",
+        )
+        .bind(token_hash)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(AuthError::from)
+    }
+
+    async fn try_mark_resent(
+        &self,
+        email: &str,
+        min_interval_secs: i64,
+    ) -> Result<bool, AuthError> {
+        let row: Option<(uuid::Uuid,)> = sqlx::query_as(
+            "UPDATE email_verification_tokens \
+             SET resend_count = resend_count + 1, last_sent_at = now() \
+             WHERE id = ( \
+                 SELECT id FROM email_verification_tokens \
+                 WHERE email = $1 AND used_at IS NULL \
+                 ORDER BY created_at DESC LIMIT 1 \
+             ) \
+             AND (last_sent_at IS NULL OR last_sent_at < now() - make_interval(secs => $2)) \
+             RETURNING id",
+        )
+        .bind(email)
+        .bind(min_interval_secs as f64)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(AuthError::from)?;
+        Ok(row.is_some())
+    }
+
+    async fn invalidate_pending(&self, email: &str) -> Result<u64, AuthError> {
+        let res = sqlx::query(
+            "UPDATE email_verification_tokens SET used_at = now() \
+             WHERE email = $1 AND used_at IS NULL",
+        )
+        .bind(email)
+        .execute(&self.pool)
+        .await
+        .map_err(AuthError::from)?;
+        Ok(res.rows_affected())
     }
 }

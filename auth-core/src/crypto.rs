@@ -195,3 +195,21 @@ mod tests {
         assert_eq!(b.decrypt(&ct).unwrap(), b"portable");
     }
 }
+
+/// SHA-256 hex digest. Used to store *hashes* of verification / reset tokens —
+/// the raw token is never persisted.
+pub fn sha256_hex(input: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(input.as_bytes());
+    h.finalize().iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// Generate a cryptographically-random token as hex (`n_bytes` of entropy).
+/// Use ≥32 bytes for verification / reset links.
+pub fn random_token_hex(n_bytes: usize) -> String {
+    use rand::RngCore;
+    let mut buf = vec![0u8; n_bytes];
+    rand::thread_rng().fill_bytes(&mut buf);
+    buf.iter().map(|b| format!("{:02x}", b)).collect()
+}
