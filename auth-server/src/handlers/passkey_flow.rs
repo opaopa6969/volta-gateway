@@ -409,7 +409,11 @@ pub async fn register_finish(
         .finish_registration(&req.credential, &reg_state)
         .map_err(|e| ApiError::bad_request("PASSKEY_FAILED", &format!("registration failed: {}", e)))?;
 
-    let pub_key_bytes = bincode::serialize(&passkey)
+    // serde_json, not bincode: webauthn-rs's Passkey uses serde `deserialize_any`
+    // (untagged/flatten), which bincode (non-self-describing) cannot read back —
+    // it serializes fine but `bincode::deserialize::<Passkey>` then fails at login
+    // with "Bincode does not support deserialize_any". JSON round-trips cleanly.
+    let pub_key_bytes = serde_json::to_vec(&passkey)
         .map_err(|e| ApiError::internal(&format!("passkey serialize: {}", e)))?;
 
     PasskeyStore::create(
@@ -473,11 +477,17 @@ fn decode_state<T: for<'de> serde::Deserialize<'de>>(bytes: &[u8]) -> Result<T, 
 }
 
 fn passkeys_from_records(records: &[volta_auth_core::record::PasskeyRecord]) -> Result<Vec<Passkey>, ApiError> {
-    records
+    // Skip (rather than hard-fail on) any record we can't decode, so one
+    // unreadable credential never bricks a user's whole passkey set. Legacy
+    // bincode-encoded rows are unreadable as JSON and get dropped here.
+    Ok(records
         .iter()
-        .map(|r| {
-            bincode::deserialize::<Passkey>(&r.public_key)
-                .map_err(|e| ApiError::internal(&format!("passkey deserialize: {}", e)))
+        .filter_map(|r| match serde_json::from_slice::<Passkey>(&r.public_key) {
+            Ok(pk) => Some(pk),
+            Err(e) => {
+                tracing::warn!(error = %e, "skipping undecodable passkey record");
+                None
+            }
         })
-        .collect()
+        .collect())
 }
