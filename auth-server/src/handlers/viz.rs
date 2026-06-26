@@ -56,6 +56,11 @@ fn all_flows() -> Vec<serde_json::Value> {
         build_flow_view(&flow_tables::PASSKEY),
         build_flow_view(&flow_tables::MFA),
         build_flow_view(&flow_tables::INVITE),
+        build_flow_view(&flow_tables::REGISTRATION),
+        build_flow_view(&flow_tables::EMAIL_VERIFICATION),
+        build_flow_view(&flow_tables::PASSWORD_RESET),
+        build_flow_view(&flow_tables::MFA_SETUP),
+        build_flow_view(&flow_tables::LOGIN_CHALLENGE),
     ]
 }
 
@@ -181,11 +186,120 @@ mod flow_tables {
         Edge { from: "CONSENT_SHOWN", to: "ACCEPTED", label: "EmailMatchGuard" },
         Edge { from: "ACCOUNT_SWITCHING", to: "ACCEPTED", label: "ResumeGuard" },
     ];
+
+    // ── Phase 2 flows (auth-core/src/flow/{registration,email_verification,
+    //    password_reset,mfa_setup,login_challenge}.rs). Display names are
+    //    SCREAMING_SNAKE; edges mirror the tramli definitions. ──
+    pub static REGISTRATION: FlowView = FlowView {
+        name: "registration",
+        states: &[
+            "START", "EMAIL_VERIFICATION_PENDING", "EMAIL_VERIFIED",
+            "MFA_SETUP_OPTIONAL", "COMPLETED", "CANCELLED",
+        ],
+        initial: "START",
+        terminals: &["COMPLETED", "CANCELLED"],
+        edges: &[
+            Edge { from: "START", to: "EMAIL_VERIFICATION_PENDING", label: "RegIssueVerification" },
+            Edge { from: "EMAIL_VERIFICATION_PENDING", to: "EMAIL_VERIFIED", label: "RegVerifyEmailGuard" },
+            Edge { from: "EMAIL_VERIFIED", to: "MFA_SETUP_OPTIONAL", label: "branch(setup)" },
+            Edge { from: "EMAIL_VERIFIED", to: "COMPLETED", label: "branch(skip)" },
+            Edge { from: "MFA_SETUP_OPTIONAL", to: "COMPLETED", label: "RegMfaDoneGuard" },
+            Edge { from: "EMAIL_VERIFICATION_PENDING", to: "CANCELLED", label: "expire_or_cancel" },
+        ],
+    };
+    pub static REGISTRATION_EXTERNAL: [Edge; 2] = [
+        Edge { from: "EMAIL_VERIFICATION_PENDING", to: "EMAIL_VERIFIED", label: "RegVerifyEmailGuard" },
+        Edge { from: "MFA_SETUP_OPTIONAL", to: "COMPLETED", label: "RegMfaDoneGuard" },
+    ];
+
+    pub static EMAIL_VERIFICATION: FlowView = FlowView {
+        name: "email_verification",
+        states: &["TOKEN_ISSUED", "SEND_REQUESTED", "SENT", "VERIFIED", "CANCELLED"],
+        initial: "TOKEN_ISSUED",
+        terminals: &["VERIFIED", "CANCELLED"],
+        edges: &[
+            Edge { from: "TOKEN_ISSUED", to: "SEND_REQUESTED", label: "EvRequestSend" },
+            Edge { from: "SEND_REQUESTED", to: "SENT", label: "EvMarkSentGuard" },
+            Edge { from: "SENT", to: "VERIFIED", label: "EvVerifyTokenGuard" },
+            Edge { from: "SEND_REQUESTED", to: "CANCELLED", label: "send_failed" },
+        ],
+    };
+    pub static EMAIL_VERIFICATION_EXTERNAL: [Edge; 2] = [
+        Edge { from: "SEND_REQUESTED", to: "SENT", label: "EvMarkSentGuard" },
+        Edge { from: "SENT", to: "VERIFIED", label: "EvVerifyTokenGuard" },
+    ];
+
+    pub static PASSWORD_RESET: FlowView = FlowView {
+        name: "password_reset",
+        states: &[
+            "REQUESTED", "TOKEN_ISSUED", "SEND_REQUESTED", "SENT",
+            "TOKEN_VERIFIED", "PASSWORD_CHANGED", "COMPLETED", "CANCELLED",
+        ],
+        initial: "REQUESTED",
+        terminals: &["COMPLETED", "CANCELLED"],
+        edges: &[
+            Edge { from: "REQUESTED", to: "TOKEN_ISSUED", label: "PrIssueResetToken" },
+            Edge { from: "TOKEN_ISSUED", to: "SEND_REQUESTED", label: "PrRequestSend" },
+            Edge { from: "SEND_REQUESTED", to: "SENT", label: "PrMarkSentGuard" },
+            Edge { from: "SENT", to: "TOKEN_VERIFIED", label: "PrVerifyResetTokenGuard" },
+            Edge { from: "TOKEN_VERIFIED", to: "PASSWORD_CHANGED", label: "PrChangePasswordGuard" },
+            Edge { from: "PASSWORD_CHANGED", to: "COMPLETED", label: "PrComplete" },
+            Edge { from: "SEND_REQUESTED", to: "CANCELLED", label: "expire" },
+        ],
+    };
+    pub static PASSWORD_RESET_EXTERNAL: [Edge; 3] = [
+        Edge { from: "SEND_REQUESTED", to: "SENT", label: "PrMarkSentGuard" },
+        Edge { from: "SENT", to: "TOKEN_VERIFIED", label: "PrVerifyResetTokenGuard" },
+        Edge { from: "TOKEN_VERIFIED", to: "PASSWORD_CHANGED", label: "PrChangePasswordGuard" },
+    ];
+
+    pub static MFA_SETUP: FlowView = FlowView {
+        name: "mfa_setup",
+        states: &[
+            "NOT_CONFIGURED", "SETUP_STARTED", "SECRET_ISSUED",
+            "CONFIRMATION_PENDING", "ENABLED", "RECOVERY_CODES_ISSUED", "CANCELLED",
+        ],
+        initial: "NOT_CONFIGURED",
+        terminals: &["RECOVERY_CODES_ISSUED", "CANCELLED"],
+        edges: &[
+            Edge { from: "NOT_CONFIGURED", to: "SETUP_STARTED", label: "MfaStartSetupGuard" },
+            Edge { from: "SETUP_STARTED", to: "SECRET_ISSUED", label: "MfaIssueSecret" },
+            Edge { from: "SECRET_ISSUED", to: "CONFIRMATION_PENDING", label: "MfaPresentSecret" },
+            Edge { from: "CONFIRMATION_PENDING", to: "ENABLED", label: "MfaConfirmCodeGuard" },
+            Edge { from: "ENABLED", to: "RECOVERY_CODES_ISSUED", label: "MfaIssueRecoveryCodes" },
+            Edge { from: "CONFIRMATION_PENDING", to: "CANCELLED", label: "cancel" },
+        ],
+    };
+    pub static MFA_SETUP_EXTERNAL: [Edge; 2] = [
+        Edge { from: "NOT_CONFIGURED", to: "SETUP_STARTED", label: "MfaStartSetupGuard" },
+        Edge { from: "CONFIRMATION_PENDING", to: "ENABLED", label: "MfaConfirmCodeGuard" },
+    ];
+
+    pub static LOGIN_CHALLENGE: FlowView = FlowView {
+        name: "login_challenge",
+        states: &[
+            "PASSWORD_ACCEPTED", "MFA_REQUIRED", "CHALLENGE_SENT",
+            "CHALLENGE_VERIFIED", "LOGIN_GRANTED", "LOGIN_DENIED",
+        ],
+        initial: "PASSWORD_ACCEPTED",
+        terminals: &["LOGIN_GRANTED", "LOGIN_DENIED"],
+        edges: &[
+            Edge { from: "PASSWORD_ACCEPTED", to: "MFA_REQUIRED", label: "branch(mfa)" },
+            Edge { from: "PASSWORD_ACCEPTED", to: "LOGIN_GRANTED", label: "branch(grant)" },
+            Edge { from: "MFA_REQUIRED", to: "CHALLENGE_SENT", label: "LcSendChallenge" },
+            Edge { from: "CHALLENGE_SENT", to: "CHALLENGE_VERIFIED", label: "LcVerifyChallengeGuard" },
+            Edge { from: "CHALLENGE_VERIFIED", to: "LOGIN_GRANTED", label: "LcGrant" },
+            Edge { from: "CHALLENGE_SENT", to: "LOGIN_DENIED", label: "deny" },
+        ],
+    };
+    pub static LOGIN_CHALLENGE_EXTERNAL: [Edge; 1] = [
+        Edge { from: "CHALLENGE_SENT", to: "CHALLENGE_VERIFIED", label: "LcVerifyChallengeGuard" },
+    ];
 }
 
 /// Expose the same descriptors to `auth-core::flow::validate` at startup
 /// (backlog P2 #9). Returns one descriptor per flow so `main.rs` can iterate.
-pub fn flow_descriptors() -> [volta_auth_core::flow::validate::FlowDescriptor; 4] {
+pub fn flow_descriptors() -> [volta_auth_core::flow::validate::FlowDescriptor; 9] {
     use volta_auth_core::flow::validate::FlowDescriptor;
     [
         FlowDescriptor {
@@ -231,12 +345,78 @@ pub fn flow_descriptors() -> [volta_auth_core::flow::validate::FlowDescriptor; 4
             processors: &[],
             flow_data_aliases: &[],
         },
+        FlowDescriptor {
+            name: flow_tables::REGISTRATION.name,
+            states: flow_tables::REGISTRATION.states,
+            initial: flow_tables::REGISTRATION.initial,
+            terminals: flow_tables::REGISTRATION.terminals,
+            edges: flow_tables::REGISTRATION.edges,
+            external_edges: &flow_tables::REGISTRATION_EXTERNAL,
+            processors: &[],
+            flow_data_aliases: &[],
+        },
+        FlowDescriptor {
+            name: flow_tables::EMAIL_VERIFICATION.name,
+            states: flow_tables::EMAIL_VERIFICATION.states,
+            initial: flow_tables::EMAIL_VERIFICATION.initial,
+            terminals: flow_tables::EMAIL_VERIFICATION.terminals,
+            edges: flow_tables::EMAIL_VERIFICATION.edges,
+            external_edges: &flow_tables::EMAIL_VERIFICATION_EXTERNAL,
+            processors: &[],
+            flow_data_aliases: &[],
+        },
+        FlowDescriptor {
+            name: flow_tables::PASSWORD_RESET.name,
+            states: flow_tables::PASSWORD_RESET.states,
+            initial: flow_tables::PASSWORD_RESET.initial,
+            terminals: flow_tables::PASSWORD_RESET.terminals,
+            edges: flow_tables::PASSWORD_RESET.edges,
+            external_edges: &flow_tables::PASSWORD_RESET_EXTERNAL,
+            processors: &[],
+            flow_data_aliases: &[],
+        },
+        FlowDescriptor {
+            name: flow_tables::MFA_SETUP.name,
+            states: flow_tables::MFA_SETUP.states,
+            initial: flow_tables::MFA_SETUP.initial,
+            terminals: flow_tables::MFA_SETUP.terminals,
+            edges: flow_tables::MFA_SETUP.edges,
+            external_edges: &flow_tables::MFA_SETUP_EXTERNAL,
+            processors: &[],
+            flow_data_aliases: &[],
+        },
+        FlowDescriptor {
+            name: flow_tables::LOGIN_CHALLENGE.name,
+            states: flow_tables::LOGIN_CHALLENGE.states,
+            initial: flow_tables::LOGIN_CHALLENGE.initial,
+            terminals: flow_tables::LOGIN_CHALLENGE.terminals,
+            edges: flow_tables::LOGIN_CHALLENGE.edges,
+            external_edges: &flow_tables::LOGIN_CHALLENGE_EXTERNAL,
+            processors: &[],
+            flow_data_aliases: &[],
+        },
     ]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn all_descriptors_pass_startup_validation() {
+        // Mirrors the startup gate in main.rs: every flow descriptor (incl. the
+        // 5 Phase-2 flows) must validate, else the process would exit(1).
+        let descs = flow_descriptors();
+        for desc in &descs {
+            volta_auth_core::flow::validate::validate(desc)
+                .unwrap_or_else(|e| panic!("flow '{}' failed validation: {:?}", desc.name, e));
+        }
+        let refs: Vec<&volta_auth_core::flow::validate::FlowDescriptor> = descs.iter().collect();
+        assert!(
+            volta_auth_core::flow::validate::validate_global_aliases(&refs).is_empty(),
+            "cross-flow alias validation failed"
+        );
+    }
 
     #[test]
     fn every_flow_renders_mermaid() {
