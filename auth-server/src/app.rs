@@ -18,7 +18,10 @@ pub fn build_router(state: AppState) -> Router {
     // IdP redirect; Rust counts the page load too).
     let rl_oidc = RateLimiter::new("oidc", 30, Duration::from_secs(60));
     let rl_mfa = RateLimiter::new("mfa", 5, Duration::from_secs(60));
-    let rl_passkey = RateLimiter::new("passkey", 5, Duration::from_secs(60));
+    // passkey: 30/min/IP. Conditional UI fires discover/start on every /login
+    // page load (plus the explicit button + finish), so 5/min locked legit
+    // users out. Verification still happens at finish; start is a cheap challenge.
+    let rl_passkey = RateLimiter::new("passkey", 30, Duration::from_secs(60));
     let rl_invite = RateLimiter::new("invite", 20, Duration::from_secs(60));
     let rl_magic = RateLimiter::new("magic-link", 5, Duration::from_secs(60));
 
