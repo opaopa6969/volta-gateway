@@ -146,23 +146,49 @@ pub async fn root(State(state): State<AppState>, jar: CookieJar) -> Response {
     match require_session(&state, &jar).await {
         Ok(session) => {
             let email = session.email.unwrap_or_default();
-            let template = r#"<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Volta Auth</title>__STYLE__</head><body>
-<h1>サインイン済み</h1><p>__EMAIL__</p>
+            // Account page: signed-in identity + passkey management (list /
+            // add / delete) + sign out. This is the fallback landing for a
+            // direct visit to the auth host (normal flows redirect to return_to).
+            let template = r#"<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>アカウント — Volta Auth</title>__STYLE__</head><body>
+<h1>アカウント</h1>
+<p style="color:#555">サインイン中: <strong>__EMAIL__</strong></p>
 <div id="enroll" style="display:none;border:1px solid #4285f4;border-radius:8px;padding:1rem;margin:.6rem 0;background:#f5f9ff">
 <p style="margin:.2rem 0">次回からパスワード無しでログインできます。</p>
 <button class="btn g" onclick="registerPasskey()">このデバイスにパスキーを登録</button>
 </div>
-<button class="btn" id="reg-btn" onclick="registerPasskey()" style="display:none">このデバイスにパスキーを登録</button>
+<h2 style="font-size:1rem;margin:1.4rem 0 .4rem;text-align:left">登録済みパスキー</h2>
+<div id="pk-list" style="font-size:.9rem">読み込み中...</div>
+<button class="btn" id="add-btn" onclick="registerPasskey()" style="display:none">別のパスキーを追加</button>
 <a class="btn" href="/auth/logout">サインアウト</a>
 <div id="status"></div>
 <script>
 const USER_ID = "__USER_ID__";
 __WEBAUTHN_JS__
-async function registerPasskey(){const st=document.getElementById('status');st.style.color='#b00';st.textContent='登録中...';try{const r=await fetch('/api/v1/users/'+USER_ID+'/passkeys/register/start',{method:'POST',headers:{'Accept':'application/json','content-type':'application/json'},body:'{}'});if(!r.ok)throw new Error(await serverErrText(r,'開始に失敗'));const d=await r.json();const pk=d.options.publicKey;pk.challenge=b64urlToBuf(pk.challenge);pk.user.id=b64urlToBuf(pk.user.id);(pk.excludeCredentials||[]).forEach(c=>c.id=b64urlToBuf(c.id));const cred=await navigator.credentials.create({publicKey:pk});const fr=await fetch('/api/v1/users/'+USER_ID+'/passkeys/register/finish',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({challenge_id:d.challenge_id,name:'My Passkey',credential:attestationJSON(cred)})});if(!fr.ok)throw new Error(await serverErrText(fr,'登録に失敗'));st.style.color='#070';st.textContent='パスキー登録完了！サインアウトして「パスキーでログイン」を試せます。';document.getElementById('enroll').style.display='none';}catch(err){st.textContent='登録失敗: '+passkeyErr(err);}}
-// Phase 2: only suggest enrollment when a platform authenticator exists AND the
-// user has no passkey yet. Otherwise just expose the plain register button.
-async function maybeOfferEnroll(){try{if(!window.PublicKeyCredential){document.getElementById('reg-btn').style.display='block';return;}const uvpaa=await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();const lr=await fetch('/api/v1/users/'+USER_ID+'/passkeys',{headers:{'Accept':'application/json'}});const list=lr.ok?await lr.json():[];const count=Array.isArray(list)?list.length:0;if(uvpaa&&count===0){document.getElementById('enroll').style.display='block';}else{document.getElementById('reg-btn').style.display='block';}}catch(_){document.getElementById('reg-btn').style.display='block';}}
-maybeOfferEnroll();
+function fmtDate(s){if(!s)return '—';try{return new Date(s).toLocaleString('ja-JP');}catch(_){return s;}}
+async function loadPasskeys(){
+  const box=document.getElementById('pk-list');box.textContent='読み込み中...';
+  let list=[];
+  try{const r=await fetch('/api/v1/users/'+USER_ID+'/passkeys',{headers:{'Accept':'application/json'}});list=r.ok?await r.json():[];}catch(_){box.textContent='一覧の取得に失敗しました。';document.getElementById('add-btn').style.display='block';return;}
+  box.textContent='';
+  if(!Array.isArray(list)||list.length===0){box.textContent='まだ登録されていません。';}
+  else{list.forEach(p=>{
+    const row=document.createElement('div');row.style.cssText='display:flex;justify-content:space-between;align-items:center;border:1px solid #eee;border-radius:8px;padding:.5rem .7rem;margin:.3rem 0';
+    const info=document.createElement('div');info.style.cssText='text-align:left';
+    const nm=document.createElement('div');nm.textContent=p.name||'パスキー';nm.style.fontWeight='600';
+    const meta=document.createElement('div');meta.style.cssText='color:#999;font-size:.78rem';meta.textContent='作成 '+fmtDate(p.created_at)+' / 最終 '+fmtDate(p.last_used_at);
+    info.appendChild(nm);info.appendChild(meta);
+    const del=document.createElement('button');del.textContent='削除';del.style.cssText='border:1px solid #d33;color:#d33;background:#fff;border-radius:6px;padding:.3rem .6rem;cursor:pointer';
+    del.onclick=()=>deletePasskey(p.id);
+    row.appendChild(info);row.appendChild(del);box.appendChild(row);
+  });}
+  let uvpaa=false;try{uvpaa=window.PublicKeyCredential?await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable():false;}catch(_){}
+  const empty=!Array.isArray(list)||list.length===0;
+  document.getElementById('enroll').style.display=(empty&&uvpaa)?'block':'none';
+  document.getElementById('add-btn').style.display=empty?'none':'block';
+}
+async function deletePasskey(id){const st=document.getElementById('status');st.style.color='#b00';st.textContent='';if(!confirm('このパスキーを削除しますか？'))return;try{const r=await fetch('/api/v1/users/'+USER_ID+'/passkeys/'+id,{method:'DELETE'});if(!r.ok)throw new Error(await serverErrText(r,'削除に失敗'));st.style.color='#070';st.textContent='削除しました。';loadPasskeys();}catch(err){st.textContent='削除失敗: '+passkeyErr(err);}}
+async function registerPasskey(){const st=document.getElementById('status');st.style.color='#b00';st.textContent='登録中...';try{const r=await fetch('/api/v1/users/'+USER_ID+'/passkeys/register/start',{method:'POST',headers:{'Accept':'application/json','content-type':'application/json'},body:'{}'});if(!r.ok)throw new Error(await serverErrText(r,'開始に失敗'));const d=await r.json();const pk=d.options.publicKey;pk.challenge=b64urlToBuf(pk.challenge);pk.user.id=b64urlToBuf(pk.user.id);(pk.excludeCredentials||[]).forEach(c=>c.id=b64urlToBuf(c.id));const cred=await navigator.credentials.create({publicKey:pk});const fr=await fetch('/api/v1/users/'+USER_ID+'/passkeys/register/finish',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({challenge_id:d.challenge_id,name:'My Passkey',credential:attestationJSON(cred)})});if(!fr.ok)throw new Error(await serverErrText(fr,'登録に失敗'));st.style.color='#070';st.textContent='パスキーを登録しました。';loadPasskeys();}catch(err){st.textContent='登録失敗: '+passkeyErr(err);}}
+loadPasskeys();
 </script></body></html>"#;
             let html = template
                 .replace("__STYLE__", PAGE_STYLE)
