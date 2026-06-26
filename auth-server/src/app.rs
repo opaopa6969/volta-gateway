@@ -57,6 +57,8 @@ pub fn build_router(state: AppState) -> Router {
         .route_layer(from_fn_with_state(rl_register, limit_by_ip));
 
     Router::new()
+        // Root → login (parity with Java volta-auth-proxy: GET / → redirect /login)
+        .route("/", get(|| async { axum::response::Redirect::to("/login") }))
         // Auth (ForwardAuth + session)
         .route("/auth/verify", get(handlers::auth::verify))
         .route("/auth/logout", get(handlers::auth::logout_get))
