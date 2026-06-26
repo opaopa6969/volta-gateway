@@ -14,7 +14,8 @@ use rand::RngCore;
 use serde::Deserialize;
 
 use crate::error::{no_cache_headers, ApiError};
-use crate::helpers::{is_json_accept, set_session_cookie};
+use crate::helpers::{is_json_accept, require_session, set_session_cookie};
+use axum_extra::extract::CookieJar;
 use crate::state::AppState;
 
 use volta_auth_core::idp::PkcePair;
@@ -66,6 +67,29 @@ pub async fn login(
     let mut resp = Html(html).into_response();
     no_cache_headers(&mut resp);
     resp
+}
+
+/// GET / — landing page. Session-aware so we never bounce an already
+/// authenticated user back into the OIDC redirect (which would loop:
+/// `/` → `/login` → IdP → `/callback` → return_to `/` → …). Authenticated →
+/// minimal "signed in" page; otherwise → `/login`.
+pub async fn root(State(state): State<AppState>, jar: CookieJar) -> Response {
+    match require_session(&state, &jar).await {
+        Ok(session) => {
+            let email = session.email.unwrap_or_default();
+            let html = format!(
+                r#"<!DOCTYPE html><html><head><meta charset="utf-8"><title>Volta Auth</title></head>
+<body style="font-family:sans-serif;max-width:32rem;margin:4rem auto;text-align:center">
+<h1>サインイン済み</h1><p>{}</p>
+<p><a href="/auth/logout">サインアウト</a></p></body></html>"#,
+                email
+            );
+            let mut resp = Html(html).into_response();
+            no_cache_headers(&mut resp);
+            resp
+        }
+        Err(_) => Redirect::to("/login").into_response(),
+    }
 }
 
 /// Create a fresh `oidc_flows` row and return the IdP authorization URL.

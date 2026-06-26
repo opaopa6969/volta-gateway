@@ -60,8 +60,10 @@ pub fn build_router(state: AppState) -> Router {
         .route_layer(from_fn_with_state(rl_register, limit_by_ip));
 
     Router::new()
-        // Root → login (parity with Java volta-auth-proxy: GET / → redirect /login)
-        .route("/", get(|| async { axum::response::Redirect::to("/login") }))
+        // Root → session-aware landing (authed: "signed in" page; else /login).
+        // Must NOT unconditionally redirect to /login, or a logged-in user
+        // landing on `/` loops back through the IdP. (parity with Java `/`→/login)
+        .route("/", get(handlers::oidc::root))
         // Auth (ForwardAuth + session)
         .route("/auth/verify", get(handlers::auth::verify))
         .route("/auth/logout", get(handlers::auth::logout_get))
