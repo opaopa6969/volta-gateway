@@ -122,20 +122,38 @@ mod flow_tables {
         ],
     };
 
+    // Reflects the real imperative runtime (handlers/passkey_flow.rs), not just
+    // the happy-path assertion ceremony: BOTH registration (attestation) and
+    // authentication (discoverable assertion), the sign-counter clone check,
+    // and the error terminals actually hit in production (see passkey-ux-design.md).
     pub static PASSKEY: FlowView = FlowView {
         name: "passkey",
         states: &[
-            "INIT", "CHALLENGE_ISSUED", "ASSERTION_RECEIVED",
-            "USER_RESOLVED", "COMPLETE", "TERMINAL_ERROR",
+            "INIT",
+            // registration (attestation) ceremony
+            "REG_CHALLENGE", "ATTESTATION_RECEIVED", "REGISTERED",
+            // authentication (discoverable assertion) ceremony
+            "AUTH_CHALLENGE", "ASSERTION_RECEIVED", "USER_RESOLVED", "COUNTER_CHECKED", "COMPLETE",
+            // terminals
+            "TERMINAL_ERROR", "CLONE_REJECTED",
         ],
         initial: "INIT",
-        terminals: &["COMPLETE", "TERMINAL_ERROR"],
+        terminals: &["REGISTERED", "COMPLETE", "TERMINAL_ERROR", "CLONE_REJECTED"],
         edges: &[
-            Edge { from: "INIT", to: "CHALLENGE_ISSUED", label: "PasskeyChallengeProcessor" },
-            Edge { from: "CHALLENGE_ISSUED", to: "ASSERTION_RECEIVED", label: "PasskeyAssertionGuard" },
-            Edge { from: "ASSERTION_RECEIVED", to: "USER_RESOLVED", label: "PasskeyVerifyProcessor" },
-            Edge { from: "USER_RESOLVED", to: "COMPLETE", label: "SessionIssueProcessor" },
-            Edge { from: "CHALLENGE_ISSUED", to: "TERMINAL_ERROR", label: "guard_fail" },
+            // ── registration (register/start → create() → register/finish) ──
+            Edge { from: "INIT", to: "REG_CHALLENGE", label: "register_start" },
+            Edge { from: "REG_CHALLENGE", to: "ATTESTATION_RECEIVED", label: "attestation_ext" },
+            Edge { from: "ATTESTATION_RECEIVED", to: "REGISTERED", label: "verify_and_store" },
+            Edge { from: "REG_CHALLENGE", to: "TERMINAL_ERROR", label: "already_registered" },
+            Edge { from: "ATTESTATION_RECEIVED", to: "TERMINAL_ERROR", label: "attestation_invalid" },
+            // ── authentication (discover/start → get() → discover/finish) ──
+            Edge { from: "INIT", to: "AUTH_CHALLENGE", label: "discover_start" },
+            Edge { from: "AUTH_CHALLENGE", to: "ASSERTION_RECEIVED", label: "assertion_ext" },
+            Edge { from: "ASSERTION_RECEIVED", to: "USER_RESOLVED", label: "verify_user_handle" },
+            Edge { from: "USER_RESOLVED", to: "COUNTER_CHECKED", label: "sign_counter_check" },
+            Edge { from: "COUNTER_CHECKED", to: "COMPLETE", label: "session_issue" },
+            Edge { from: "COUNTER_CHECKED", to: "CLONE_REJECTED", label: "signcount_regression" },
+            Edge { from: "AUTH_CHALLENGE", to: "TERMINAL_ERROR", label: "challenge_expired" },
             Edge { from: "ASSERTION_RECEIVED", to: "TERMINAL_ERROR", label: "invalid_signature" },
         ],
     };
@@ -176,8 +194,9 @@ mod flow_tables {
     pub static OIDC_EXTERNAL: [Edge; 1] = [
         Edge { from: "REDIRECTED", to: "CALLBACK_RECEIVED", label: "OidcCallbackGuard" },
     ];
-    pub static PASSKEY_EXTERNAL: [Edge; 1] = [
-        Edge { from: "CHALLENGE_ISSUED", to: "ASSERTION_RECEIVED", label: "PasskeyAssertionGuard" },
+    pub static PASSKEY_EXTERNAL: [Edge; 2] = [
+        Edge { from: "REG_CHALLENGE", to: "ATTESTATION_RECEIVED", label: "attestation_ext" },
+        Edge { from: "AUTH_CHALLENGE", to: "ASSERTION_RECEIVED", label: "assertion_ext" },
     ];
     pub static MFA_EXTERNAL: [Edge; 1] = [
         Edge { from: "CHALLENGE_SHOWN", to: "VERIFIED", label: "MfaCodeGuard" },
