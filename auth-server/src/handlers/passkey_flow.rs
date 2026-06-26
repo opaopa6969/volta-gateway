@@ -443,7 +443,11 @@ async fn persist_challenge<T: serde::Serialize>(
     kind: &str,
     state: &T,
 ) -> Result<Uuid, ApiError> {
-    let bytes = bincode::serialize(state)
+    // serde_json, not bincode: webauthn-rs's PasskeyRegistration state contains
+    // variable-size maps (extensions) that bincode cannot encode
+    // ("...sequences and maps that have a knowable size ahead of time"). JSON
+    // handles them; challenges are transient so the on-disk format is internal.
+    let bytes = serde_json::to_vec(state)
         .map_err(|e| ApiError::internal(&format!("passkey state serialize: {}", e)))?;
     let id = Uuid::new_v4();
     let expires = chrono::Utc::now() + chrono::Duration::seconds(CHALLENGE_TTL_SECS);
@@ -464,7 +468,7 @@ async fn persist_challenge<T: serde::Serialize>(
 }
 
 fn decode_state<T: for<'de> serde::Deserialize<'de>>(bytes: &[u8]) -> Result<T, ApiError> {
-    bincode::deserialize(bytes)
+    serde_json::from_slice(bytes)
         .map_err(|e| ApiError::internal(&format!("passkey state deserialize: {}", e)))
 }
 
