@@ -96,7 +96,12 @@ AUTH_PASSWORD_ENABLED=false
 
 ## 7. 未決事項
 
-1. **password 能力を入れるか**（§0）。Phase 3 までに決定。
+1. **password 能力 → 入れない（DECIDED, passwordless 継続）。** 本システムは意図的に
+   passwordless（OIDC / magic link / passkey / SAML）。password は最も弱い要素を戻すため不採用。
+   - 登録は「メール確認で有効化」（`setPassword` なし）。`runtime::start_registration/verify_email`
+     で実装（MFA optional → 既定 skip で Completed）。
+   - PasswordResetFlow は定義のみ残置（実装・配線せず）。`AUTH_PASSWORD_ENABLED` は false 固定。
+   - アカウント回復が要れば magic link 再認証（既存）で代替。Phase 3 は実質スキップ。
 2. EmailVerification は専用テーブル新設（magic_links は流用しない）で確定。
 3. SES/SMTP/Twilio/LINE の secret 注入方式（env か secret store）は Phase 6 で確定。
 4. live 反映は Java→Rust 移行が前提（別件）。
