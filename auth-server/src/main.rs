@@ -170,9 +170,10 @@ async fn main() {
         // EMAIL: real provider (SMTP/MAILPIT/DUMMY) chosen by
         // NOTIFICATION_EMAIL_PROVIDER; falls back to LOG sink (no external send).
         svc.register(notification_providers::build_email_sender());
-        // SMS/LINE: dummy/log until a provider is wired.
-        svc.register(Arc::new(LogSender::new(NotificationChannel::Sms)));
-        svc.register(Arc::new(LogSender::new(NotificationChannel::Line)));
+        // SMS (Twilio) / LINE (Messaging API): real providers when configured,
+        // else DUMMY/LOG (no external send). SNS/SES remain LOG fallbacks.
+        svc.register(notification_providers::build_sms_sender());
+        svc.register(notification_providers::build_line_sender());
         Arc::new(svc)
     };
     let notify_channel = notify_default.trim().to_ascii_uppercase();

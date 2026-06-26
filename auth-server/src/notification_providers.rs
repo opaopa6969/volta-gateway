@@ -211,4 +211,162 @@ mod tests {
         assert_eq!(s.provider(), NotificationProvider::DummyEmail);
         std::env::remove_var("NOTIFICATION_EMAIL_PROVIDER");
     }
+
+    #[test]
+    fn sms_sender_defaults_to_log_and_dummy_selectable() {
+        std::env::remove_var("NOTIFICATION_SMS_PROVIDER");
+        assert_eq!(build_sms_sender().provider(), NotificationProvider::Log);
+        assert_eq!(build_sms_sender().channel(), NotificationChannel::Sms);
+        std::env::set_var("NOTIFICATION_SMS_PROVIDER", "DUMMY");
+        assert_eq!(build_sms_sender().provider(), NotificationProvider::DummySms);
+        std::env::remove_var("NOTIFICATION_SMS_PROVIDER");
+    }
+
+    #[test]
+    fn line_sender_defaults_to_log_and_dummy_selectable() {
+        std::env::remove_var("NOTIFICATION_LINE_PROVIDER");
+        assert_eq!(build_line_sender().provider(), NotificationProvider::Log);
+        assert_eq!(build_line_sender().channel(), NotificationChannel::Line);
+        std::env::set_var("NOTIFICATION_LINE_PROVIDER", "DUMMY");
+        assert_eq!(build_line_sender().provider(), NotificationProvider::DummyLine);
+        std::env::remove_var("NOTIFICATION_LINE_PROVIDER");
+    }
+
+    #[test]
+    fn twilio_requires_full_creds() {
+        std::env::set_var("NOTIFICATION_SMS_PROVIDER", "TWILIO");
+        std::env::remove_var("TWILIO_ACCOUNT_SID");
+        // Missing creds → graceful LOG fallback (never panics).
+        assert_eq!(build_sms_sender().provider(), NotificationProvider::Log);
+        std::env::remove_var("NOTIFICATION_SMS_PROVIDER");
+    }
+}
+
+// ─── SMS / LINE providers (Phase 1 follow-up) ──────────────────────────────
+
+use volta_auth_core::notification::NotificationProvider as P;
+
+/// Body-only render (SMS/LINE have no subject).
+fn render_text(t: &NotificationTemplate) -> String {
+    let (_subject, body) = render(t);
+    body
+}
+
+/// Twilio SMS (real, via HTTP Basic auth).
+pub struct TwilioSmsSender {
+    http: reqwest::Client,
+    sid: String,
+    token: String,
+    from: String,
+}
+
+impl TwilioSmsSender {
+    fn from_env() -> Result<Self, String> {
+        let sid = env("TWILIO_ACCOUNT_SID", "");
+        let token = env("TWILIO_AUTH_TOKEN", "");
+        let from = env("TWILIO_FROM", "");
+        if sid.is_empty() || token.is_empty() || from.is_empty() {
+            return Err("TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_FROM required".into());
+        }
+        Ok(Self {
+            http: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .map_err(|e| e.to_string())?,
+            sid,
+            token,
+            from,
+        })
+    }
+}
+
+#[async_trait]
+impl NotificationSender for TwilioSmsSender {
+    fn channel(&self) -> NotificationChannel { NotificationChannel::Sms }
+    fn provider(&self) -> NotificationProvider { P::Twilio }
+    async fn send(&self, msg: &NotificationMessage) -> Result<NotificationReceipt, NotificationError> {
+        let body = render_text(&msg.template);
+        let url = format!("https://api.twilio.com/2010-04-01/Accounts/{}/Messages.json", self.sid);
+        let params = [("From", self.from.as_str()), ("To", msg.to.as_str()), ("Body", body.as_str())];
+        let resp = self.http.post(&url)
+            .basic_auth(&self.sid, Some(&self.token))
+            .form(&params)
+            .send()
+            .await
+            .map_err(|e| NotificationError::SendFailed { retryable: true, reason: e.to_string() })?;
+        let status = resp.status();
+        if status.is_success() {
+            Ok(NotificationReceipt { channel: NotificationChannel::Sms, provider: P::Twilio, message_id: msg.correlation_id.clone() })
+        } else {
+            Err(NotificationError::SendFailed { retryable: status.is_server_error(), reason: format!("twilio status {}", status) })
+        }
+    }
+}
+
+/// LINE Messaging API push (real, via channel access token).
+pub struct LineSender {
+    http: reqwest::Client,
+    token: String,
+}
+
+impl LineSender {
+    fn from_env() -> Result<Self, String> {
+        let token = env("LINE_CHANNEL_TOKEN", "");
+        if token.is_empty() {
+            return Err("LINE_CHANNEL_TOKEN required".into());
+        }
+        Ok(Self {
+            http: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .map_err(|e| e.to_string())?,
+            token,
+        })
+    }
+}
+
+#[async_trait]
+impl NotificationSender for LineSender {
+    fn channel(&self) -> NotificationChannel { NotificationChannel::Line }
+    fn provider(&self) -> NotificationProvider { P::LineMessagingApi }
+    async fn send(&self, msg: &NotificationMessage) -> Result<NotificationReceipt, NotificationError> {
+        let body = render_text(&msg.template);
+        let resp = self.http.post("https://api.line.me/v2/bot/message/push")
+            .bearer_auth(&self.token)
+            .json(&serde_json::json!({ "to": msg.to, "messages": [{ "type": "text", "text": body }] }))
+            .send()
+            .await
+            .map_err(|e| NotificationError::SendFailed { retryable: true, reason: e.to_string() })?;
+        let status = resp.status();
+        if status.is_success() {
+            Ok(NotificationReceipt { channel: NotificationChannel::Line, provider: P::LineMessagingApi, message_id: msg.correlation_id.clone() })
+        } else {
+            Err(NotificationError::SendFailed { retryable: status.is_server_error(), reason: format!("line status {}", status) })
+        }
+    }
+}
+
+/// Select the SMS sender from `NOTIFICATION_SMS_PROVIDER` (TWILIO/DUMMY/SNS→LOG/else→LOG).
+pub fn build_sms_sender() -> Arc<dyn NotificationSender> {
+    match env("NOTIFICATION_SMS_PROVIDER", "LOG").trim().to_ascii_uppercase().as_str() {
+        "TWILIO" => match TwilioSmsSender::from_env() {
+            Ok(s) => { info!("SMS via Twilio"); Arc::new(s) }
+            Err(e) => { warn!(error=%e, "Twilio unavailable — LOG sink"); Arc::new(LogSender::new(NotificationChannel::Sms)) }
+        },
+        "DUMMY" => Arc::new(DummySender::new(NotificationChannel::Sms)),
+        "SNS" => { warn!("NOTIFICATION_SMS_PROVIDER=SNS not yet implemented — using LOG sink"); Arc::new(LogSender::new(NotificationChannel::Sms)) }
+        _ => Arc::new(LogSender::new(NotificationChannel::Sms)),
+    }
+}
+
+/// Select the LINE sender from `NOTIFICATION_LINE_PROVIDER` (LINE_MESSAGING_API/DUMMY/else→LOG).
+pub fn build_line_sender() -> Arc<dyn NotificationSender> {
+    match env("NOTIFICATION_LINE_PROVIDER", "LOG").trim().to_ascii_uppercase().as_str() {
+        "LINE_MESSAGING_API" => match LineSender::from_env() {
+            Ok(s) => { info!("LINE via Messaging API"); Arc::new(s) }
+            Err(e) => { warn!(error=%e, "LINE unavailable — LOG sink"); Arc::new(LogSender::new(NotificationChannel::Line)) }
+        },
+        "DUMMY" => Arc::new(DummySender::new(NotificationChannel::Line)),
+        _ => Arc::new(LogSender::new(NotificationChannel::Line)),
+    }
 }
