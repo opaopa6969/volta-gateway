@@ -28,6 +28,32 @@ use volta_auth_core::store::{
 /// enough to keep leaked `?state=…` values useless.
 const FLOW_TTL_SECS: i64 = 600;
 
+/// HTML-escape for attribute/text contexts.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+/// Produce a safe JS string *literal* (quotes included) for inline `<script>`.
+fn js_literal(s: &str) -> String {
+    serde_json::to_string(s)
+        .unwrap_or_else(|_| "\"\"".into())
+        .replace("</", "<\\/")
+}
+
+/// Shared WebAuthn base64url helpers injected into both pages.
+const WEBAUTHN_JS: &str = r#"
+function b64urlToBuf(s){s=s.replace(/-/g,'+').replace(/_/g,'/');const p=s.length%4;if(p)s+='='.repeat(4-p);const b=atob(s);const u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return u.buffer;}
+function bufToB64url(buf){const u=new Uint8Array(buf);let s='';for(let i=0;i<u.length;i++)s+=String.fromCharCode(u[i]);return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
+function assertionJSON(c){const r=c.response;return {id:c.id,rawId:bufToB64url(c.rawId),type:c.type,extensions:c.getClientExtensionResults?c.getClientExtensionResults():{},response:{authenticatorData:bufToB64url(r.authenticatorData),clientDataJSON:bufToB64url(r.clientDataJSON),signature:bufToB64url(r.signature),userHandle:r.userHandle?bufToB64url(r.userHandle):null}};}
+function attestationJSON(c){const r=c.response;return {id:c.id,rawId:bufToB64url(c.rawId),type:c.type,extensions:c.getClientExtensionResults?c.getClientExtensionResults():{},response:{attestationObject:bufToB64url(r.attestationObject),clientDataJSON:bufToB64url(r.clientDataJSON)}};}
+"#;
+
+const PAGE_STYLE: &str = r#"<style>body{font-family:system-ui,sans-serif;max-width:22rem;margin:4rem auto;padding:0 1rem;text-align:center}h1{font-size:1.3rem}.btn{display:block;width:100%;padding:.8rem;margin:.6rem 0;border:1px solid #ccc;border-radius:8px;background:#fff;font-size:1rem;cursor:pointer;text-decoration:none;color:#222;box-sizing:border-box}.btn.g{background:#4285f4;color:#fff;border-color:#4285f4}#status{margin-top:1rem;min-height:1.2em;font-size:.9rem}</style>"#;
+
 #[derive(Deserialize)]
 pub struct LoginQuery {
     pub start: Option<String>,
@@ -56,14 +82,22 @@ pub async fn login(
         return resp;
     }
 
-    let html = format!(
-        r#"<!DOCTYPE html><html><head><meta charset="utf-8"><title>Login</title></head>
-<body><p>Redirecting to login...</p>
-<a href="{}">Click here if not redirected</a>
-<script>window.location.href="{}";</script>
-</body></html>"#,
-        auth_url, auth_url
-    );
+    // Choice page (parity with Java /login): Google OR discoverable passkey.
+    let template = r#"<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ログイン</title>__STYLE__</head><body>
+<h1>Volta にログイン</h1>
+<a class="btn g" href="__AUTH_URL__">Google でログイン</a>
+<button class="btn" onclick="passkeyLogin()">パスキーでログイン</button>
+<div id="status"></div>
+<script>
+const RETURN_TO = __RETURN_TO__;
+__WEBAUTHN_JS__
+async function passkeyLogin(){const st=document.getElementById('status');st.style.color='#b00';st.textContent='';try{const r=await fetch('/auth/passkey/discover/start',{method:'POST',headers:{'Accept':'application/json'}});if(!r.ok)throw new Error('開始に失敗('+r.status+')');const d=await r.json();const pk=d.options.publicKey;pk.challenge=b64urlToBuf(pk.challenge);(pk.allowCredentials||[]).forEach(c=>c.id=b64urlToBuf(c.id));const cred=await navigator.credentials.get({publicKey:pk});const fr=await fetch('/auth/passkey/discover/finish',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({challenge_id:d.challenge_id,credential:assertionJSON(cred)})});if(!fr.ok){const e=await fr.json().catch(()=>({}));throw new Error((e.error&&e.error.message)||('finish '+fr.status));}window.location.href=RETURN_TO;}catch(err){st.textContent='パスキーログイン失敗: '+err.message;}}
+</script></body></html>"#;
+    let html = template
+        .replace("__STYLE__", PAGE_STYLE)
+        .replace("__AUTH_URL__", &html_escape(&auth_url))
+        .replace("__RETURN_TO__", &js_literal(&return_to))
+        .replace("__WEBAUTHN_JS__", WEBAUTHN_JS);
     let mut resp = Html(html).into_response();
     no_cache_headers(&mut resp);
     resp
@@ -77,13 +111,21 @@ pub async fn root(State(state): State<AppState>, jar: CookieJar) -> Response {
     match require_session(&state, &jar).await {
         Ok(session) => {
             let email = session.email.unwrap_or_default();
-            let html = format!(
-                r#"<!DOCTYPE html><html><head><meta charset="utf-8"><title>Volta Auth</title></head>
-<body style="font-family:sans-serif;max-width:32rem;margin:4rem auto;text-align:center">
-<h1>サインイン済み</h1><p>{}</p>
-<p><a href="/auth/logout">サインアウト</a></p></body></html>"#,
-                email
-            );
+            let template = r#"<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Volta Auth</title>__STYLE__</head><body>
+<h1>サインイン済み</h1><p>__EMAIL__</p>
+<button class="btn" onclick="registerPasskey()">このデバイスにパスキーを登録</button>
+<a class="btn" href="/auth/logout">サインアウト</a>
+<div id="status"></div>
+<script>
+const USER_ID = "__USER_ID__";
+__WEBAUTHN_JS__
+async function registerPasskey(){const st=document.getElementById('status');st.style.color='#b00';st.textContent='';try{const r=await fetch('/api/v1/users/'+USER_ID+'/passkeys/register/start',{method:'POST',headers:{'Accept':'application/json','content-type':'application/json'},body:'{}'});if(!r.ok)throw new Error('開始に失敗('+r.status+')');const d=await r.json();const pk=d.options.publicKey;pk.challenge=b64urlToBuf(pk.challenge);pk.user.id=b64urlToBuf(pk.user.id);(pk.excludeCredentials||[]).forEach(c=>c.id=b64urlToBuf(c.id));const cred=await navigator.credentials.create({publicKey:pk});const fr=await fetch('/api/v1/users/'+USER_ID+'/passkeys/register/finish',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({challenge_id:d.challenge_id,name:'My Passkey',credential:attestationJSON(cred)})});if(!fr.ok){const e=await fr.json().catch(()=>({}));throw new Error((e.error&&e.error.message)||('finish '+fr.status));}st.style.color='#070';st.textContent='パスキー登録完了！サインアウトして「パスキーでログイン」を試せます。';}catch(err){st.textContent='登録失敗: '+err.message;}}
+</script></body></html>"#;
+            let html = template
+                .replace("__STYLE__", PAGE_STYLE)
+                .replace("__EMAIL__", &html_escape(&email))
+                .replace("__USER_ID__", &html_escape(&session.user_id))
+                .replace("__WEBAUTHN_JS__", WEBAUTHN_JS);
             let mut resp = Html(html).into_response();
             no_cache_headers(&mut resp);
             resp
