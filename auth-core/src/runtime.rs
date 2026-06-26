@@ -12,10 +12,13 @@
 use chrono::{Duration, Utc};
 use uuid::Uuid;
 
-use crate::crypto::{random_token_hex, sha256_hex};
+use crate::crypto::{random_numeric_code, random_token_hex, sha256_hex};
 use crate::error::AuthError;
 use crate::record::FlowRecord;
-use crate::store::{EmailVerificationTokenStore, FlowPersistence, NotificationJobStore};
+use crate::store::{
+    ChallengeVerifyOutcome, EmailVerificationTokenStore, FlowPersistence, LoginChallengeStore,
+    NotificationJobStore,
+};
 
 pub const FLOW_TYPE: &str = "registration";
 const TOKEN_TTL_MINUTES: i64 = 15;
@@ -178,4 +181,54 @@ where
         .enqueue(channel, email, VERIFICATION_TEMPLATE, serde_json::json!({ "token": raw }), None)
         .await?;
     Ok(true)
+}
+
+// ── Login challenge (Phase 5): Email/SMS/LINE OTP ──────────────────────────
+
+const OTP_TTL_MINUTES: i64 = 5;
+const OTP_MAX_ATTEMPTS: i32 = 5;
+const OTP_DIGITS: u32 = 6;
+const MFA_CODE_TEMPLATE: &str = "mfa-code";
+
+pub struct LoginOtpStart {
+    pub challenge_id: Uuid,
+    /// Dev/test only — the raw OTP. Production delivers it via notification.
+    pub dev_code: Option<String>,
+}
+
+/// Issue an Email/SMS/LINE OTP login challenge: generate a numeric code, store
+/// its hash (never the code), and enqueue a notification carrying the code.
+/// TOTP-based MFA does not use this path (it verifies against `user_mfa`).
+pub async fn issue_login_otp<S>(
+    store: &S,
+    user_id: Uuid,
+    kind: &str,
+    destination: &str,
+    channel: &str,
+) -> Result<LoginOtpStart, AuthError>
+where
+    S: LoginChallengeStore + NotificationJobStore,
+{
+    let code = random_numeric_code(OTP_DIGITS);
+    let id = store
+        .issue(user_id, kind, &sha256_hex(&code), destination, OTP_TTL_MINUTES, OTP_MAX_ATTEMPTS)
+        .await?;
+    let corr = format!("login-otp:{}", id);
+    store
+        .enqueue(channel, destination, MFA_CODE_TEMPLATE, serde_json::json!({ "code": code }), Some(&corr))
+        .await?;
+    Ok(LoginOtpStart { challenge_id: id, dev_code: Some(code) })
+}
+
+/// Verify a submitted OTP for the user's active login challenge. The caller maps
+/// any failure to a generic client response (do not leak which variant).
+pub async fn verify_login_otp<S>(
+    store: &S,
+    user_id: Uuid,
+    raw_code: &str,
+) -> Result<ChallengeVerifyOutcome, AuthError>
+where
+    S: LoginChallengeStore,
+{
+    store.verify(user_id, &sha256_hex(raw_code)).await
 }

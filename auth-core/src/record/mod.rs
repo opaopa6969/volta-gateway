@@ -10,6 +10,7 @@ mod oidc_flow;
 mod platform;
 mod notification;
 mod verification;
+mod login_challenge;
 
 pub use session::SessionRecord;
 pub use user::UserRecord;
@@ -22,6 +23,7 @@ pub use idp_config::{IdpConfigRecord, M2mClientRecord, PasskeyRecord};
 pub use oidc_flow::OidcFlowRecord;
 pub use notification::{NotificationJobRecord, NotificationLogRecord};
 pub use verification::EmailVerificationTokenRecord;
+pub use login_challenge::LoginChallengeRecord;
 pub use platform::{
     WebhookRecord, OutboxRecord, WebhookDeliveryRecord,
     AuditLogRecord, KnownDeviceRecord, TrustedDeviceRecord,

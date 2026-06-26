@@ -1686,3 +1686,90 @@ impl crate::store::EmailVerificationTokenStore for PgStore {
         Ok(res.rows_affected())
     }
 }
+
+// ─── LoginChallengeStore (Phase 5: Email/SMS/LINE OTP login) ───────────────
+
+#[async_trait::async_trait]
+impl crate::store::LoginChallengeStore for PgStore {
+    async fn issue(
+        &self,
+        user_id: uuid::Uuid,
+        kind: &str,
+        code_hash: &str,
+        destination: &str,
+        ttl_minutes: i64,
+        max_attempts: i32,
+    ) -> Result<uuid::Uuid, AuthError> {
+        // Invalidate any prior active challenge for this user.
+        sqlx::query("UPDATE login_challenges SET consumed_at = now() WHERE user_id = $1 AND consumed_at IS NULL")
+            .bind(user_id)
+            .execute(&self.pool)
+            .await
+            .map_err(AuthError::from)?;
+        let row: (uuid::Uuid,) = sqlx::query_as(
+            "INSERT INTO login_challenges (user_id, kind, code_hash, destination, expires_at, max_attempts) \
+             VALUES ($1, $2, $3, $4, now() + make_interval(mins => $5), $6) RETURNING id",
+        )
+        .bind(user_id)
+        .bind(kind)
+        .bind(code_hash)
+        .bind(destination)
+        .bind(ttl_minutes as i32)
+        .bind(max_attempts)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(AuthError::from)?;
+        Ok(row.0)
+    }
+
+    async fn verify(
+        &self,
+        user_id: uuid::Uuid,
+        code_hash: &str,
+    ) -> Result<crate::store::ChallengeVerifyOutcome, AuthError> {
+        use crate::store::ChallengeVerifyOutcome as O;
+
+        let rec: Option<crate::record::LoginChallengeRecord> = sqlx::query_as(
+            "SELECT id, user_id, kind, code_hash, destination, expires_at, consumed_at, \
+                    attempt_count, max_attempts, created_at \
+             FROM login_challenges WHERE user_id = $1 AND consumed_at IS NULL \
+             ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(AuthError::from)?;
+
+        let rec = match rec {
+            Some(r) => r,
+            None => return Ok(O::NotFound),
+        };
+        if rec.expires_at <= chrono::Utc::now() {
+            return Ok(O::Expired);
+        }
+        if rec.attempt_count >= rec.max_attempts {
+            return Ok(O::TooManyAttempts);
+        }
+        if rec.code_hash == code_hash {
+            sqlx::query("UPDATE login_challenges SET consumed_at = now() WHERE id = $1")
+                .bind(rec.id)
+                .execute(&self.pool)
+                .await
+                .map_err(AuthError::from)?;
+            Ok(O::Verified)
+        } else {
+            let new_attempts = rec.attempt_count + 1;
+            sqlx::query("UPDATE login_challenges SET attempt_count = $1 WHERE id = $2")
+                .bind(new_attempts)
+                .bind(rec.id)
+                .execute(&self.pool)
+                .await
+                .map_err(AuthError::from)?;
+            if new_attempts >= rec.max_attempts {
+                Ok(O::TooManyAttempts)
+            } else {
+                Ok(O::WrongCode { attempts_remaining: rec.max_attempts - new_attempts })
+            }
+        }
+    }
+}

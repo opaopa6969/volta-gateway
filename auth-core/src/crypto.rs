@@ -213,3 +213,12 @@ pub fn random_token_hex(n_bytes: usize) -> String {
     rand::thread_rng().fill_bytes(&mut buf);
     buf.iter().map(|b| format!("{:02x}", b)).collect()
 }
+
+/// Generate a numeric OTP code with `digits` digits (zero-padded). For login
+/// challenges (Email/SMS OTP). Use the hash (sha256_hex) for storage.
+pub fn random_numeric_code(digits: u32) -> String {
+    use rand::Rng;
+    let modulo = 10u64.pow(digits);
+    let n: u64 = rand::thread_rng().gen_range(0..modulo);
+    format!("{:0width$}", n, width = digits as usize)
+}

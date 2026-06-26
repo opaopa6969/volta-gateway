@@ -9,6 +9,7 @@ mod idp_config;
 mod oidc_flow;
 mod notification_job;
 mod verification_token;
+mod login_challenge;
 mod passkey_challenge;
 mod platform;
 
@@ -26,6 +27,7 @@ pub use idp_config::{IdpConfigStore, M2mClientStore, PasskeyStore};
 pub use oidc_flow::OidcFlowStore;
 pub use notification_job::NotificationJobStore;
 pub use verification_token::EmailVerificationTokenStore;
+pub use login_challenge::{LoginChallengeStore, ChallengeVerifyOutcome};
 pub use passkey_challenge::{PasskeyChallengeRecord, PasskeyChallengeStore};
 pub use platform::{
     WebhookStore, OutboxStore, WebhookDeliveryStore,
