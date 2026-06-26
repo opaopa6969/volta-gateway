@@ -12,7 +12,7 @@ use crate::auth_events::AuthEvent;
 use crate::error::{no_cache_headers, ApiError};
 use crate::helpers::{extract_session_id, is_json_accept, set_session_cookie, clear_session_cookie};
 use crate::state::AppState;
-use volta_auth_core::store::{SessionStore, MembershipStore, TenantStore};
+use volta_auth_core::store::{SessionStore, MembershipStore, TenantStore, MfaStore};
 
 /// Publish a `LOGOUT` auth event for `/viz/auth/stream` (P1.2) and persist
 /// it to `audit_logs` (P2 #10). Session lookup is best-effort — a missing
@@ -77,10 +77,18 @@ pub async fn verify(
 
         // P1.1 AUTH-010: MFA pending → send user to challenge (only if they are
         // not already navigating to the MFA page, to avoid redirect loops).
+        // Only enforce when the user actually has an *active* second factor —
+        // a fresh session always has mfa_verified_at = None, so without this
+        // guard a user who never enrolled MFA would be bounced to the challenge
+        // forever with no code to enter (lockout).
         if session.mfa_verified_at.is_none() {
             if let Some(uri) = forwarded_uri {
                 let is_mfa_path = uri.starts_with("/mfa/") || uri.starts_with("/auth/mfa/");
-                if !is_mfa_path {
+                let has_mfa = match session.user_id.parse::<uuid::Uuid>() {
+                    Ok(uid) => MfaStore::has_active(&state.db, uid).await.unwrap_or(false),
+                    Err(_) => false,
+                };
+                if !is_mfa_path && has_mfa {
                     let location = format!("{}/mfa/challenge", state.base_url);
                     let mut resp = Redirect::to(&location).into_response();
                     *resp.status_mut() = StatusCode::UNAUTHORIZED;
