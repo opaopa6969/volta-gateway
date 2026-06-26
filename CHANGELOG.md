@@ -28,10 +28,36 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   flow.
 - `docs/feedback.md` — captures the `tramli_react` / tramli feedback cycle
   (see v3.2.0 → v3.8.0 timeline below).
+- **Production cutover (2026-06-27)**: `auth.unlaxer.org` backend switched from
+  Java `volta-auth-proxy` (:7070) to Rust `auth-server` (:7072) via a
+  fresh-schema DB migration (`volta_auth_rs`). Java retained as a no-loss
+  rollback standby. See `docs/java-to-rust-migration-runbook.md`.
+- Google-style passkey UX (`docs/passkey-ux-design.md`): `/login` shows a
+  Google + passkey choice page with **Conditional UI** (autofill, mediation
+  `conditional`); `/` is now an **account page** (passkey list / add / delete /
+  sign out) with a post-login **auto-enrollment** prompt; WebAuthn/server errors
+  are translated to next-action guidance.
+- `/viz` passkey flow enriched to mirror the real runtime: registration
+  (attestation) + discoverable authentication ceremonies, sign-counter clone
+  check, and error terminals (was: happy-path assertion only).
 
 ### Changed
 - README.md / README-ja.md rewritten to tramli-quality standard: Rust+Java
   dual implementation, 96 routes, `tramli = "3.8"` dependency, TOC.
+- Rate limits raised so page-load-triggered flows don't lock out legitimate
+  users: OIDC 10→30/min/IP, passkey 5→30/min/IP.
+
+### Fixed
+- Cutover regressions: `GET /` returned 404 (Java redirected to `/login`) → now
+  a session-aware landing; an authenticated user landing on `/` looped back
+  through the IdP.
+- MFA lockout: a fresh OIDC session always had `mfa_verified_at = None` and
+  `/auth/verify` forced `/mfa/challenge` unconditionally — users with no enrolled
+  MFA had no code to enter. Now gated on `MfaStore::has_active`.
+- Passkey persistence used bincode, which can't round-trip webauthn-rs types
+  (`deserialize_any`): challenge state **and** credentials moved to `serde_json`.
+- Passkey `signCount = 0` authenticators (Windows Hello / synced passkeys) were
+  rejected as clones; the counter check now only applies when count > 0.
 
 ---
 

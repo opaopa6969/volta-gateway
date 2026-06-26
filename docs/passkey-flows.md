@@ -3,6 +3,9 @@
 auth-server (`auth-server/src/handlers/passkey_flow.rs`) と gateway の ForwardAuth を mermaid で図式化。
 ルート定義は `auth-server/src/app.rs`。
 
+> **関連:** UX 設計・原理・Google風設計との比較は [`passkey-ux-design.md`](./passkey-ux-design.md)。
+> sign-counter のクローン検知（`signCount=0` は非対応として受理）や `/viz` フロー図の実態反映拡張は同書 / CHANGELOG 参照。
+
 ## 1. 全体像：gateway ForwardAuth とログイン state
 
 これが既存の「ログイン state」。gateway は tramli ステートマシンで毎リクエストの認証可否だけを判定する。

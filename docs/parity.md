@@ -9,6 +9,14 @@
 > **Goal:** Rust ships the same *surface* as Java, so `volta-gateway` can
 > replace the Java sidecar in `volta-bin` with no client-visible change.
 
+> **Production status (2026-06-27):** the goal is met — `auth.unlaxer.org` now
+> runs on the **Rust `auth-server`** (Java kept as rollback standby). Beyond the
+> route surface below, Rust gained the login/account **UI** Java had (Google +
+> passkey choice page, Conditional UI, account page) — see
+> `passkey-ux-design.md`. **Rate limits**: OIDC and passkey are now **30/min/IP**
+> (the `5/min` / `10/min` cells below are pre-cutover values). Passkey
+> `signCount = 0` authenticators are accepted (not treated as clones).
+
 Legend:
 
 | Symbol | Meaning                                                           |

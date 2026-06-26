@@ -9,7 +9,13 @@
 > **目的:** Rust 側が Java と同じ**表面**を提供することで、`volta-bin` から
 > Java sidecar を外してもクライアント側に見える変化がないこと。
 
-凡例:
+> **本番状況 (2026-06-27):** 目的は達成済み — `auth.unlaxer.org` は **Rust
+> `auth-server`** で稼働中（Java はロールバック standby）。下表のルート表面に
+> 加え、Java にあったログイン/アカウント **UI**（Google + パスキー選択画面・
+> Conditional UI・アカウントページ）を Rust 側にも実装（`passkey-ux-design.md`）。
+> **レート制限**: OIDC・パスキーとも現在 **30/min/IP**（下表の `5/min`・`10/min`
+> は cutover 前の値）。パスキーの `signCount = 0` authenticator はクローン扱い
+> せず受理。
 
 | 記号  | 意味                                                           |
 |-------|----------------------------------------------------------------|
