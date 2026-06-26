@@ -99,6 +99,21 @@ SELECT setval(pg_get_serial_sequence('audit_logs','id'), COALESCE((SELECT max(id
 主リスク: R1 user_identities 非google 不可ログイン / R2 招待リンク破損 / R3 plans casing / R4 idp client_secret NULL / R5 INET変換 / R6 全員再ログイン / R7 snapshot ドリフト / R8 BIGSERIAL 衝突 / R9 signing_keys 未コピーで全 JWT 失効 / R10 tenant schema 漏れ / R12 SAML 経路。
 検証: コピー前(§2.1 各確認) → コピー後(行数照合・signing_keys kid 一致・passkey BYTEA 整合・sequence reset) → staging 機能(OIDC/passkey/TOTP/m2m/verify/viz) → 本番 smoke(15分監視・ロールバック手順把握)。
 
+## ドライラン結果（2026-06-26 実施・クローン DB `volta_auth_rs`、本番無影響）
+fresh Rust スキーマ DB を作成 → 27 migrations 適用（30 tables / plans=FREE,PRO,ENTERPRISE）→ `postgres_fdw` で live `volta_auth` から列マッピングコピー。**全行数一致**: users 3 / tenants 3 / memberships 3 / signing_keys 1 / idp_configs 1 / audit_logs 47（他は空）。変換成功: audit_logs `host(actor_ip)` / idp_configs `client_secret=NULL`。
+
+**6 オペレーター判断の確定値**（live データに基づく）:
+1. user_identities 非google: **0件**（3 users 全て google）→ straight copy で完結。
+2. invitations code_hash↔code: invitations **0件** → 移行対象なし（既定 B）。
+3. plans casing: subscriptions **0件**・tenants.plan=**FREE×3**（大文字、Rust seed と一致）→ remap 不要。
+4. idp_configs.client_secret: **1件（SAML, active）** → NULL 挿入。SAML は x509_cert 使用＋DD-005 で Java 残置のため切替時の SSO 影響なし。
+5. tenant schema isolation: `isolation='schema'` **0件** → public のみ。
+6. audit_logs 保持: **47件**（少数）→ 全コピー。
+
+**ヘッドレス検証（:7072, 本番経路外）**: database connected / flow definitions validated / webauthn configured。`/auth/verify`→401 ✅ / `/viz/flows`→200 ✅ / registration ランタイム（移行済 DB に対し register/start→devToken→verify-email→`Completed`）✅。OIDC ログイン・passkey 登録は Google 往復／ブラウザが必要 → 本番切替の §C staging gateway 段で実施（headless 不可）。**以前 in-place で失敗した「Rust が起動して移行データに対し正しく動く」点をこの方式は達成**。
+
+**追加発見（署名方式）**: Rust auth-server は **HS256（共有 `JWT_SECRET`）** でトークン署名し、`/.well-known/jwks.json` は **空配列を返すスタブ**（`auth-server/src/handlers/health.rs`、設計どおり）。Java が RS256＋JWKS で発行している場合、切替で署名方式が HS256 に変わる。**platform gateway は ForwardAuth（`/auth/verify` 委譲）でトークンを自前検証しない**ため内部影響なし。ただし **JWKS/RS256 公開鍵でトークンを検証する外部 RP があれば破綻**する（要確認）。signing_keys のコピーは継続性のため実施したが **HS256 下では未使用**。既存 Java 発行セッションは Rust では無効 → R6（全員一度だけ再ログイン）どおり。
+
 ## この調査で判明した追加乖離（briefing 外）
 1. **invitations** code_hash(Java V27) ↔ code(Rust) の不一致（要判断）。
 2. **idp_configs.client_secret** は Rust 専用（再入力要）。
