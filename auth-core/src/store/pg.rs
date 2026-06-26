@@ -718,7 +718,7 @@ impl MfaStore for PgStore {
     async fn upsert(&self, user_id: Uuid, mfa_type: &str, secret: &str) -> Result<(), AuthError> {
         sqlx::query(
             "INSERT INTO user_mfa (user_id, type, secret) VALUES ($1, $2, $3) \
-             ON CONFLICT (user_id, (type)) DO UPDATE SET secret = EXCLUDED.secret, is_active = true"
+             ON CONFLICT (user_id, type) DO UPDATE SET secret = EXCLUDED.secret, is_active = true"
         ).bind(user_id).bind(mfa_type).bind(secret)
         .execute(&self.pool).await.map_err(AuthError::from)?;
         Ok(())
@@ -726,7 +726,7 @@ impl MfaStore for PgStore {
 
     async fn find(&self, user_id: Uuid, mfa_type: &str) -> Result<Option<MfaRecord>, AuthError> {
         sqlx::query_as::<_, MfaRecord>(
-            "SELECT id, user_id, type AS mfa_type, secret, is_active, created_at \
+            "SELECT id, user_id, type, secret, is_active, created_at \
              FROM user_mfa WHERE user_id = $1 AND type = $2 AND is_active = true"
         ).bind(user_id).bind(mfa_type)
         .fetch_optional(&self.pool).await.map_err(AuthError::from)
@@ -741,6 +741,30 @@ impl MfaStore for PgStore {
 
     async fn deactivate(&self, user_id: Uuid, mfa_type: &str) -> Result<(), AuthError> {
         sqlx::query("UPDATE user_mfa SET is_active = false WHERE user_id = $1 AND type = $2")
+            .bind(user_id).bind(mfa_type)
+            .execute(&self.pool).await.map_err(AuthError::from)?;
+        Ok(())
+    }
+
+    async fn upsert_pending(&self, user_id: Uuid, mfa_type: &str, secret: &str) -> Result<(), AuthError> {
+        sqlx::query(
+            "INSERT INTO user_mfa (user_id, type, secret, is_active) VALUES ($1, $2, $3, false) \
+             ON CONFLICT (user_id, type) DO UPDATE SET secret = EXCLUDED.secret, is_active = false"
+        ).bind(user_id).bind(mfa_type).bind(secret)
+        .execute(&self.pool).await.map_err(AuthError::from)?;
+        Ok(())
+    }
+
+    async fn find_any(&self, user_id: Uuid, mfa_type: &str) -> Result<Option<MfaRecord>, AuthError> {
+        sqlx::query_as::<_, MfaRecord>(
+            "SELECT id, user_id, type, secret, is_active, created_at \
+             FROM user_mfa WHERE user_id = $1 AND type = $2"
+        ).bind(user_id).bind(mfa_type)
+        .fetch_optional(&self.pool).await.map_err(AuthError::from)
+    }
+
+    async fn activate(&self, user_id: Uuid, mfa_type: &str) -> Result<(), AuthError> {
+        sqlx::query("UPDATE user_mfa SET is_active = true WHERE user_id = $1 AND type = $2")
             .bind(user_id).bind(mfa_type)
             .execute(&self.pool).await.map_err(AuthError::from)?;
         Ok(())

@@ -232,3 +232,101 @@ where
 {
     store.verify(user_id, &sha256_hex(raw_code)).await
 }
+
+// ── MFA setup (Phase 4): TOTP, reusing existing totp + MfaStore ────────────
+
+use crate::store::{MfaStore, RecoveryCodeStore};
+
+const MFA_FLOW_TYPE: &str = "mfa_setup";
+const RECOVERY_CODE_COUNT: usize = 10;
+
+pub struct MfaSetupStart {
+    pub flow_id: Uuid,
+    /// Base32 TOTP secret for the provisioning URI (shown once).
+    pub secret: String,
+}
+
+/// Start TOTP MFA setup: generate a secret, store it INACTIVE (pending
+/// confirmation), and track the flow. The secret is activated only after a
+/// valid code is confirmed (see [`confirm_mfa_setup`]).
+pub async fn start_mfa_setup<S>(store: &S, user_id: Uuid) -> Result<MfaSetupStart, AuthError>
+where
+    S: FlowPersistence + MfaStore,
+{
+    let flow_id = Uuid::new_v4();
+    let now = Utc::now();
+    store
+        .create(FlowRecord {
+            id: flow_id,
+            session_id: format!("mfa-setup:{}", user_id),
+            flow_type: MFA_FLOW_TYPE.into(),
+            current_state: "SecretIssued".into(),
+            guard_failure_count: 0,
+            version: 0,
+            created_at: now,
+            updated_at: now,
+            expires_at: now + Duration::minutes(10),
+            completed_at: None,
+            exit_state: None,
+            summary: None,
+        })
+        .await?;
+    let secret = crate::totp::generate_secret();
+    store.upsert_pending(user_id, "totp", &secret).await?;
+    store
+        .record_transition(flow_id, Some("SetupStarted"), "SecretIssued", "MfaIssueSecret", None)
+        .await?;
+    Ok(MfaSetupStart { flow_id, secret })
+}
+
+pub struct MfaSetupConfirmed {
+    /// Raw recovery codes — shown ONCE; only their hashes are stored.
+    pub recovery_codes: Vec<String>,
+}
+
+/// Confirm TOTP setup with a code. On success, activates the secret, issues
+/// recovery codes (hashed), and completes the flow. Wrong code → `PolicyDenied`.
+/// Matches the existing handler's secret encoding (verifies over the base32
+/// string bytes) for consistency.
+pub async fn confirm_mfa_setup<S>(
+    store: &S,
+    user_id: Uuid,
+    flow_id: Uuid,
+    code: &str,
+) -> Result<MfaSetupConfirmed, AuthError>
+where
+    S: FlowPersistence + MfaStore + RecoveryCodeStore,
+{
+    let mfa = store
+        .find_any(user_id, "totp")
+        .await?
+        .ok_or_else(|| AuthError::NotFound("no pending TOTP secret".into()))?;
+    if mfa.is_active {
+        return Err(AuthError::Conflict("MFA already enabled".into()));
+    }
+    if !crate::totp::verify_totp(mfa.secret.as_bytes(), code, 30) {
+        return Err(AuthError::PolicyDenied("invalid TOTP code".into()));
+    }
+
+    store.activate(user_id, "totp").await?;
+
+    // Issue recovery codes: raw shown once, only hashes stored.
+    let raw: Vec<String> = (0..RECOVERY_CODE_COUNT)
+        .map(|_| crate::crypto::random_token_hex(4))
+        .collect();
+    let hashes: Vec<String> = raw.iter().map(|c| sha256_hex(c)).collect();
+    store.replace_all(user_id, &hashes).await?;
+
+    let flow = FlowPersistence::find(store, flow_id).await?;
+    if let Some(f) = flow {
+        store.update_state(flow_id, "RecoveryCodesIssued", f.version + 1).await?;
+        store
+            .record_transition(flow_id, Some("ConfirmationPending"), "Enabled", "MfaConfirmCodeGuard", None)
+            .await?;
+        store
+            .complete(flow_id, "RecoveryCodesIssued", Some(serde_json::json!({ "user_id": user_id })))
+            .await?;
+    }
+
+    Ok(MfaSetupConfirmed { recovery_codes: raw })
+}

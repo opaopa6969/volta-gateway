@@ -10,6 +10,12 @@ pub trait MfaStore: Send + Sync {
     async fn find(&self, user_id: Uuid, mfa_type: &str) -> Result<Option<MfaRecord>, AuthError>;
     async fn has_active(&self, user_id: Uuid) -> Result<bool, AuthError>;
     async fn deactivate(&self, user_id: Uuid, mfa_type: &str) -> Result<(), AuthError>;
+    /// Store a secret as INACTIVE (pending confirmation). Activated by `activate`.
+    async fn upsert_pending(&self, user_id: Uuid, mfa_type: &str, secret: &str) -> Result<(), AuthError>;
+    /// Find regardless of active state (to read a pending secret for verification).
+    async fn find_any(&self, user_id: Uuid, mfa_type: &str) -> Result<Option<MfaRecord>, AuthError>;
+    /// Mark a stored secret active (after confirmation).
+    async fn activate(&self, user_id: Uuid, mfa_type: &str) -> Result<(), AuthError>;
 }
 
 /// Recovery code store.
