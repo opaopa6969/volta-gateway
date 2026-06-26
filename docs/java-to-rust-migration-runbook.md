@@ -114,6 +114,14 @@ fresh Rust スキーマ DB を作成 → 27 migrations 適用（30 tables / plan
 
 **追加発見（署名方式）**: Rust auth-server は **HS256（共有 `JWT_SECRET`）** でトークン署名し、`/.well-known/jwks.json` は **空配列を返すスタブ**（`auth-server/src/handlers/health.rs`、設計どおり）。Java が RS256＋JWKS で発行している場合、切替で署名方式が HS256 に変わる。**platform gateway は ForwardAuth（`/auth/verify` 委譲）でトークンを自前検証しない**ため内部影響なし。ただし **JWKS/RS256 公開鍵でトークンを検証する外部 RP があれば破綻**する（要確認）。signing_keys のコピーは継続性のため実施したが **HS256 下では未使用**。既存 Java 発行セッションは Rust では無効 → R6（全員一度だけ再ログイン）どおり。
 
+## 本番切替 実施記録（2026-06-26 ✅ 完了）
+runbook §D を実行し **auth.unlaxer.org を Java(:7070)→Rust(:7072) に切替完了**。
+- 準備: `volta_auth_rs` を fresh 再構築（drop→27 migrations→fdw で live 再コピー、全行数一致）。Rust を本番 env で :7072 起動（dev token off / 安定 JWT_SECRET / Google creds 継承 / 通知 LOG）。`/home/opa/run-volta-auth-rust.sh` に保全。
+- 切替: `.50` の `volta-gateway.yaml` を backup（`*.bak-pre-rust-cutover-*`）後、L8 `auth.volta_url` と L69 `auth.unlaxer.org` backend を `192.168.1.8:7070`→`:7072` に sed 置換 → `docker restart volta-gateway`（hot-reload 非対応のため）。
+- 検証: gateway 経由 `/auth/verify`→401（正常）、`/login?start=1`→**303 accounts.google.com（PKCE S256）**、移行 DB へ oidc_flows write 確認、console 等他サービス 200。OIDC redirect は Java と同じ `…/callback` で Google console 変更不要。
+- **Java :7070 は停止せず生存**（別 DB `volta_auth`、即時・無損失ロールバック standby）。ロールバックは backup 復元 or `sed :7072→:7070` + gateway restart。
+- 残: ブラウザ実ログイン smoke（Google 往復・passkey）はユーザー確認待ち（headless 不可）。Rust の systemd 化（現状 nohup）。SAML(1 tenant) は現状 Rust 簡易ハンドラ routing（要なら `/auth/saml`→:7070 path rule 追加）。
+
 ## この調査で判明した追加乖離（briefing 外）
 1. **invitations** code_hash(Java V27) ↔ code(Rust) の不一致（要判断）。
 2. **idp_configs.client_secret** は Rust 専用（再入力要）。
