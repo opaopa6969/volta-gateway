@@ -106,11 +106,17 @@ AUTH_PASSWORD_ENABLED=false
 3. SES/SMTP/Twilio/LINE の secret 注入方式（env か secret store）は Phase 6 で確定。
 4. live 反映は Java→Rust 移行が前提（別件）。
 
-## Phase 進行（実装順）
+## Phase 進行（実装順）— 完了状況
 
-P1: 本メモ + notification 抽象骨格 + DUMMY/LOG + 5 flow 定義のみ ← 現在
-P2: registration/email_verification + notification_jobs 最小 + test
-P3: password_reset + token hashing/期限/rate limit + enumeration 対策（+password 能力）
-P4: mfa_setup（既存 TOTP/recovery 再利用）
-P5: login_challenge（TOTP challenge、OTP は抽象まで）
-P6: SES/SMTP/Mailpit provider + SMS/LINE dummy 先行 + docs 整備
+- **P1 ✅** notification 抽象 + DUMMY/LOG + 5 flow 定義（unit 8 + flow 37）
+- **P2 ✅** registration/email_verification ランタイム + notification_jobs + email_verification_tokens
+  + viz 登録 + HTTP API(/auth/register/*) + notification worker（実DB統合テスト多数）
+- **P3 ⛔** password_reset → 非採用（passwordless 確定 §7-1）。flow は定義のみ残置。
+- **P4 △** mfa_setup: flow 定義 + viz 済。TOTP/recovery は既存エンドポイントが機能提供
+  （重複回避のため flow-ランタイム再ラップは見送り。詳細は auth-runtime-and-notifications.md）。
+- **P5 ✅** login_challenge OTP（Email/SMS/LINE）を通知経由で実装（login_challenges + 実DB統合テスト）。
+  TOTP は既存 user_mfa 検証を使用。
+- **P6 ✅** SMTP/Mailpit/Dummy/Log email provider（lettre）。SES は未実装→Log fallback。
+  SMS/LINE は interface + dummy 先行。docs 整備（本メモ + auth-runtime-and-notifications.md）。
+
+運用・API・設定の詳細は [`auth-runtime-and-notifications.md`](./auth-runtime-and-notifications.md)。
