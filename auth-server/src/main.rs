@@ -5,6 +5,7 @@ mod helpers;
 pub mod auth_events;
 pub mod local_bypass;
 mod outbox_worker;
+mod notification_worker;
 pub mod pagination;
 pub mod rate_limit;
 pub mod saml;
@@ -149,6 +150,32 @@ async fn main() {
         None
     };
 
+    // Notification subsystem (Phase 2). Channels/providers are config-driven;
+    // local/test default to DUMMY/LOG so nothing is sent externally. Real
+    // SMTP/SES senders are registered in Phase 6 (provider = SMTP/SES/MAILPIT).
+    let notify_default = env("NOTIFICATION_DEFAULT_CHANNEL", "DUMMY");
+    let notify_enabled = env("NOTIFICATION_ENABLED_CHANNELS", "DUMMY,LOG,EMAIL");
+    let notif_config = volta_auth_core::notification::NotificationConfig::parse(&notify_default, &notify_enabled)
+        .unwrap_or_else(|e| {
+            eprintln!("invalid notification config: {}", e);
+            std::process::exit(1);
+        });
+    let notifications = {
+        use volta_auth_core::notification::dummy::{DummySender, LogSender};
+        use volta_auth_core::notification::{NotificationChannel, NotificationService};
+        let mut svc = NotificationService::new(notif_config);
+        svc.register(Arc::new(DummySender::new(NotificationChannel::Dummy)));
+        svc.register(Arc::new(LogSender::new(NotificationChannel::Log)));
+        // EMAIL/SMS/LINE map to the LOG sink (no external send) here; Phase 6
+        // swaps EMAIL for a real SMTP/SES/MAILPIT sender via config.
+        svc.register(Arc::new(LogSender::new(NotificationChannel::Email)));
+        svc.register(Arc::new(LogSender::new(NotificationChannel::Sms)));
+        svc.register(Arc::new(LogSender::new(NotificationChannel::Line)));
+        Arc::new(svc)
+    };
+    let notify_channel = notify_default.trim().to_ascii_uppercase();
+    let email_verification_enabled = env("AUTH_EMAIL_VERIFICATION", "enabled") != "disabled";
+
     let state = AppState {
         db,
         idp: Arc::new(idp),
@@ -166,11 +193,22 @@ async fn main() {
         // boot without extra configuration.
         key_cipher: Arc::new(volta_auth_core::crypto::KeyCipher::from_env()),
         passkey: passkey_service,
+        notifications: notifications.clone(),
+        notify_channel,
+        email_verification_enabled,
     };
 
     // Outbox worker — poll every 5s, deliver webhooks
     let outbox_poll: u64 = env("OUTBOX_POLL_SECS", "5").parse().unwrap_or(5);
     outbox_worker::spawn(state.db.clone(), std::time::Duration::from_secs(outbox_poll));
+
+    // Notification worker — poll notification_jobs, deliver via NotificationService.
+    let notif_poll: u64 = env("NOTIFICATION_POLL_SECS", "5").parse().unwrap_or(5);
+    notification_worker::spawn(
+        state.db.clone(),
+        notifications,
+        std::time::Duration::from_secs(notif_poll),
+    );
 
     let router = app::build_router(state);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));

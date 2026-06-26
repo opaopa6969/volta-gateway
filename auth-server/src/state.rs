@@ -2,6 +2,7 @@ use std::sync::Arc;
 use volta_auth_core::crypto::KeyCipher;
 use volta_auth_core::idp::IdpClient;
 use volta_auth_core::jwt::{JwtIssuer, JwtVerifier};
+use volta_auth_core::notification::NotificationService;
 use volta_auth_core::store::pg::PgStore;
 
 use crate::auth_events::AuthEventBus;
@@ -36,4 +37,13 @@ pub struct AppState {
     /// `WEBAUTHN_RP_ORIGIN` env pair is unset — passkey handlers then
     /// respond with 503 directing the operator to configure it.
     pub passkey: Option<Arc<volta_auth_core::passkey::PasskeyService>>,
+    /// Notification subsystem (Phase 2). Routes verification / OTP messages to
+    /// the configured channel; local/test use DUMMY/LOG (no external send).
+    /// Held for handlers that may send synchronously; the worker owns its own clone.
+    #[allow(dead_code)]
+    pub notifications: Arc<NotificationService>,
+    /// Default notification channel name (e.g. "DUMMY", "EMAIL").
+    pub notify_channel: String,
+    /// Whether registration requires email verification (`AUTH_EMAIL_VERIFICATION`).
+    pub email_verification_enabled: bool,
 }

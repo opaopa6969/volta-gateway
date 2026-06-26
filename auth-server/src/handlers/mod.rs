@@ -13,4 +13,5 @@ pub mod scim;
 pub mod passkey_flow;
 pub mod extra;
 pub mod saml;
+pub mod registration;
 pub mod viz;

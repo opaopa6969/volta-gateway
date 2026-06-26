@@ -47,6 +47,15 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/magic-link/verify", get(handlers::magic_link::verify))
         .route_layer(from_fn_with_state(rl_magic, limit_by_ip));
 
+    // Passwordless registration (Phase 2). Rate-limited 5/min/IP like other
+    // unauthenticated, email-triggering endpoints.
+    let rl_register = RateLimiter::new("register", 5, Duration::from_secs(60));
+    let registration_routes = Router::new()
+        .route("/auth/register/start", post(handlers::registration::register_start))
+        .route("/auth/register/verify-email", post(handlers::registration::register_verify_email))
+        .route("/auth/register/resend-verification", post(handlers::registration::register_resend))
+        .route_layer(from_fn_with_state(rl_register, limit_by_ip));
+
     Router::new()
         // Auth (ForwardAuth + session)
         .route("/auth/verify", get(handlers::auth::verify))
@@ -215,5 +224,6 @@ pub fn build_router(state: AppState) -> Router {
         .merge(passkey_routes)
         .merge(invite_routes)
         .merge(magic_routes)
+        .merge(registration_routes)
         .with_state(state)
 }
