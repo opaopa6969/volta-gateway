@@ -119,14 +119,22 @@ pub async fn auth_finish(
         .map_err(|e| ApiError::internal(&e.to_string()))?
         .ok_or_else(|| ApiError::unauthorized("PASSKEY_FAILED", "credential not on file"))?;
 
-    let applied = PasskeyStore::update_counter(&s.db, passkey_row.id, result.counter() as i64)
-        .await
-        .map_err(|e| ApiError::internal(&e.to_string()))?;
-    if !applied {
-        return Err(ApiError::unauthorized(
-            "PASSKEY_FAILED",
-            "sign-counter rejected — possible replay or cloned authenticator",
-        ));
+    // Per WebAuthn spec, signCount = 0 means the authenticator does not
+    // implement a signature counter — platform authenticators (Windows Hello,
+    // Touch ID) and synced passkeys commonly always report 0. Only treat a
+    // non-advancing counter as a clone/replay when the authenticator actually
+    // uses counters (returned value > 0); otherwise accept without the check.
+    let new_counter = result.counter() as i64;
+    if new_counter > 0 {
+        let applied = PasskeyStore::update_counter(&s.db, passkey_row.id, new_counter)
+            .await
+            .map_err(|e| ApiError::internal(&e.to_string()))?;
+        if !applied {
+            return Err(ApiError::unauthorized(
+                "PASSKEY_FAILED",
+                "sign-counter rejected — possible replay or cloned authenticator",
+            ));
+        }
     }
 
     // Issue a session. `mfa_verified_at = Some(...)` because passkey is an
@@ -261,14 +269,22 @@ pub async fn discover_finish(
         .map_err(|e| ApiError::internal(&e.to_string()))?
         .ok_or_else(|| ApiError::unauthorized("PASSKEY_FAILED", "credential not on file"))?;
 
-    let applied = PasskeyStore::update_counter(&s.db, passkey_row.id, result.counter() as i64)
-        .await
-        .map_err(|e| ApiError::internal(&e.to_string()))?;
-    if !applied {
-        return Err(ApiError::unauthorized(
-            "PASSKEY_FAILED",
-            "sign-counter rejected — possible replay or cloned authenticator",
-        ));
+    // Per WebAuthn spec, signCount = 0 means the authenticator does not
+    // implement a signature counter — platform authenticators (Windows Hello,
+    // Touch ID) and synced passkeys commonly always report 0. Only treat a
+    // non-advancing counter as a clone/replay when the authenticator actually
+    // uses counters (returned value > 0); otherwise accept without the check.
+    let new_counter = result.counter() as i64;
+    if new_counter > 0 {
+        let applied = PasskeyStore::update_counter(&s.db, passkey_row.id, new_counter)
+            .await
+            .map_err(|e| ApiError::internal(&e.to_string()))?;
+        if !applied {
+            return Err(ApiError::unauthorized(
+                "PASSKEY_FAILED",
+                "sign-counter rejected — possible replay or cloned authenticator",
+            ));
+        }
     }
 
     // Issue a session (passkey = MFA-equivalent; set mfa_verified_at).
