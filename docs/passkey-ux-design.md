@@ -225,3 +225,8 @@ flowchart LR
 2. エラーメッセージ設計: 1つの曖昧な文言 vs 状態を区別した行動指示。`NotAllowedError` 問題は良い反面教師。
 3. シリアライズ形式の落とし穴: 自己記述（JSON）/ 非自己記述（bincode）と `deserialize_any`。「保存できたから安心」は罠。
 4. 移行時のパリティ: Java→Rust cutover で `/` の 404・MFA 締め出し・パスキーUI欠落が一気に表面化した。**「機能がある」と「UIで到達できる」は別**。
+5. **レート制限の粒度**: 「ページ表示で自動発火する処理 × 固定窓レート制限」は相性が悪い。実際 oidc(`/login` 表示で flow 生成) と passkey(Conditional UI が `discover/start` を毎ロード発火) で**2回**正規ユーザーを 429 ロックした。本質は **challenge 発行（安価・冪等寄り・副作用小）と検証試行（高コスト・ブルートフォース対象）を同じ窓で数えている**こと。あるべきは:
+   - **発行系**(`/login` 描画, `discover/start`, `register/start`): ゆるい or 制限なし
+   - **検証系**(`discover/finish`, `auth/finish`, MFA verify): 厳しく（試行回数=攻撃面）
+   - 暫定対応は窓を 5→30/min に広げただけ。**limiter を発行/検証で分割**するのが正しい設計（未対応の follow-up）。
+6. **モデルと実行の乖離(drift)**: パスキーは tramli flow 定義(`flow/passkey.rs`, /viz の図)が assertion の粗い5状態だけを描く一方、実ランタイム(`handlers/passkey_flow.rs`)は完全 imperative で flow を実行していない。今日のバグ(登録/認証取り違え・signCount=0 クローン誤検知・serde 形式)は**全部モデル外の imperative 層**で起きた。状態機械を「仕様の絵」として持つか「実行エンジン」として持つかで、バグの捕まえやすさが変わる。
