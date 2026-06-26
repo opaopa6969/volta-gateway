@@ -11,13 +11,16 @@ tramli フロー + Notification 抽象による会員登録・メール確認・
 | Notification 抽象（Channel/Provider/Sender/Service） | ✅ 実装・unit テスト |
 | 通知 outbox（notification_jobs/logs）+ worker | ✅ 実装・実DB統合テスト |
 | Email provider: SMTP / Mailpit / Dummy / Log | ✅ 実装（SES は未実装→Log fallback）|
-| SMS / LINE provider | ⏳ dummy/log のみ（interface は用意済）|
+| SMS provider: Twilio / Dummy / Log（SNS→Log）| ✅ 実装（実送信は creds 設定時）|
+| LINE provider: Messaging API / Dummy / Log | ✅ 実装（実送信は token 設定時）|
+| login OTP チャレンジ（Email/SMS/LINE）| ✅ 実装・実DB統合テスト |
+| MFA setup ランタイム（TOTP flow 化、recovery codes）| ✅ 実装・実DB統合テスト |
 | tramli 5フロー定義（registration/email_verification/password_reset/mfa_setup/login_challenge） | ✅ 定義 + validate + `/viz/flows` 登録 |
 | 会員登録ランタイム（passwordless）+ HTTP API | ✅ 実装・実DB統合テスト |
 | email_verification_tokens（ハッシュ/期限/一度きり/再送制限） | ✅ 実装・実DB統合テスト |
 | login challenge OTP（Email/SMS/LINE、通知経由） | ✅ 実装・実DB統合テスト |
 | **password reset** | ⛔ 非採用（passwordless 確定。flow は定義のみ残置）|
-| **MFA setup** | フロー定義 + `/viz` 登録済。TOTP 設定/検証・recovery codes は**既存エンドポイント**が機能提供（`/api/v1/users/{id}/mfa/totp/*`, `.../recovery-codes/regenerate`）。flow-ランタイム再ラップは既存実装との重複回避のため見送り |
+| **MFA setup** | ✅ flow-ランタイム実装（`runtime::start_mfa_setup`/`confirm_mfa_setup`、既存 TOTP/recovery 再利用、確認後のみ有効化）。既存 HTTP エンドポイント（`/api/v1/users/{id}/mfa/totp/*`）とも併存 |
 
 すべて Rust 側（volta-gateway/auth-core, auth-server）。**本番(Java volta-auth-proxy)には無影響**。
 
@@ -115,8 +118,7 @@ login_challenge（各テストは pgcrypto 拡張を有効化し必要 migration
 local/test は DUMMY/LOG で完結し、外部サービスへの送信は一切しない。
 
 ## 今後（未実装の follow-up）
-- SMS/LINE の実 provider（SNS/Twilio/LINE Messaging API）。interface・dummy は用意済。
-- Email SES provider（aws-sdk）。現状 LOG fallback。
-- MFA setup の flow-ランタイム化（必要なら既存 TOTP エンドポイントを置換せず統合）。
-- login challenge / MFA の HTTP 統合をログイン本体（OIDC/passkey 後）へ接続。
+- **Java→Rust 本番移行**: 完全ランブック + データ移行SQL を [`java-to-rust-migration-runbook.md`](./java-to-rust-migration-runbook.md) に整備済。実行は §2.1 のオペレーター判断6点 + maintenance window が前提（cutover は本書手順 D/E）。
+- SMS の AWS SNS provider（現状 Twilio 実装・SNS→Log）。Email SES provider（aws-sdk、現状 SMTP 実装・SES→Log）。
+- login OTP / MFA challenge の HTTP 統合をログイン本体（OIDC/passkey 後段）へ接続。
 - テンプレートエンジン（現状は最小レンダラ）。
