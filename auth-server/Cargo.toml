@@ -83,3 +83,5 @@ x509-cert = { version = "0.2", features = ["pem"] }
 der = "0.7"
 rsa = { version = "0.9", features = ["sha2"] }
 signature = "2"
+
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls-tls"] }

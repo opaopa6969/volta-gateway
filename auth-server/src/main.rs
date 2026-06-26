@@ -6,6 +6,7 @@ pub mod auth_events;
 pub mod local_bypass;
 mod outbox_worker;
 mod notification_worker;
+mod notification_providers;
 pub mod pagination;
 pub mod rate_limit;
 pub mod saml;
@@ -166,9 +167,10 @@ async fn main() {
         let mut svc = NotificationService::new(notif_config);
         svc.register(Arc::new(DummySender::new(NotificationChannel::Dummy)));
         svc.register(Arc::new(LogSender::new(NotificationChannel::Log)));
-        // EMAIL/SMS/LINE map to the LOG sink (no external send) here; Phase 6
-        // swaps EMAIL for a real SMTP/SES/MAILPIT sender via config.
-        svc.register(Arc::new(LogSender::new(NotificationChannel::Email)));
+        // EMAIL: real provider (SMTP/MAILPIT/DUMMY) chosen by
+        // NOTIFICATION_EMAIL_PROVIDER; falls back to LOG sink (no external send).
+        svc.register(notification_providers::build_email_sender());
+        // SMS/LINE: dummy/log until a provider is wired.
         svc.register(Arc::new(LogSender::new(NotificationChannel::Sms)));
         svc.register(Arc::new(LogSender::new(NotificationChannel::Line)));
         Arc::new(svc)
