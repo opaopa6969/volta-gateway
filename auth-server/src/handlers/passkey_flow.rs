@@ -18,10 +18,38 @@ use webauthn_rs::prelude::{DiscoverableKey, Passkey, PublicKeyCredential, Regist
 use crate::error::{no_cache_headers, ApiError};
 use crate::helpers::{extract_session_id, set_session_cookie};
 use crate::state::AppState;
-use volta_auth_core::store::{PasskeyChallengeRecord, PasskeyChallengeStore, PasskeyStore, SessionStore, UserStore};
+use volta_auth_core::store::{MembershipStore, PasskeyChallengeRecord, PasskeyChallengeStore, PasskeyStore, SessionStore, TenantStore, UserStore};
 
 /// Challenge TTL — same as OIDC flow TTL. WebAuthn spec suggests ≤5 minutes.
 const CHALLENGE_TTL_SECS: i64 = 300;
+
+/// Resolve the user's tenant + role(s) + identity for a new passkey session.
+///
+/// Passkey login previously created the session with empty tenant/roles, which
+/// made ForwardAuth emit no `x-volta-roles` → downstream apps treated the user
+/// as roleless (viewer). This mirrors the magic-link flow so passkey sessions
+/// carry the same identity. Returns (tenant_id, tenant_slug, roles, email,
+/// display_name).
+async fn session_identity(
+    s: &AppState,
+    user_id: Uuid,
+) -> (String, Option<String>, Vec<String>, Option<String>, Option<String>) {
+    let user = UserStore::find_by_id(&s.db, user_id).await.ok().flatten();
+    let email = user.as_ref().map(|u| u.email.clone());
+    let display = user.as_ref().and_then(|u| u.display_name.clone());
+    let tenants = TenantStore::find_by_user(&s.db, user_id).await.unwrap_or_default();
+    if let Some(t) = tenants.first() {
+        let role = MembershipStore::find(&s.db, user_id, t.id)
+            .await
+            .ok()
+            .flatten()
+            .map(|m| m.role)
+            .unwrap_or_else(|| "MEMBER".into());
+        (t.id.to_string(), Some(t.slug.clone()), vec![role], email, display)
+    } else {
+        (String::new(), None, vec![], email, display)
+    }
+}
 
 fn service(s: &AppState) -> Result<&volta_auth_core::passkey::PasskeyService, ApiError> {
     s.passkey.as_deref().ok_or_else(|| {
@@ -144,12 +172,14 @@ pub async fn auth_finish(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
+    let (tenant_id, tenant_slug, roles, email, display_name) =
+        session_identity(&s, passkey_row.user_id).await;
     SessionStore::create(
         &s.db,
         volta_auth_core::record::SessionRecord {
             session_id: session_id.clone(),
             user_id: passkey_row.user_id.to_string(),
-            tenant_id: String::new(),
+            tenant_id,
             return_to: None,
             created_at: now,
             last_active_at: now,
@@ -159,10 +189,10 @@ pub async fn auth_finish(
             ip_address: None,
             user_agent: None,
             csrf_token: None,
-            email: None,
-            tenant_slug: None,
-            roles: vec![],
-            display_name: None,
+            email,
+            tenant_slug,
+            roles,
+            display_name,
         },
     )
     .await
@@ -293,12 +323,14 @@ pub async fn discover_finish(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
+    let (tenant_id, tenant_slug, roles, email, display_name) =
+        session_identity(&s, passkey_row.user_id).await;
     SessionStore::create(
         &s.db,
         volta_auth_core::record::SessionRecord {
             session_id: session_id.clone(),
             user_id: passkey_row.user_id.to_string(),
-            tenant_id: String::new(),
+            tenant_id,
             return_to: None,
             created_at: now,
             last_active_at: now,
@@ -308,10 +340,10 @@ pub async fn discover_finish(
             ip_address: None,
             user_agent: None,
             csrf_token: None,
-            email: None,
-            tenant_slug: None,
-            roles: vec![],
-            display_name: None,
+            email,
+            tenant_slug,
+            roles,
+            display_name,
         },
     )
     .await
