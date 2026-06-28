@@ -1,7 +1,7 @@
 //! /auth/* handlers — verify, logout, refresh, switch-tenant.
 //! 100% compatible with Java volta-auth-proxy.
 
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::Json;
@@ -145,16 +145,35 @@ pub async fn verify(
     redirect_to_login()
 }
 
-/// GET /auth/logout — browser logout with redirect.
+#[derive(Deserialize)]
+pub struct LogoutQuery {
+    pub return_to: Option<String>,
+}
+
+/// Only forward a `return_to` that points back at our own apps (https on
+/// *.unlaxer.org) — avoids turning logout into an open redirect.
+fn is_safe_return_to(rt: &str) -> bool {
+    let Some(rest) = rt.strip_prefix("https://") else { return false; };
+    let host = rest.split('/').next().unwrap_or("");
+    host == "unlaxer.org" || host.ends_with(".unlaxer.org")
+}
+
+/// GET /auth/logout — browser logout with redirect. Honors a safe `return_to`
+/// so logging out from an app (e.g. console) lands back at that app's login.
 pub async fn logout_get(
     State(state): State<AppState>,
+    Query(q): Query<LogoutQuery>,
     jar: CookieJar,
 ) -> Response {
     if let Some(session_id) = extract_session_id(&jar) {
         publish_logout_event(&state, &session_id).await;
         let _ = SessionStore::revoke(&state.db, &session_id).await;
     }
-    let mut resp = Redirect::to(&format!("{}/login", state.base_url)).into_response();
+    let login = match q.return_to.as_deref().filter(|r| is_safe_return_to(r)) {
+        Some(rt) => format!("{}/login?return_to={}", state.base_url, urlencoding::encode(rt)),
+        None => format!("{}/login", state.base_url),
+    };
+    let mut resp = Redirect::to(&login).into_response();
     clear_session_cookie(&mut resp, &state);
     no_cache_headers(&mut resp);
     resp
