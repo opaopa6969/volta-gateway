@@ -14,15 +14,50 @@ use rand::RngCore;
 use serde::Deserialize;
 
 use crate::error::{no_cache_headers, ApiError};
-use crate::helpers::{is_json_accept, require_session, set_session_cookie};
+use crate::helpers::{is_json_accept, read_device_marker, require_session, set_device_cookie, set_session_cookie};
 use axum_extra::extract::CookieJar;
 use crate::state::AppState;
 
+use volta_auth_core::crypto::{random_token_hex, sha256_hex};
 use volta_auth_core::idp::PkcePair;
 use volta_auth_core::record::OidcFlowRecord;
+use volta_auth_core::risk::{self, RiskDecision, RiskSignals, RiskThresholds};
 use volta_auth_core::store::{
-    MembershipStore, OidcFlowStore, SessionStore, TenantStore, UserStore,
+    MembershipStore, OidcFlowStore, RiskDeviceStore, SessionStore, TenantStore, UserStore,
 };
+
+/// Per-request context feeding risk-based adaptive auth (Phase 4c).
+pub struct RiskContext {
+    pub client_ip: Option<String>,
+    pub user_agent: Option<String>,
+    /// SHA-256 of the `__volta_kd` device marker (raw value never stored).
+    pub device_hash: String,
+}
+
+/// First hop of `X-Forwarded-For` (set by the gateway), else `X-Real-IP`.
+fn client_ip(headers: &HeaderMap) -> Option<String> {
+    headers.get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(',').next())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| headers.get("x-real-ip").and_then(|v| v.to_str().ok()).map(|s| s.to_string()))
+}
+fn user_agent(headers: &HeaderMap) -> Option<String> {
+    headers.get("user-agent").and_then(|v| v.to_str().ok()).map(|s| s.to_string())
+}
+
+/// Resolve (or mint) the device id from the request, returning
+/// `(device_id_to_set_as_cookie, RiskContext)`.
+fn build_risk_context(headers: &HeaderMap, jar: &CookieJar) -> (String, RiskContext) {
+    let device_id = read_device_marker(jar).unwrap_or_else(|| random_token_hex(16));
+    let ctx = RiskContext {
+        client_ip: client_ip(headers),
+        user_agent: user_agent(headers),
+        device_hash: sha256_hex(&device_id),
+    };
+    (device_id, ctx)
+}
 
 /// Flow TTL — long enough for the user to click through IdP consent, short
 /// enough to keep leaked `?state=…` values useless.
@@ -284,6 +319,7 @@ pub struct CallbackQuery {
 pub async fn callback(
     State(state): State<AppState>,
     headers: HeaderMap,
+    jar: CookieJar,
     Query(q): Query<CallbackQuery>,
 ) -> Response {
     if let Some(ref err) = q.error {
@@ -312,11 +348,13 @@ pub async fn callback(
         Err(e) => return ApiError::internal(&e.to_string()).into_response(),
     };
 
+    let (device_id, risk_ctx) = build_risk_context(&headers, &jar);
     if is_json_accept(&headers) {
-        match complete_oidc(&state, &code, &flow).await {
+        match complete_oidc(&state, &code, &flow, &risk_ctx).await {
             Ok((session_id, redirect_to)) => {
                 let mut resp = Json(serde_json::json!({"redirect_to": redirect_to})).into_response();
                 set_session_cookie(&mut resp, &session_id, &state);
+                set_device_cookie(&mut resp, &device_id, &state);
                 no_cache_headers(&mut resp);
                 resp
             }
@@ -330,10 +368,11 @@ pub async fn callback(
         // above, so instead we re-encrypt a one-shot marker. Simpler: just
         // complete here (same as JSON path). The auto-POST form is kept for
         // browsers that want to hide the code from history.
-        match complete_oidc(&state, &code, &flow).await {
+        match complete_oidc(&state, &code, &flow, &risk_ctx).await {
             Ok((session_id, redirect_to)) => {
                 let mut resp = Redirect::to(&redirect_to).into_response();
                 set_session_cookie(&mut resp, &session_id, &state);
+                set_device_cookie(&mut resp, &device_id, &state);
                 no_cache_headers(&mut resp);
                 resp
             }
@@ -355,6 +394,8 @@ pub struct CallbackCompleteBody {
 /// completion (e.g., JS flows that want to POST from the front-end).
 pub async fn callback_complete(
     State(state): State<AppState>,
+    headers: HeaderMap,
+    jar: CookieJar,
     body: axum::extract::Form<CallbackCompleteBody>,
 ) -> Response {
     let code = match &body.code {
@@ -375,10 +416,12 @@ pub async fn callback_complete(
         Err(e) => return ApiError::internal(&e.to_string()).into_response(),
     };
 
-    match complete_oidc(&state, &code, &flow).await {
+    let (device_id, risk_ctx) = build_risk_context(&headers, &jar);
+    match complete_oidc(&state, &code, &flow, &risk_ctx).await {
         Ok((session_id, redirect_to)) => {
             let mut resp = Redirect::to(&redirect_to).into_response();
             set_session_cookie(&mut resp, &session_id, &state);
+            set_device_cookie(&mut resp, &device_id, &state);
             no_cache_headers(&mut resp);
             resp
         }
@@ -392,6 +435,7 @@ async fn complete_oidc(
     state: &AppState,
     code: &str,
     flow: &OidcFlowRecord,
+    ctx: &RiskContext,
 ) -> Result<(String, String), ApiError> {
     let callback_url = format!("{}/callback", state.base_url);
 
@@ -476,6 +520,33 @@ async fn complete_oidc(
         (tenant.id.to_string(), Some(tenant.slug), vec!["OWNER".into()])
     };
 
+    // ── Risk-based adaptive auth (Phase 4c) ──────────────────
+    // Signals: a device we've never seen for this user, and a source IP that
+    // differs from their most recent session. Fail-open — store/lookup errors
+    // resolve to the low-risk interpretation, never a lock-out.
+    let known = RiskDeviceStore::check_and_record(&state.db, user.id, &ctx.device_hash)
+        .await.unwrap_or(true);
+    let ip_changed = match &ctx.client_ip {
+        Some(ip) => SessionStore::list_by_user(&state.db, &user.id.to_string()).await
+            .ok().unwrap_or_default().into_iter()
+            .max_by_key(|sess| sess.created_at)   // most recent prior session
+            .and_then(|sess| sess.ip_address)
+            .map(|prev| prev != *ip)
+            .unwrap_or(false),
+        None => false,
+    };
+    let signals = RiskSignals { new_device: !known, ip_changed, ..Default::default() };
+    let (risk_level, decision) = risk::evaluate(&signals, &RiskThresholds::default(), 0);
+
+    if decision == RiskDecision::Block {
+        let mut ev = crate::auth_events::AuthEvent::now("LOGIN_BLOCKED").with_user(user.id.to_string());
+        ev.detail = Some(serde_json::json!({ "risk_level": risk_level, "new_device": !known, "ip_changed": ip_changed }));
+        state.auth_events.publish_and_audit(
+            ev, &state.db, ctx.client_ip.clone(), Some("USER".into()), Some(user.id.to_string()), None,
+        ).await;
+        return Err(ApiError::forbidden("LOGIN_BLOCKED", "不審なアクセスを検知したためログインを拒否しました。時間をおくか、管理者にお問い合わせください。"));
+    }
+
     let session_id = uuid::Uuid::new_v4().to_string();
     let now_epoch = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
@@ -491,9 +562,11 @@ async fn complete_oidc(
         last_active_at: now_epoch,
         expires_at: now_epoch + state.session_ttl_secs,
         invalidated_at: None,
+        // StepUp (risk ≥ action) leaves the session MFA-unverified so ForwardAuth
+        // routes the user through /mfa/challenge when they have a second factor.
         mfa_verified_at: None,
-        ip_address: None,
-        user_agent: None,
+        ip_address: ctx.client_ip.clone(),
+        user_agent: ctx.user_agent.clone(),
         csrf_token: None,
         email: Some(email),
         tenant_slug,

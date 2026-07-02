@@ -18,6 +18,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ## [Unreleased]
 
 ### Added
+- **Risk-based login wiring** — Phase 4c. The risk engine is now live on the OIDC
+  callback: a long-lived `__volta_kd` device marker (hash remembered per user in
+  `risk_known_devices`, migration 030) flags **new devices**, and the source IP
+  is compared to the user's most recent session (**ip_changed**). `complete_oidc`
+  runs `risk::evaluate`; a `Block` decision refuses the login (403 `LOGIN_BLOCKED`
+  + audit event) while normal logins now record IP/User-Agent on the session.
+  **Fail-open**: any store/lookup error resolves to allow, so the change is safe
+  to deploy even before the migration runs. New `RiskDeviceStore` +
+  device-cookie helpers. **Phase 4c** of `docs/auth-methods-landscape.md`.
 - **Risk engine + passkey AAGUID metadata** — Phase 4 (a+b). `auth-core::risk`
   scores login signals (new device, IP/ASN/geo change, impossible travel,
   off-hours, UA change) into a level and maps it against tenant thresholds

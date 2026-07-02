@@ -8,7 +8,7 @@ use chrono::Utc;
 
 use crate::error::AuthError;
 use crate::record::*;
-use crate::store::{UserStore, TenantStore, MembershipStore, InvitationStore, FlowPersistence, SessionStore, MfaStore, RecoveryCodeStore, MagicLinkStore, SigningKeyStore, IdpConfigStore, M2mClientStore, PasskeyStore, OidcFlowStore, PasskeyChallengeRecord, PasskeyChallengeStore, DeviceGrantStore, DevicePollOutcome, DeviceDecisionOutcome, OAuthClientStore, AuthzCodeStore, RefreshTokenStore, OAuthConsentStore, RefreshOutcome, WebhookStore, OutboxStore, WebhookDeliveryStore, AuditStore, DeviceTrustStore, BillingStore, PolicyStore};
+use crate::store::{UserStore, TenantStore, MembershipStore, InvitationStore, FlowPersistence, SessionStore, MfaStore, RecoveryCodeStore, MagicLinkStore, SigningKeyStore, IdpConfigStore, M2mClientStore, PasskeyStore, OidcFlowStore, PasskeyChallengeRecord, PasskeyChallengeStore, DeviceGrantStore, DevicePollOutcome, DeviceDecisionOutcome, OAuthClientStore, AuthzCodeStore, RefreshTokenStore, OAuthConsentStore, RefreshOutcome, RiskDeviceStore, WebhookStore, OutboxStore, WebhookDeliveryStore, AuditStore, DeviceTrustStore, BillingStore, PolicyStore};
 
 /// PostgreSQL-backed store — single struct implementing all DAO traits.
 #[derive(Clone)]
@@ -1508,6 +1508,22 @@ impl OAuthConsentStore for PgStore {
         ).bind(user_id).bind(client_id).bind(scope)
         .execute(&self.pool).await.map_err(AuthError::from)?;
         Ok(())
+    }
+}
+
+#[async_trait]
+impl RiskDeviceStore for PgStore {
+    async fn check_and_record(&self, user_id: Uuid, device_hash: &str) -> Result<bool, AuthError> {
+        // `xmax <> 0` on the returned row means the INSERT hit a conflict and did
+        // an UPDATE — i.e. the (user, device) pair already existed (known device).
+        let row: (bool,) = sqlx::query_as(
+            "INSERT INTO risk_known_devices (user_id, device_hash) VALUES ($1, $2) \
+             ON CONFLICT (user_id, device_hash) DO UPDATE SET last_seen = now() \
+             RETURNING (xmax <> 0) AS existed"
+        )
+        .bind(user_id).bind(device_hash)
+        .fetch_one(&self.pool).await.map_err(AuthError::from)?;
+        Ok(row.0)
     }
 }
 

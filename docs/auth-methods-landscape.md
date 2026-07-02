@@ -209,7 +209,7 @@ volta の Rust auth は、**フェデレーション RP（OIDC クライアン�
 | 3.36 | マルチ *identity* session（Google風 chooser） | ✅ | **Phase 2 実装済**。`__volta_accounts` cookie に複数 session を保持、`GET /accounts` chooser（使用中/切替/追加/個別・全体サインアウト）。`/login?add=1` で追加。遅延リコンサイル方式でログイン完了8箇所は無改変。`handlers/accounts.rs` |
 | 3.37 | `prompt=select_account`（RP側→上流IdP） | ✅ | **Phase 2 実装済**。`/login?add=1` が上流 Google 等へ `prompt=select_account` を付与（`idp.rs` `authorization_url_pkce_prompt`）。自前OPとしての select_account は Phase 3 |
 | **適応 / 継続** |
-| 3.38 | リスクベース認証 | 🟡 | **Phase 4a 実装済**（エンジンcoサ）: `risk.rs` にシグナル加重スコア＋テナント閾値→Allow/StepUp/Block（Java parity, fail-open, 単体test）。**未(4c)**: login/callback への配線（known-deviceクッキー、IP/geo比較、step-up/block実効化） |
+| 3.38 | リスクベース認証 | ✅ | **Phase 4a+4c 実装済**。4a=`risk.rs`エンジン。4c=OIDC callback配線: `__volta_kd` known-deviceクッキー（新デバイス判定, `risk_known_devices`表, migration 030）＋直近session IP比較→`risk::evaluate`→**Block は拒否(LOGIN_BLOCKED監査)**、session に IP/UA 記録。fail-open（store失敗→Allow）。**geo/impossible-travel と step-up強制は今後** |
 | 3.39 | Step-up 認証 | 🟡 | `PolicyResult::RequireMfa/RequireReauth` の型はあるが実配線は限定的 |
 | 3.40 | CAEP / SSF（継続的評価） | ❌ | 無し |
 | 3.41 | bot / abuse（CAPTCHA 等） | 🟡 | rate limit はあり ✅。CAPTCHA/fingerprint なし |
@@ -361,10 +361,13 @@ volta の Rust auth は、**フェデレーション RP（OIDC クライアン�
   Java parity）で `Allow`/`StepUp`/`Block`。**fail-open**（無signalは safe=1）。純粋関数＋単体test。
 - **4b AAGUID メタ〔✅ 実装済 2026-07-02〕**: `auth-server/src/aaguid.rs`。FIDO MDS 主要 AAGUID の
   静的マップ、passkey 一覧が機種名を返す（iCloud/YubiKey/Windows Hello…）。
-- **4c 配線〔次スライス〕**: known-device cookie（新デバイス判定）、直近 session との IP/geo 比較で
-  signal 生成、OIDC callback で risk 評価→ `Block` は拒否 / `StepUp` は MFA 強制（既存 MFA 状態機械へ統合）。
-- **step-up 実配線**: `acr`/`amr` を session/JWT に反映、重要操作 handler で `RequireMfa` を実効化。
-- **passkey as 2FA/step-up**: 既存 passkey を「2 要素目・reauth」ceremonies として再利用。
+- **4c 配線〔✅ 実装済 2026-07-02〕**: `__volta_kd` known-device cookie（`risk_known_devices`表,
+  migration 030, `RiskDeviceStore::check_and_record`）で新デバイス判定、直近 session との IP 比較で
+  `ip_changed`、OIDC callback(`complete_oidc`)で `risk::evaluate`→ **`Block` は拒否**（`LOGIN_BLOCKED`
+  監査＋ForbiddenでUI通知）、session に IP/UA 記録。**fail-open**（store失敗→Allow, migration前でも安全）。
+  RiskDeviceStore 統合test。
+- **4c 残（次以降）**: geo/ASN・impossible-travel signal（要 geo データ）、`StepUp` の MFA 強制配線
+  （既存 MFA 状態機械統合）、`acr`/`amr` 反映、passkey を 2FA/step-up ceremony として再利用。
 
 ### Phase 5 — 標準準拠の仕上げ（G9–G11, G13, G14）
 - DPoP、front/back-channel logout、アカウントリンク、token exchange、（必要なら）SAML IdP。

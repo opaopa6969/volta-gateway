@@ -224,6 +224,28 @@ pub fn set_session_cookie(resp: &mut Response, session_id: &str, state: &AppStat
     resp.headers_mut().append("set-cookie", cookie.parse().unwrap());
 }
 
+/// Silent device-marker cookie for risk-based auth (Phase 4c). Long-lived,
+/// opaque; its per-user hash is remembered server-side so a *missing* marker
+/// flags a new device.
+const DEVICE_COOKIE: &str = "__volta_kd";
+const DEVICE_COOKIE_MAX_AGE: u64 = 400 * 24 * 3600; // ~400d (browser cap)
+
+/// Existing device-marker value, if the browser presented one.
+pub fn read_device_marker(jar: &CookieJar) -> Option<String> {
+    jar.get(DEVICE_COOKIE).map(|c| c.value().to_string()).filter(|v| !v.is_empty())
+}
+
+/// Persist/refresh the device marker on the response.
+pub fn set_device_cookie(resp: &mut Response, device_id: &str, state: &AppState) {
+    let mut cookie = format!(
+        "{}={}; Path=/; Max-Age={}; HttpOnly; SameSite=Lax",
+        DEVICE_COOKIE, device_id, DEVICE_COOKIE_MAX_AGE,
+    );
+    if !state.cookie_domain.is_empty() { cookie.push_str(&format!("; Domain={}", state.cookie_domain)); }
+    if state.force_secure_cookie { cookie.push_str("; Secure"); }
+    resp.headers_mut().append("set-cookie", cookie.parse().unwrap());
+}
+
 /// Read the remembered-accounts list (session ids) from the request cookie.
 /// Order is preserved; entries are opaque and validated by the caller.
 pub fn read_accounts(jar: &CookieJar) -> Vec<String> {

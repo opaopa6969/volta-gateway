@@ -513,3 +513,26 @@ async fn refresh_rotation_and_reuse_detection() {
     // unknown token → NotFound
     assert_eq!(refresh(&store).rotate_refresh("nope").await.unwrap(), RefreshOutcome::NotFound);
 }
+
+// ─── RiskDeviceStore (Phase 4c) ────────────────────────────
+
+#[tokio::test]
+#[ignore]
+async fn risk_device_new_then_known() {
+    let (pool, _c) = setup_pool().await;
+    sqlx::raw_sql(include_str!("../migrations/030_create_risk_known_devices.sql"))
+        .execute(&pool).await.unwrap();
+    let store = PgStore::new(pool);
+    let user = Uuid::new_v4();
+    let dev = volta_auth_core::crypto::sha256_hex("device-cookie-value");
+
+    // first sighting → new (false = not previously known)
+    assert!(!RiskDeviceStore::check_and_record(&store, user, &dev).await.unwrap());
+    // second sighting → known
+    assert!(RiskDeviceStore::check_and_record(&store, user, &dev).await.unwrap());
+    // a different device for the same user is still new
+    let dev2 = volta_auth_core::crypto::sha256_hex("other-device");
+    assert!(!RiskDeviceStore::check_and_record(&store, user, &dev2).await.unwrap());
+    // and the same device for a different user is new
+    assert!(!RiskDeviceStore::check_and_record(&store, Uuid::new_v4(), &dev).await.unwrap());
+}
