@@ -49,6 +49,20 @@ pub struct AuthzCodeRecord {
     pub created_at: DateTime<Utc>,
 }
 
+/// A federated identity linked to a user (account linking). A user may have
+/// several — one per IdP the account is connected to.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
+pub struct UserIdentityRecord {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub provider: String,
+    pub subject: String,
+    pub email: Option<String>,
+    pub email_verified: bool,
+    pub created_at: DateTime<Utc>,
+}
+
 /// A refresh token in a rotation family. Presenting a `revoked_at` token again
 /// (reuse) means the family is compromised and must be revoked wholesale.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -8,7 +8,7 @@ use chrono::Utc;
 
 use crate::error::AuthError;
 use crate::record::*;
-use crate::store::{UserStore, TenantStore, MembershipStore, InvitationStore, FlowPersistence, SessionStore, MfaStore, RecoveryCodeStore, MagicLinkStore, SigningKeyStore, IdpConfigStore, M2mClientStore, PasskeyStore, OidcFlowStore, PasskeyChallengeRecord, PasskeyChallengeStore, DeviceGrantStore, DevicePollOutcome, DeviceDecisionOutcome, OAuthClientStore, AuthzCodeStore, RefreshTokenStore, OAuthConsentStore, RefreshOutcome, RiskDeviceStore, WebhookStore, OutboxStore, WebhookDeliveryStore, AuditStore, DeviceTrustStore, BillingStore, PolicyStore};
+use crate::store::{UserStore, TenantStore, MembershipStore, InvitationStore, FlowPersistence, SessionStore, MfaStore, RecoveryCodeStore, MagicLinkStore, SigningKeyStore, IdpConfigStore, M2mClientStore, PasskeyStore, OidcFlowStore, PasskeyChallengeRecord, PasskeyChallengeStore, DeviceGrantStore, DevicePollOutcome, DeviceDecisionOutcome, OAuthClientStore, AuthzCodeStore, RefreshTokenStore, OAuthConsentStore, UserIdentityStore, RefreshOutcome, RiskDeviceStore, WebhookStore, OutboxStore, WebhookDeliveryStore, AuditStore, DeviceTrustStore, BillingStore, PolicyStore};
 
 /// PostgreSQL-backed store — single struct implementing all DAO traits.
 #[derive(Clone)]
@@ -1509,6 +1509,42 @@ impl OAuthConsentStore for PgStore {
         ).bind(user_id).bind(client_id).bind(scope)
         .execute(&self.pool).await.map_err(AuthError::from)?;
         Ok(())
+    }
+}
+
+const USER_IDENTITY_COLS: &str = "id, user_id, provider, subject, email, email_verified, created_at";
+
+#[async_trait]
+impl UserIdentityStore for PgStore {
+    async fn find_by_subject(&self, provider: &str, subject: &str) -> Result<Option<UserIdentityRecord>, AuthError> {
+        sqlx::query_as::<_, UserIdentityRecord>(
+            &format!("SELECT {USER_IDENTITY_COLS} FROM user_identities WHERE provider = $1 AND subject = $2")
+        ).bind(provider).bind(subject).fetch_optional(&self.pool).await.map_err(AuthError::from)
+    }
+    async fn list_by_user(&self, user_id: Uuid) -> Result<Vec<UserIdentityRecord>, AuthError> {
+        sqlx::query_as::<_, UserIdentityRecord>(
+            &format!("SELECT {USER_IDENTITY_COLS} FROM user_identities WHERE user_id = $1 ORDER BY created_at")
+        ).bind(user_id).fetch_all(&self.pool).await.map_err(AuthError::from)
+    }
+    async fn link(&self, r: UserIdentityRecord) -> Result<(), AuthError> {
+        sqlx::query(
+            "INSERT INTO user_identities (id, user_id, provider, subject, email, email_verified) \
+             VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (provider, subject) DO UPDATE \
+             SET email = EXCLUDED.email, email_verified = EXCLUDED.email_verified"
+        )
+        .bind(r.id).bind(r.user_id).bind(&r.provider).bind(&r.subject).bind(&r.email).bind(r.email_verified)
+        .execute(&self.pool).await.map_err(AuthError::from)?;
+        Ok(())
+    }
+    async fn unlink(&self, user_id: Uuid, id: Uuid) -> Result<bool, AuthError> {
+        let res = sqlx::query("DELETE FROM user_identities WHERE id = $1 AND user_id = $2")
+            .bind(id).bind(user_id).execute(&self.pool).await.map_err(AuthError::from)?;
+        Ok(res.rows_affected() > 0)
+    }
+    async fn count_by_user(&self, user_id: Uuid) -> Result<i64, AuthError> {
+        let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM user_identities WHERE user_id = $1")
+            .bind(user_id).fetch_one(&self.pool).await.map_err(AuthError::from)?;
+        Ok(row.0)
     }
 }
 

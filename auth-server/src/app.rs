@@ -258,6 +258,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/end_session", get(handlers::op::end_session))
         .route("/api/v1/oauth/clients", post(handlers::op::create_client))
         .route("/api/v1/oauth/clients", get(handlers::op::list_clients))
+        // Account linking (self-service) — a user's federated identities.
+        .route("/api/v1/users/me/identities", get(handlers::op::list_identities))
+        .route("/api/v1/users/me/identities/{id}", delete(handlers::op::unlink_identity))
 
         // Health + JWKS
         .route("/healthz", get(handlers::health::healthz))

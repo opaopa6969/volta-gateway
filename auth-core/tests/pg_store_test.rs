@@ -540,3 +540,41 @@ async fn risk_device_new_then_known() {
     // and the same device for a different user is new
     assert!(!RiskDeviceStore::check_and_record(&store, Uuid::new_v4(), &dev).await.unwrap());
 }
+
+// ─── UserIdentityStore / account linking (Phase 5) ─────────
+
+fn identities(s: &PgStore) -> &(dyn UserIdentityStore + '_) { s }
+
+#[tokio::test]
+#[ignore]
+async fn account_linking_multiple_providers() {
+    let (pool, _c) = setup_pool().await;
+    sqlx::raw_sql(include_str!("../migrations/032_create_user_identities.sql"))
+        .execute(&pool).await.unwrap();
+    let store = PgStore::new(pool);
+    let user = Uuid::new_v4();
+
+    let mk = |prov: &str, sub: &str| UserIdentityRecord {
+        id: Uuid::new_v4(), user_id: user, provider: prov.into(), subject: sub.into(),
+        email: Some("a@example.com".into()), email_verified: true, created_at: Utc::now(),
+    };
+    // link google + github to the same user
+    identities(&store).link(mk("google", "g-1")).await.unwrap();
+    identities(&store).link(mk("github", "h-1")).await.unwrap();
+    assert_eq!(identities(&store).count_by_user(user).await.unwrap(), 2);
+
+    // resolve by (provider, subject)
+    let found = identities(&store).find_by_subject("github", "h-1").await.unwrap().unwrap();
+    assert_eq!(found.user_id, user);
+    assert!(identities(&store).find_by_subject("github", "nope").await.unwrap().is_none());
+
+    // re-link same (provider, subject) is idempotent (upsert), not a 2nd row
+    identities(&store).link(mk("google", "g-1")).await.unwrap();
+    assert_eq!(identities(&store).count_by_user(user).await.unwrap(), 2);
+
+    // unlink one (scoped to the owner); wrong user can't remove it
+    let gh = identities(&store).find_by_subject("github", "h-1").await.unwrap().unwrap();
+    assert!(!identities(&store).unlink(Uuid::new_v4(), gh.id).await.unwrap());
+    assert!(identities(&store).unlink(user, gh.id).await.unwrap());
+    assert_eq!(identities(&store).count_by_user(user).await.unwrap(), 1);
+}

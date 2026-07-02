@@ -27,7 +27,7 @@ pub use notification::{NotificationJobRecord, NotificationLogRecord};
 pub use verification::EmailVerificationTokenRecord;
 pub use login_challenge::LoginChallengeRecord;
 pub use device_grant::DeviceGrantRecord;
-pub use oauth::{OAuthClientRecord, AuthzCodeRecord, RefreshTokenRecord};
+pub use oauth::{OAuthClientRecord, AuthzCodeRecord, RefreshTokenRecord, UserIdentityRecord};
 pub use platform::{
     WebhookRecord, OutboxRecord, WebhookDeliveryRecord,
     AuditLogRecord, KnownDeviceRecord, TrustedDeviceRecord,

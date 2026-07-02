@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use crate::error::AuthError;
-use crate::record::{AuthzCodeRecord, OAuthClientRecord, RefreshTokenRecord};
+use crate::record::{AuthzCodeRecord, OAuthClientRecord, RefreshTokenRecord, UserIdentityRecord};
 
 /// Outcome of rotating a refresh token (RFC 6749 §10.4 + OAuth Security BCP
 /// reuse detection).
@@ -38,6 +38,20 @@ pub trait RefreshTokenStore: Send + Sync {
     async fn rotate_refresh(&self, token_hash: &str) -> Result<RefreshOutcome, AuthError>;
     async fn revoke_refresh(&self, token_hash: &str) -> Result<(), AuthError>;
     async fn revoke_family(&self, family_id: Uuid) -> Result<(), AuthError>;
+}
+
+/// Account linking — a user's federated identities.
+#[async_trait]
+pub trait UserIdentityStore: Send + Sync {
+    /// Resolve an identity by its IdP (provider, subject).
+    async fn find_by_subject(&self, provider: &str, subject: &str) -> Result<Option<UserIdentityRecord>, AuthError>;
+    /// List all identities linked to a user.
+    async fn list_by_user(&self, user_id: Uuid) -> Result<Vec<UserIdentityRecord>, AuthError>;
+    /// Link an identity (idempotent on (provider, subject)).
+    async fn link(&self, record: UserIdentityRecord) -> Result<(), AuthError>;
+    /// Unlink by id, scoped to the owning user. Returns true if a row was removed.
+    async fn unlink(&self, user_id: Uuid, id: Uuid) -> Result<bool, AuthError>;
+    async fn count_by_user(&self, user_id: Uuid) -> Result<i64, AuthError>;
 }
 
 #[async_trait]

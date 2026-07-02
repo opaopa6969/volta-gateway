@@ -23,7 +23,7 @@ use volta_auth_core::idp::PkcePair;
 use volta_auth_core::record::OidcFlowRecord;
 use volta_auth_core::risk::{self, RiskDecision, RiskSignals, RiskThresholds};
 use volta_auth_core::store::{
-    MembershipStore, OidcFlowStore, RiskDeviceStore, SessionStore, TenantStore, UserStore,
+    MembershipStore, OidcFlowStore, RiskDeviceStore, SessionStore, TenantStore, UserIdentityStore, UserStore,
 };
 
 /// Per-request context feeding risk-based adaptive auth (Phase 4c).
@@ -493,16 +493,45 @@ async fn complete_oidc(
     // Prefer id_token's sub when we verified it (spec §3.1.3.7); otherwise
     // fall back to userinfo.sub as before.
     let sub = id_token_sub.unwrap_or_else(|| userinfo.sub.clone());
-    let user = UserStore::upsert(&state.db, volta_auth_core::record::UserRecord {
-        id: uuid::Uuid::new_v4(),
-        email: email.clone(),
-        display_name: userinfo.name.clone(),
-        google_sub: Some(sub),
-        created_at: now,
-        is_active: true,
-        locale: None,
-        deleted_at: None,
-    }).await.map_err(|e| ApiError::internal(&e.to_string()))?;
+
+    // ── Account linking (Phase 5) ────────────────────────────
+    // Resolve by (provider, subject). A new identity links to an existing user
+    // iff its email is VERIFIED and matches — never auto-link an unverified
+    // email (account-takeover guard). Otherwise a fresh user is created. Legacy
+    // google users (google_sub set, no identity row) get back-filled here.
+    let provider = state.idp.config().provider.clone();
+    let email_verified = userinfo.email_verified.unwrap_or(false);
+    let user = match UserIdentityStore::find_by_subject(&state.db, &provider, &sub).await
+        .map_err(|e| ApiError::internal(&e.to_string()))?
+    {
+        Some(idn) => UserStore::find_by_id(&state.db, idn.user_id).await
+            .map_err(|e| ApiError::internal(&e.to_string()))?
+            .ok_or_else(|| ApiError::internal("linked identity points to a missing user"))?,
+        None => {
+            let existing = if email_verified {
+                UserStore::find_by_email(&state.db, &email).await
+                    .map_err(|e| ApiError::internal(&e.to_string()))?
+            } else { None };
+            let user = match existing {
+                Some(u) => u,
+                None => UserStore::upsert(&state.db, volta_auth_core::record::UserRecord {
+                    id: uuid::Uuid::new_v4(),
+                    email: email.clone(),
+                    display_name: userinfo.name.clone(),
+                    google_sub: if provider == "google" { Some(sub.clone()) } else { None },
+                    created_at: now,
+                    is_active: true,
+                    locale: None,
+                    deleted_at: None,
+                }).await.map_err(|e| ApiError::internal(&e.to_string()))?,
+            };
+            let _ = UserIdentityStore::link(&state.db, volta_auth_core::record::UserIdentityRecord {
+                id: uuid::Uuid::new_v4(), user_id: user.id, provider: provider.clone(),
+                subject: sub.clone(), email: Some(email.clone()), email_verified, created_at: now,
+            }).await;
+            user
+        }
+    };
 
     let tenants = TenantStore::find_by_user(&state.db, user.id).await
         .map_err(|e| ApiError::internal(&e.to_string()))?;

@@ -764,6 +764,34 @@ pub async fn list_clients(State(s): State<AppState>, jar: CookieJar) -> Result<R
     Ok(Json(json!({ "clients": items })).into_response())
 }
 
+// ─── account linking (self-service) ───────────────────────
+
+pub async fn list_identities(State(s): State<AppState>, jar: CookieJar) -> Result<Response, ApiError> {
+    let session = crate::helpers::require_session(&s, &jar).await?;
+    let uid: Uuid = session.user_id.parse().map_err(|_| ApiError::internal("bad uid"))?;
+    let ids = UserIdentityStore::list_by_user(&s.db, uid).await.map_err(|e| ApiError::internal(&e.to_string()))?;
+    let items: Vec<_> = ids.into_iter().map(|i| json!({
+        "id": i.id, "provider": i.provider, "email": i.email,
+        "email_verified": i.email_verified, "created_at": i.created_at.to_rfc3339(),
+    })).collect();
+    Ok(Json(json!({ "identities": items })).into_response())
+}
+
+pub async fn unlink_identity(State(s): State<AppState>, jar: CookieJar, axum::extract::Path(id): axum::extract::Path<Uuid>) -> Result<Response, ApiError> {
+    let session = crate::helpers::require_session(&s, &jar).await?;
+    let uid: Uuid = session.user_id.parse().map_err(|_| ApiError::internal("bad uid"))?;
+    // Refuse to remove the last federated identity — would risk locking the user
+    // out if they have no other login method.
+    if UserIdentityStore::count_by_user(&s.db, uid).await.map_err(|e| ApiError::internal(&e.to_string()))? <= 1 {
+        return Err(ApiError::bad_request("LAST_IDENTITY", "最後のログイン手段は解除できません。別のIdPを連携してから解除してください。"));
+    }
+    let removed = UserIdentityStore::unlink(&s.db, uid, id).await.map_err(|e| ApiError::internal(&e.to_string()))?;
+    if !removed {
+        return Err(ApiError::bad_request("NOT_FOUND", "その連携は見つかりません"));
+    }
+    Ok(Json(json!({ "ok": true })).into_response())
+}
+
 const CONSENT_HTML: &str = r##"<!DOCTYPE html><html lang="ja"><head>
 <meta charset="utf-8"><title>アクセスの許可 — volta</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
