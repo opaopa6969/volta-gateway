@@ -18,6 +18,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ## [Unreleased]
 
 ### Added
+- **Token exchange (RFC 8693)** — Phase 5. `POST /oauth/token` with
+  `grant_type=urn:ietf:params:oauth:grant-type:token-exchange` trades a valid OP
+  access token for another one, **down-scoped only** (widening → `invalid_scope`)
+  with an `act` delegation claim and optional `audience` — enabling delegation
+  (e.g. an agent acting for a user with a narrowed scope). Advertised in
+  discovery. Verified end-to-end against a running server. **Phase 5** of
+  `docs/auth-methods-landscape.md`.
 - **Risk-based login wiring** — Phase 4c. The risk engine is now live on the OIDC
   callback: a long-lived `__volta_kd` device marker (hash remembered per user in
   `risk_known_devices`, migration 030) flags **new devices**, and the source IP

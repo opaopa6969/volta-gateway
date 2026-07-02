@@ -102,7 +102,7 @@ pub async fn discovery(State(s): State<AppState>) -> Response {
         "introspection_endpoint": format!("{b}/oauth/introspect"),
         "revocation_endpoint": format!("{b}/oauth/revoke"),
         "response_types_supported": ["code"],
-        "grant_types_supported": ["authorization_code","refresh_token","client_credentials","urn:ietf:params:oauth:grant-type:device_code"],
+        "grant_types_supported": ["authorization_code","refresh_token","client_credentials","urn:ietf:params:oauth:grant-type:device_code","urn:ietf:params:oauth:grant-type:token-exchange"],
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": ["client_secret_post","none"],
         "scopes_supported": ["openid","email","profile","offline_access"],
@@ -317,6 +317,89 @@ pub async fn token_authorization_code(s: &AppState, client_id: &str, client_secr
     issue_tokens(s, &client, rec.user_id, rec.tenant_id, &rec.scope, rec.nonce.as_deref(), None).await
 }
 
+pub const TOKEN_EXCHANGE_GRANT: &str = "urn:ietf:params:oauth:grant-type:token-exchange";
+const ACCESS_TOKEN_TYPE: &str = "urn:ietf:params:oauth:token-type:access_token";
+
+/// RFC 8693 token exchange — trade a valid OP access token for another
+/// (optionally down-scoped / re-audienced) access token. Enables delegation
+/// (e.g. an agent acting for a user with a narrowed scope). Only access-token
+/// subject tokens are supported.
+#[allow(clippy::too_many_arguments)]
+pub async fn token_exchange(
+    s: &AppState,
+    client_id: &str,
+    client_secret: Option<&str>,
+    subject_token: &str,
+    subject_token_type: Option<&str>,
+    requested_scope: Option<&str>,
+    audience: Option<&str>,
+) -> Response {
+    let client = match OAuthClientStore::find_client(&s.db, client_id).await {
+        Ok(Some(c)) => c,
+        _ => return oauth_err(StatusCode::UNAUTHORIZED, "invalid_client", "unknown client"),
+    };
+    if !authenticate_client(&client, client_secret) {
+        return oauth_err(StatusCode::UNAUTHORIZED, "invalid_client", "client authentication failed");
+    }
+    if let Some(t) = subject_token_type {
+        if t != ACCESS_TOKEN_TYPE {
+            return oauth_err(StatusCode::BAD_REQUEST, "invalid_request", "only access_token subject_token_type is supported");
+        }
+    }
+    // Verify the subject token (must be one we issued).
+    let verifier = match op_verifier(s).await {
+        Some(v) => v,
+        None => return oauth_err(StatusCode::INTERNAL_SERVER_ERROR, "server_error", "no OP key"),
+    };
+    let claims = match verifier.verify(subject_token) {
+        Ok(c) => c,
+        Err(_) => return oauth_err(StatusCode::BAD_REQUEST, "invalid_grant", "subject_token invalid or expired"),
+    };
+    let user_id: Uuid = match claims.sub.parse() {
+        Ok(u) => u,
+        Err(_) => return oauth_err(StatusCode::BAD_REQUEST, "invalid_grant", "bad subject"),
+    };
+    let Some(op) = &s.op_issuer else {
+        return oauth_err(StatusCode::INTERNAL_SERVER_ERROR, "server_error", "OP signing key unavailable");
+    };
+    // Down-scoping only: the exchanged scope may narrow but not widen the subject's.
+    // `scope` is a custom claim on our access token, so read it from the payload
+    // (VoltaClaims used by the verifier doesn't carry it).
+    let subject_scope = jwt_payload(subject_token)
+        .and_then(|p| p.get("scope").and_then(|v| v.as_str().map(String::from)))
+        .unwrap_or_default();
+    let base_scope = if subject_scope.is_empty() { "openid".to_string() } else { subject_scope };
+    let scope = match requested_scope {
+        Some(req) if !req.is_empty() => {
+            let base: std::collections::HashSet<&str> = base_scope.split_whitespace().collect();
+            if req.split_whitespace().all(|r| base.contains(r)) { req.to_string() } else {
+                return oauth_err(StatusCode::BAD_REQUEST, "invalid_scope", "requested scope exceeds subject token scope");
+            }
+        }
+        _ => base_scope,
+    };
+    let now = now_unix();
+    let mut ac = json!({
+        "iss": s.base_url, "sub": claims.sub, "scope": scope, "client_id": client.client_id,
+        "iat": now, "exp": now + AT_TTL_SECS, "token_use": "access", "act": { "client_id": client.client_id },
+    });
+    if let Some(aud) = audience { ac["aud"] = json!(aud); }
+    let _ = user_id;
+    let token = match op.sign(&ac) {
+        Ok(t) => t,
+        Err(e) => return oauth_err(StatusCode::INTERNAL_SERVER_ERROR, "server_error", &e.to_string()),
+    };
+    let mut resp = Json(json!({
+        "access_token": token,
+        "issued_token_type": ACCESS_TOKEN_TYPE,
+        "token_type": "Bearer",
+        "expires_in": AT_TTL_SECS,
+        "scope": scope,
+    })).into_response();
+    no_cache_headers(&mut resp);
+    resp
+}
+
 pub async fn token_refresh(s: &AppState, client_id: &str, client_secret: Option<&str>, refresh_token: &str) -> Response {
     let client = match OAuthClientStore::find_client(&s.db, client_id).await {
         Ok(Some(c)) => c,
@@ -403,6 +486,15 @@ async fn issue_tokens(s: &AppState, client: &OAuthClientRecord, user_id: Uuid, t
 }
 
 // ─── userinfo ──────────────────────────────────────────────
+
+/// Decode a JWT payload segment to JSON (no verification — caller must verify
+/// the signature separately). Used to read custom claims the typed verifier drops.
+fn jwt_payload(token: &str) -> Option<serde_json::Value> {
+    use base64::Engine;
+    let seg = token.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(seg).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
 
 fn bearer(headers: &HeaderMap) -> Option<String> {
     let v = headers.get("authorization")?.to_str().ok()?;

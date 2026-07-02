@@ -203,7 +203,7 @@ volta の Rust auth は、**フェデレーション RP（OIDC クライアン�
 | 3.31 | DPoP / mTLS-bound token | ❌ | 無し（bearer のみ） |
 | 3.32 | Introspection / Revocation エンドポイント | ✅ | **Phase 3b 実装済**。`POST /oauth/introspect`(RFC 7662, client認証要)・`POST /oauth/revoke`(RFC 7009, refresh失効) |
 | 3.33 | Logout（RP-initiated / front/back-channel） | 🟡 | 自 session logout ✅、**Phase 3b で RP-initiated `/end_session`**（post_logout_redirect_uri は同一オリジン検証）追加。front/back-channel logout はまだ |
-| 3.34 | Token exchange (RFC 8693) | ❌ | 無し |
+| 3.34 | Token exchange (RFC 8693) | ✅ | **Phase 5 実装済**。`/oauth/token`(grant=token-exchange)、access token を down-scope（拡大は拒否）＋`act`委譲クレーム。AIエージェント委譲等に利用。実サーバ検証済 |
 | **マルチアカウント** |
 | 3.35 | テナント切替 | ✅ | switch-tenant / select-tenant / switch-account |
 | 3.36 | マルチ *identity* session（Google風 chooser） | ✅ | **Phase 2 実装済**。`__volta_accounts` cookie に複数 session を保持、`GET /accounts` chooser（使用中/切替/追加/個別・全体サインアウト）。`/login?add=1` で追加。遅延リコンサイル方式でログイン完了8箇所は無改変。`handlers/accounts.rs` |
@@ -370,7 +370,15 @@ volta の Rust auth は、**フェデレーション RP（OIDC クライアン�
   （既存 MFA 状態機械統合）、`acr`/`amr` 反映、passkey を 2FA/step-up ceremony として再利用。
 
 ### Phase 5 — 標準準拠の仕上げ（G9–G11, G13, G14）
-- DPoP、front/back-channel logout、アカウントリンク、token exchange、（必要なら）SAML IdP。
+- **token exchange (RFC 8693)〔✅ 実装済 2026-07-02〕**: `/oauth/token`(grant=token-exchange)、
+  subject(access) token を検証→ **down-scope のみ許可**（拡大は `invalid_scope`）、`act` 委譲クレーム付与、
+  optional audience。`op::token_exchange`。実サーバ検証済。
+- **残（follow-up, 各々が独立した中〜大スライス）**:
+  - **DPoP (RFC 9449)**: proof-of-possession JWT 検証 + `cnf.jkt` 束縛（要 nonce/replay 対策インフラ）。
+  - **front/back-channel logout**: RP への logout 通知（client に logout uri 登録＋通知配信）。
+  - **アカウントリンク**: 1 ユーザに複数 IdP identity（`user_identities` 表＋リンク/解除フロー）。
+  - **Phase 4c 残**: geo/impossible-travel signal、`StepUp`→MFA 強制、passkey を 2FA/step-up ceremony 化。
+  これらはセキュリティ影響が大きく、各々を独立した検証付きスライスとして実装するのが安全。
 
 ### Phase 6 — 先端（G17/G18, 要否判断）
 - CAEP/SSF、Verifiable Credentials。別トラック扱い。

@@ -261,6 +261,11 @@ pub struct TokenReq {
     pub redirect_uri: Option<String>,
     pub code_verifier: Option<String>,
     pub refresh_token: Option<String>,
+    // Token exchange (Phase 5, RFC 8693)
+    pub subject_token: Option<String>,
+    pub subject_token_type: Option<String>,
+    pub scope: Option<String>,
+    pub audience: Option<String>,
 }
 
 pub async fn oauth_token(State(s): State<AppState>, axum::extract::Form(b): axum::extract::Form<TokenReq>) -> Result<Response, ApiError> {
@@ -285,6 +290,14 @@ pub async fn oauth_token(State(s): State<AppState>, axum::extract::Form(b): axum
             .ok_or_else(|| ApiError::bad_request("invalid_request", "refresh_token is required"))?;
         return Ok(crate::handlers::op::token_refresh(
             &s, &b.client_id, b.client_secret.as_deref(), rt).await);
+    }
+    // OP token exchange (Phase 5, RFC 8693).
+    if b.grant_type == crate::handlers::op::TOKEN_EXCHANGE_GRANT {
+        let subject_token = b.subject_token.as_deref().filter(|c| !c.is_empty())
+            .ok_or_else(|| ApiError::bad_request("invalid_request", "subject_token is required"))?;
+        return Ok(crate::handlers::op::token_exchange(
+            &s, &b.client_id, b.client_secret.as_deref(), subject_token,
+            b.subject_token_type.as_deref(), b.scope.as_deref(), b.audience.as_deref()).await);
     }
     if b.grant_type != "client_credentials" {
         return Err(ApiError::bad_request("UNSUPPORTED_GRANT", "unsupported grant_type"));
