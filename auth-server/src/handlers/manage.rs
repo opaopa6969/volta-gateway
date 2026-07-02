@@ -268,7 +268,7 @@ pub struct TokenReq {
     pub audience: Option<String>,
 }
 
-pub async fn oauth_token(State(s): State<AppState>, axum::extract::Form(b): axum::extract::Form<TokenReq>) -> Result<Response, ApiError> {
+pub async fn oauth_token(State(s): State<AppState>, headers: axum::http::HeaderMap, axum::extract::Form(b): axum::extract::Form<TokenReq>) -> Result<Response, ApiError> {
     // RFC 8628 device grant — poll for a token the user approved on a 2nd device.
     if b.grant_type == crate::handlers::device::DEVICE_CODE_GRANT {
         let device_code = b.device_code.as_deref()
@@ -276,20 +276,26 @@ pub async fn oauth_token(State(s): State<AppState>, axum::extract::Form(b): axum
             .ok_or_else(|| ApiError::bad_request("invalid_request", "device_code is required"))?;
         return Ok(crate::handlers::device::device_token_grant(&s, device_code).await);
     }
+    // DPoP (RFC 9449): if a proof accompanies the token request, bind the issued
+    // access token to the client's key. An invalid proof is a hard error.
+    let dpop_jkt = match crate::handlers::op::token_dpop_jkt(&s, &headers) {
+        Ok(v) => v,
+        Err(resp) => return Ok(resp),
+    };
     // OP authorization_code grant (Phase 3b).
     if b.grant_type == "authorization_code" {
         let code = b.code.as_deref().filter(|c| !c.is_empty())
             .ok_or_else(|| ApiError::bad_request("invalid_request", "code is required"))?;
         let redirect_uri = b.redirect_uri.as_deref().unwrap_or("");
         return Ok(crate::handlers::op::token_authorization_code(
-            &s, &b.client_id, b.client_secret.as_deref(), code, redirect_uri, b.code_verifier.as_deref()).await);
+            &s, &b.client_id, b.client_secret.as_deref(), code, redirect_uri, b.code_verifier.as_deref(), dpop_jkt).await);
     }
     // OP refresh_token grant (Phase 3b) — rotation + reuse detection.
     if b.grant_type == "refresh_token" {
         let rt = b.refresh_token.as_deref().filter(|c| !c.is_empty())
             .ok_or_else(|| ApiError::bad_request("invalid_request", "refresh_token is required"))?;
         return Ok(crate::handlers::op::token_refresh(
-            &s, &b.client_id, b.client_secret.as_deref(), rt).await);
+            &s, &b.client_id, b.client_secret.as_deref(), rt, dpop_jkt).await);
     }
     // OP token exchange (Phase 5, RFC 8693).
     if b.grant_type == crate::handlers::op::TOKEN_EXCHANGE_GRANT {

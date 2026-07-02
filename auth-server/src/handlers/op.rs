@@ -57,6 +57,24 @@ fn scope_has(scope: &str, want: &str) -> bool {
     scope.split_whitespace().any(|s| s == want)
 }
 
+// ─── DPoP (RFC 9449) ───────────────────────────────────────
+
+/// Verify a `DPoP` request header if present. Returns:
+///   Ok(None)        — no proof supplied (plain bearer flow)
+///   Ok(Some(jkt))   — valid proof → key thumbprint to bind / match
+///   Err(response)   — a proof was supplied but is invalid (400 invalid_dpop_proof)
+/// `access_token` is `Some` at resource endpoints (enforces the `ath` binding).
+fn verify_dpop(headers: &HeaderMap, htm: &str, htu: &str, access_token: Option<&str>) -> Result<Option<String>, Response> {
+    let proof = match headers.get("dpop").and_then(|v| v.to_str().ok()) {
+        Some(p) if !p.is_empty() => p,
+        _ => return Ok(None),
+    };
+    match volta_auth_core::dpop::verify_proof(proof, htm, htu, access_token, now_unix()) {
+        Ok(v) => Ok(Some(v.jkt)),
+        Err(e) => Err(oauth_err(StatusCode::BAD_REQUEST, "invalid_dpop_proof", &e.to_string())),
+    }
+}
+
 // ─── error responses ───────────────────────────────────────
 
 /// OAuth token-endpoint error (JSON, per RFC 6749 §5.2).
@@ -87,6 +105,13 @@ fn redirect_with(redirect_uri: &str, params: &[(&str, &str)]) -> Response {
     resp
 }
 
+/// Token-endpoint DPoP check (used by `manage::oauth_token`). `Ok(None)` = no
+/// proof; `Ok(Some(jkt))` = bind the token; `Err(resp)` = invalid proof (400).
+pub fn token_dpop_jkt(s: &AppState, headers: &HeaderMap) -> Result<Option<String>, Response> {
+    let htu = format!("{}/oauth/token", s.base_url);
+    verify_dpop(headers, "POST", &htu, None)
+}
+
 // ─── discovery ─────────────────────────────────────────────
 
 pub async fn discovery(State(s): State<AppState>) -> Response {
@@ -108,6 +133,7 @@ pub async fn discovery(State(s): State<AppState>) -> Response {
         "scopes_supported": ["openid","email","profile","offline_access"],
         "subject_types_supported": ["public"],
         "id_token_signing_alg_values_supported": ["RS256"],
+        "dpop_signing_alg_values_supported": ["ES256","RS256"],
         "claims_supported": ["sub","iss","aud","exp","iat","nonce","email","email_verified","name"],
     })).into_response()
 }
@@ -285,7 +311,7 @@ fn authenticate_client(client: &OAuthClientRecord, secret: Option<&str>) -> bool
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn token_authorization_code(s: &AppState, client_id: &str, client_secret: Option<&str>, code: &str, redirect_uri: &str, code_verifier: Option<&str>) -> Response {
+pub async fn token_authorization_code(s: &AppState, client_id: &str, client_secret: Option<&str>, code: &str, redirect_uri: &str, code_verifier: Option<&str>, dpop_jkt: Option<String>) -> Response {
     let client = match OAuthClientStore::find_client(&s.db, client_id).await {
         Ok(Some(c)) => c,
         _ => return oauth_err(StatusCode::UNAUTHORIZED, "invalid_client", "unknown client"),
@@ -314,7 +340,7 @@ pub async fn token_authorization_code(s: &AppState, client_id: &str, client_secr
         }
         _ => return oauth_err(StatusCode::BAD_REQUEST, "invalid_grant", "missing PKCE challenge"),
     }
-    issue_tokens(s, &client, rec.user_id, rec.tenant_id, &rec.scope, rec.nonce.as_deref(), None).await
+    issue_tokens(s, &client, rec.user_id, rec.tenant_id, &rec.scope, rec.nonce.as_deref(), None, dpop_jkt).await
 }
 
 pub const TOKEN_EXCHANGE_GRANT: &str = "urn:ietf:params:oauth:grant-type:token-exchange";
@@ -400,7 +426,7 @@ pub async fn token_exchange(
     resp
 }
 
-pub async fn token_refresh(s: &AppState, client_id: &str, client_secret: Option<&str>, refresh_token: &str) -> Response {
+pub async fn token_refresh(s: &AppState, client_id: &str, client_secret: Option<&str>, refresh_token: &str, dpop_jkt: Option<String>) -> Response {
     let client = match OAuthClientStore::find_client(&s.db, client_id).await {
         Ok(Some(c)) => c,
         _ => return oauth_err(StatusCode::UNAUTHORIZED, "invalid_client", "unknown client"),
@@ -413,7 +439,7 @@ pub async fn token_refresh(s: &AppState, client_id: &str, client_secret: Option<
             if old.client_id != client_id {
                 return oauth_err(StatusCode::BAD_REQUEST, "invalid_grant", "client mismatch");
             }
-            issue_tokens(s, &client, old.user_id, old.tenant_id, &old.scope, None, Some(old.family_id)).await
+            issue_tokens(s, &client, old.user_id, old.tenant_id, &old.scope, None, Some(old.family_id), dpop_jkt).await
         }
         Ok(RefreshOutcome::Reused) => oauth_err(StatusCode::BAD_REQUEST, "invalid_grant", "refresh token reuse detected — session revoked"),
         Ok(RefreshOutcome::Expired) => oauth_err(StatusCode::BAD_REQUEST, "invalid_grant", "refresh token expired"),
@@ -424,7 +450,7 @@ pub async fn token_refresh(s: &AppState, client_id: &str, client_secret: Option<
 
 /// Mint access (+ id, + rotating refresh) tokens. `family` = Some for a refresh
 /// rotation (continue the family), None for a fresh authorization_code grant.
-async fn issue_tokens(s: &AppState, client: &OAuthClientRecord, user_id: Uuid, tenant_id: Uuid, scope: &str, nonce: Option<&str>, family: Option<Uuid>) -> Response {
+async fn issue_tokens(s: &AppState, client: &OAuthClientRecord, user_id: Uuid, tenant_id: Uuid, scope: &str, nonce: Option<&str>, family: Option<Uuid>, dpop_jkt: Option<String>) -> Response {
     let Some(op) = &s.op_issuer else {
         return oauth_err(StatusCode::INTERNAL_SERVER_ERROR, "server_error", "OP signing key unavailable");
     };
@@ -433,17 +459,22 @@ async fn issue_tokens(s: &AppState, client: &OAuthClientRecord, user_id: Uuid, t
     let sub = user_id.to_string();
 
     // Access token: no `aud` (so the internal RS256 verifier at /userinfo accepts it).
-    let access_claims = json!({
+    let mut access_claims = json!({
         "iss": s.base_url, "sub": sub, "scope": scope, "client_id": client.client_id,
         "iat": now, "exp": now + AT_TTL_SECS, "token_use": "access",
     });
+    // DPoP: bind the token to the client's key via cnf.jkt (RFC 9449 §6).
+    if let Some(jkt) = &dpop_jkt {
+        access_claims["cnf"] = json!({ "jkt": jkt });
+    }
     let access_token = match op.sign(&access_claims) {
         Ok(t) => t,
         Err(e) => return oauth_err(StatusCode::INTERNAL_SERVER_ERROR, "server_error", &e.to_string()),
     };
 
+    let token_type = if dpop_jkt.is_some() { "DPoP" } else { "Bearer" };
     let mut body = json!({
-        "access_token": access_token, "token_type": "Bearer",
+        "access_token": access_token, "token_type": token_type,
         "expires_in": AT_TTL_SECS, "scope": scope,
     });
 
@@ -496,10 +527,15 @@ fn jwt_payload(token: &str) -> Option<serde_json::Value> {
     serde_json::from_slice(&bytes).ok()
 }
 
+/// Extract the access token from `Authorization: Bearer …` or `Authorization: DPoP …`.
 fn bearer(headers: &HeaderMap) -> Option<String> {
     let v = headers.get("authorization")?.to_str().ok()?;
     let (scheme, token) = v.split_once(' ')?;
-    if scheme.eq_ignore_ascii_case("bearer") { Some(token.trim().to_string()) } else { None }
+    if scheme.eq_ignore_ascii_case("bearer") || scheme.eq_ignore_ascii_case("dpop") {
+        Some(token.trim().to_string())
+    } else {
+        None
+    }
 }
 
 /// Build a verifier from the active OP public key.
@@ -521,6 +557,17 @@ pub async fn userinfo(State(s): State<AppState>, headers: HeaderMap) -> Response
         Ok(c) => c,
         Err(_) => return oauth_err(StatusCode::UNAUTHORIZED, "invalid_token", "token invalid or expired"),
     };
+    // DPoP binding (RFC 9449 §7): if the token carries cnf.jkt, the request must
+    // present a fresh DPoP proof (bound to method+URI+token) signed by that key.
+    if let Some(bound_jkt) = jwt_payload(&token).and_then(|p| p.get("cnf").and_then(|c| c.get("jkt").and_then(|j| j.as_str().map(String::from)))) {
+        let htu = format!("{}/userinfo", s.base_url);
+        match verify_dpop(&headers, "GET", &htu, Some(&token)) {
+            Ok(Some(jkt)) if jkt == bound_jkt => {}
+            Ok(Some(_)) => return oauth_err(StatusCode::UNAUTHORIZED, "invalid_token", "DPoP key does not match token binding"),
+            Ok(None) => return oauth_err(StatusCode::UNAUTHORIZED, "invalid_token", "DPoP proof required for this token"),
+            Err(resp) => return resp,
+        }
+    }
     let user_id: Uuid = match claims.sub.parse() { Ok(u) => u, Err(_) => return oauth_err(StatusCode::UNAUTHORIZED, "invalid_token", "bad subject") };
     let user = UserStore::find_by_id(&s.db, user_id).await.ok().flatten();
     let mut out = json!({ "sub": claims.sub });
