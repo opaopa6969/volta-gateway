@@ -202,6 +202,17 @@ impl JwtIssuer {
         encode(&header, &c, &self.encoding_key)
             .map_err(|e| JwtError::InvalidToken(format!("encoding failed: {}", e)))
     }
+
+    /// Sign arbitrary claims verbatim (no auto `iat`/`exp`). Used by the OP to
+    /// mint id/access tokens whose claim set (`iss`/`aud`/`nonce`/`scope`/…)
+    /// differs from the internal session `VoltaClaims`. The `alg` + `kid`
+    /// header are set from this issuer.
+    pub fn sign<T: serde::Serialize>(&self, claims: &T) -> Result<String, JwtError> {
+        let mut header = Header::new(self.algorithm);
+        header.kid = self.kid.clone();
+        encode(&header, claims, &self.encoding_key)
+            .map_err(|e| JwtError::InvalidToken(format!("encoding failed: {}", e)))
+    }
 }
 
 #[cfg(test)]

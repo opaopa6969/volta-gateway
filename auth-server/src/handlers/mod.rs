@@ -13,6 +13,7 @@ pub mod scim;
 pub mod passkey_flow;
 pub mod device;
 pub mod accounts;
+pub mod op;
 pub mod extra;
 pub mod saml;
 pub mod registration;

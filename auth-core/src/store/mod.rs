@@ -12,6 +12,7 @@ mod verification_token;
 mod login_challenge;
 mod passkey_challenge;
 mod device_grant;
+mod oauth;
 mod platform;
 
 #[cfg(feature = "postgres")]
@@ -31,6 +32,7 @@ pub use verification_token::EmailVerificationTokenStore;
 pub use login_challenge::{LoginChallengeStore, ChallengeVerifyOutcome};
 pub use passkey_challenge::{PasskeyChallengeRecord, PasskeyChallengeStore};
 pub use device_grant::{DeviceGrantStore, DevicePollOutcome, DeviceDecisionOutcome};
+pub use oauth::{OAuthClientStore, AuthzCodeStore, RefreshTokenStore, OAuthConsentStore, RefreshOutcome};
 pub use platform::{
     WebhookStore, OutboxStore, WebhookDeliveryStore,
     AuditStore, DeviceTrustStore, BillingStore, PolicyStore,

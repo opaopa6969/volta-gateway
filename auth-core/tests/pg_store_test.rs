@@ -428,3 +428,88 @@ async fn device_grant_deny_and_slow_down_and_expiry() {
     assert_eq!(device_grants(&store).poll(&h_exp).await.unwrap(), DevicePollOutcome::Expired);
     assert_eq!(device_grants(&store).delete_expired().await.unwrap(), 1);
 }
+
+// ─── OAuth Provider stores (Phase 3b) ──────────────────────
+
+async fn setup_oauth_pool() -> (PgPool, testcontainers::ContainerAsync<testcontainers_modules::postgres::Postgres>) {
+    let (pool, c) = setup_pool().await;
+    sqlx::raw_sql(include_str!("../migrations/029_create_oauth_provider.sql"))
+        .execute(&pool).await.unwrap();
+    (pool, c)
+}
+
+fn oauth_client(s: &PgStore) -> &(dyn OAuthClientStore + '_) { s }
+fn authz(s: &PgStore) -> &(dyn AuthzCodeStore + '_) { s }
+fn refresh(s: &PgStore) -> &(dyn RefreshTokenStore + '_) { s }
+fn consent(s: &PgStore) -> &(dyn OAuthConsentStore + '_) { s }
+
+#[tokio::test]
+#[ignore]
+async fn oauth_client_and_consent() {
+    let (pool, _c) = setup_oauth_pool().await;
+    let store = PgStore::new(pool);
+    oauth_client(&store).create_client(OAuthClientRecord {
+        id: Uuid::new_v4(), client_id: "cli-1".into(), client_secret_hash: None,
+        name: "RP".into(), redirect_uris: vec!["https://rp/cb".into()],
+        grant_types: vec!["authorization_code".into(), "refresh_token".into()],
+        scopes: vec!["openid".into(), "email".into()], is_confidential: false,
+        created_at: Utc::now(),
+    }).await.unwrap();
+    let c = oauth_client(&store).find_client("cli-1").await.unwrap().unwrap();
+    assert!(c.allows_redirect("https://rp/cb") && !c.allows_redirect("https://evil/cb"));
+    assert!(c.allows_grant("refresh_token"));
+
+    let uid = Uuid::new_v4();
+    assert!(!consent(&store).has_consent(uid, "cli-1", "openid email").await.unwrap());
+    consent(&store).grant_consent(uid, "cli-1", "openid email profile").await.unwrap();
+    // superset grant covers a subset request
+    assert!(consent(&store).has_consent(uid, "cli-1", "openid email").await.unwrap());
+    // but not an un-granted scope
+    assert!(!consent(&store).has_consent(uid, "cli-1", "offline_access").await.unwrap());
+}
+
+#[tokio::test]
+#[ignore]
+async fn authz_code_is_single_use() {
+    let (pool, _c) = setup_oauth_pool().await;
+    let store = PgStore::new(pool);
+    let hash = volta_auth_core::crypto::sha256_hex("thecode");
+    authz(&store).save_code(AuthzCodeRecord {
+        code_hash: hash.clone(), client_id: "cli-1".into(),
+        user_id: Uuid::new_v4(), tenant_id: Uuid::new_v4(),
+        redirect_uri: "https://rp/cb".into(), scope: "openid".into(),
+        nonce: Some("n".into()), code_challenge: Some("chal".into()),
+        code_challenge_method: Some("S256".into()),
+        expires_at: Utc::now() + chrono::Duration::seconds(120),
+        consumed_at: None, created_at: Utc::now(),
+    }).await.unwrap();
+    assert!(authz(&store).consume_code(&hash).await.unwrap().is_some());
+    // second consume → None (single-use)
+    assert!(authz(&store).consume_code(&hash).await.unwrap().is_none());
+}
+
+#[tokio::test]
+#[ignore]
+async fn refresh_rotation_and_reuse_detection() {
+    let (pool, _c) = setup_oauth_pool().await;
+    let store = PgStore::new(pool);
+    let family = Uuid::new_v4();
+    let mk = |h: &str| RefreshTokenRecord {
+        token_hash: h.into(), family_id: family, client_id: "cli-1".into(),
+        user_id: Uuid::new_v4(), tenant_id: Uuid::new_v4(), scope: "openid".into(),
+        expires_at: Utc::now() + chrono::Duration::days(30), revoked_at: None, created_at: Utc::now(),
+    };
+    let h1 = volta_auth_core::crypto::sha256_hex("rt1");
+    let h2 = volta_auth_core::crypto::sha256_hex("rt2");
+    refresh(&store).save_refresh(mk(&h1)).await.unwrap();
+    refresh(&store).save_refresh(mk(&h2)).await.unwrap(); // a later rotation in same family
+
+    // rotate h1 → Rotated (revokes h1)
+    assert!(matches!(refresh(&store).rotate_refresh(&h1).await.unwrap(), RefreshOutcome::Rotated(_)));
+    // reuse h1 (now revoked) → Reused, and the whole family is revoked
+    assert_eq!(refresh(&store).rotate_refresh(&h1).await.unwrap(), RefreshOutcome::Reused);
+    // h2 was in the family → now revoked too, so a later rotate also flags reuse
+    assert_eq!(refresh(&store).rotate_refresh(&h2).await.unwrap(), RefreshOutcome::Reused);
+    // unknown token → NotFound
+    assert_eq!(refresh(&store).rotate_refresh("nope").await.unwrap(), RefreshOutcome::NotFound);
+}

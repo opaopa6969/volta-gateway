@@ -18,6 +18,21 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ## [Unreleased]
 
 ### Added
+- **OpenID Provider endpoints** — Phase 3b. volta is now an authorization server /
+  IdP for downstream apps: `/.well-known/openid-configuration` (discovery),
+  `GET /authorize` (authorization_code + **mandatory PKCE S256** + consent screen
+  with remembered consent), `POST /authorize/consent`, `POST /oauth/token` for
+  the `authorization_code` and `refresh_token` grants (**refresh rotation with
+  reuse detection → whole-family revocation**), `GET /userinfo`,
+  `POST /oauth/introspect` (RFC 7662), `POST /oauth/revoke` (RFC 7009),
+  `GET /end_session` (RP-initiated logout), and admin client registration
+  (`POST/GET /api/v1/oauth/clients`). id_tokens are RS256 (iss/aud/nonce/email),
+  verifiable via JWKS. New tables `oauth_clients`, `oauth_authorization_codes`,
+  `oauth_refresh_tokens`, `oauth_consents` (migration 029); secrets/codes/tokens
+  stored as hashes. New `handlers/op.rs` + `auth-core` oauth records/stores +
+  `JwtIssuer::sign` (arbitrary claims) + `crypto::sha256_base64url` (PKCE).
+  Verified end-to-end against Postgres. **Phase 3b** of
+  `docs/auth-methods-landscape.md`.
 - **OpenID Provider signing foundation (RS256 + real JWKS)** — Phase 3a. On boot
   the server ensures an OP RSA signing key exists (`op_keys::bootstrap_op_issuer`,
   idempotent — reuses the persisted key across restarts) and

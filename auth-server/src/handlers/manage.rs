@@ -244,6 +244,11 @@ pub struct TokenReq {
     pub client_secret: Option<String>,
     /// Required for `grant_type=urn:ietf:params:oauth:grant-type:device_code`.
     pub device_code: Option<String>,
+    // OP grants (Phase 3b)
+    pub code: Option<String>,
+    pub redirect_uri: Option<String>,
+    pub code_verifier: Option<String>,
+    pub refresh_token: Option<String>,
 }
 
 pub async fn oauth_token(State(s): State<AppState>, axum::extract::Form(b): axum::extract::Form<TokenReq>) -> Result<Response, ApiError> {
@@ -254,8 +259,23 @@ pub async fn oauth_token(State(s): State<AppState>, axum::extract::Form(b): axum
             .ok_or_else(|| ApiError::bad_request("invalid_request", "device_code is required"))?;
         return Ok(crate::handlers::device::device_token_grant(&s, device_code).await);
     }
+    // OP authorization_code grant (Phase 3b).
+    if b.grant_type == "authorization_code" {
+        let code = b.code.as_deref().filter(|c| !c.is_empty())
+            .ok_or_else(|| ApiError::bad_request("invalid_request", "code is required"))?;
+        let redirect_uri = b.redirect_uri.as_deref().unwrap_or("");
+        return Ok(crate::handlers::op::token_authorization_code(
+            &s, &b.client_id, b.client_secret.as_deref(), code, redirect_uri, b.code_verifier.as_deref()).await);
+    }
+    // OP refresh_token grant (Phase 3b) — rotation + reuse detection.
+    if b.grant_type == "refresh_token" {
+        let rt = b.refresh_token.as_deref().filter(|c| !c.is_empty())
+            .ok_or_else(|| ApiError::bad_request("invalid_request", "refresh_token is required"))?;
+        return Ok(crate::handlers::op::token_refresh(
+            &s, &b.client_id, b.client_secret.as_deref(), rt).await);
+    }
     if b.grant_type != "client_credentials" {
-        return Err(ApiError::bad_request("UNSUPPORTED_GRANT", "only client_credentials and device_code supported"));
+        return Err(ApiError::bad_request("UNSUPPORTED_GRANT", "unsupported grant_type"));
     }
     let client_secret = b.client_secret.as_deref().unwrap_or("");
     let client = M2mClientStore::find_by_client_id(&s.db, &b.client_id).await

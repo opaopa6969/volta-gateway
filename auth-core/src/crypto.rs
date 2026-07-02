@@ -220,6 +220,16 @@ pub fn sha256_hex(input: &str) -> String {
     h.finalize().iter().map(|b| format!("{:02x}", b)).collect()
 }
 
+/// SHA-256 of `input`, base64url-no-pad. Used for PKCE S256 verification
+/// (`code_challenge == base64url(sha256(code_verifier))`, RFC 7636 §4.6).
+pub fn sha256_base64url(input: &str) -> String {
+    use base64::Engine;
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(input.as_bytes());
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(h.finalize())
+}
+
 /// Generate a cryptographically-random token as hex (`n_bytes` of entropy).
 /// Use ≥32 bytes for verification / reset links.
 pub fn random_token_hex(n_bytes: usize) -> String {

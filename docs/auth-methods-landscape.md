@@ -24,7 +24,7 @@ volta の Rust auth は、**フェデレーション RP（OIDC クライアン�
 
 | 欠けている面 | 具体的に無いもの | 効いてくるユースケース |
 |---|---|---|
-| **A. 自前 OpenID Provider (OP) / 認可サーバ** | `/authorize`(authorization_code)・discovery・consent・introspection/revocation・refresh token・RP-initiated logout | 「自社アプリ/ネイティブアプリを volta で認可する」全般。**アカウント選択**も**ネイティブ認可**もここに集約される |
+| ~~A. 自前 OpenID Provider (OP)~~ ✅ **Phase 3 実装済** | `/authorize`(code+PKCE)・discovery・consent・introspection/revocation・refresh(rotation+reuse検知)・`/userinfo`・RP-initiated logout。RS256署名＋実JWKS | 「自社/ネイティブアプリを volta で認可する」土台が完成。実PG検証済 |
 | **B. マルチアカウント session ＋ account chooser** | 1 ブラウザに複数 *identity* をぶら下げる仕組み、`prompt=select_account`、Google 風の右上アカウント切替 pane | 「複数 Google アカウントを切り替える」あの UX |
 | **C. クロスデバイス / QR サインイン** | Device Authorization Grant (RFC 8628)、QR 承認チャネル、CIBA、hybrid passkey の明示制御 | 「スマホで QR を読んでネイティブアプリ/TV/CLI を認証・認可」 |
 
@@ -186,8 +186,8 @@ volta の Rust auth は、**フェデレーション RP（OIDC クライアン�
 | 3.18 | アカウントリンク（1ユーザ複数IdP） | ❌ | `user.google_sub` 中心。複数 provider 紐付けの明示モデルなし |
 | 3.19 | SAML **SP** | 🟡🧩 | ルート・XML-DSig 実装あり。本番は Java sidecar 併用（DD-005） |
 | **フェデレーション OP（自前 IdP）** |
-| 3.20 | OIDC **OP** / 認可サーバ | 🟡 | **Phase 3a 実装済**（署名基盤）: OP用RS256鍵の生成・永続・起動時ブートストラップ（冪等）、`/.well-known/jwks.json` が実公開鍵(n,e,kid)を公開、OP issuer 配線。**3b 未**: discovery/`authorize`/consent/token/userinfo/introspection/revocation/end_session |
-| 3.21 | authorization_code + PKCE 発行側 | ❌ | `/oauth/token` は `client_credentials` のみ |
+| 3.20 | OIDC **OP** / 認可サーバ | ✅ | **Phase 3a+3b 実装済**。3a=RS256署名基盤＋実JWKS。3b=discovery/`/authorize`(code+PKCE+consent)/`/oauth/token`(code,refresh)/`/userinfo`/`/oauth/introspect`/`/oauth/revoke`/`/end_session`＋client登録。`handlers/op.rs`、実PGでフロー通し検証済 |
+| 3.21 | authorization_code + PKCE 発行側 | ✅ | **Phase 3b 実装済**。`/authorize`＋`/oauth/token`(code)。PKCE **S256必須**、code単回・短命(120s)・hash保管、consent永続。id_token(RS256, iss/aud/nonce/email) 発行 |
 | 3.22 | SAML **IdP** | ❌ | 自分が IdP になる側は無し |
 | **クロスデバイス** |
 | 3.23 | Device Authorization Grant (RFC 8628) | ✅ | **Phase 1 実装済**。`/oauth/device_authorization`＋`/oauth/token`(device_code polling)＋`/device`承認UI。device_code は hash 保管、user_code 短命、slow_down 制御。`flow/device_grant.rs`＋`store/device_grant.rs`＋migration 028 |
@@ -199,10 +199,10 @@ volta の Rust auth は、**フェデレーション RP（OIDC クライアン�
 | **Token / session** |
 | 3.28 | Session cookie（rotate/revoke/multi） | ✅ | `session.rs`、失効・rotation・複数 session・MFA マーカー |
 | 3.29 | JWT 署名（HS/RS/ES）＋JWKS＋鍵ローテ | ✅ | `jwt.rs`/`jwks.rs`、rotate/revoke。**Phase 3a で `/.well-known/jwks.json` が実RS256公開鍵を公開**（従来は空配列）。内部セッションJWTはHS256のまま（gateway共有秘密検証）、OP用にRS256鍵を別立て |
-| 3.30 | Refresh token（rotation + reuse 検知） | ❌ | refresh token 自体が無し（session cookie モデル中心） |
+| 3.30 | Refresh token（rotation + reuse 検知） | ✅ | **Phase 3b 実装済**。OP の refresh grant で **rotation ＋ reuse 検知**（再利用検知で family 一括失効, OAuth Security BCP）。`oauth_refresh_tokens.family_id`、hash保管。実PG検証済 |
 | 3.31 | DPoP / mTLS-bound token | ❌ | 無し（bearer のみ） |
-| 3.32 | Introspection / Revocation エンドポイント | ❌ | 無し |
-| 3.33 | Logout（RP-initiated / front/back-channel） | 🟡 | 自 session の logout はあり ✅。OIDC 標準の front/back-channel logout は無し |
+| 3.32 | Introspection / Revocation エンドポイント | ✅ | **Phase 3b 実装済**。`POST /oauth/introspect`(RFC 7662, client認証要)・`POST /oauth/revoke`(RFC 7009, refresh失効) |
+| 3.33 | Logout（RP-initiated / front/back-channel） | 🟡 | 自 session logout ✅、**Phase 3b で RP-initiated `/end_session`**（post_logout_redirect_uri は同一オリジン検証）追加。front/back-channel logout はまだ |
 | 3.34 | Token exchange (RFC 8693) | ❌ | 無し |
 | **マルチアカウント** |
 | 3.35 | テナント切替 | ✅ | switch-tenant / select-tenant / switch-account |
@@ -337,16 +337,23 @@ volta の Rust auth は、**フェデレーション RP（OIDC クライアン�
 - **内部セッションJWTは HS256 のまま**（gateway が共有秘密で検証する契約を温存）、OP用に別鍵。
 - 実DB通しで検証済（boot→鍵生成→JWKS公開→再起動で同一kid再利用）。
 
-**Phase 3b — OP エンドポイント〔次スライス〕**
+**Phase 3b — OP エンドポイント〔✅ 実装済 2026-07-02〕**
 - **discovery**: `/.well-known/openid-configuration`（jwks は 3a を再利用）。
-- **`/authorize`**: authorization_code + PKCE 必須、`scope`/`nonce`/`state`/`prompt`/`max_age`/
-  `login_hint`/`id_token_hint`、consent 画面、`prompt=select_account`→Phase 2 chooser へ。
-- **`/token`**: `authorization_code` / `refresh_token`（rotation + reuse 検知）。
-- **`/userinfo`**、**`/oauth/introspect`**、**`/oauth/revoke`**、**`/end_session`**（RP-initiated logout）。
-- **store**: `oauth_clients`（redirect_uris, grant_types, scopes, auth method）、`authz_codes`、
-  `refresh_tokens`、`consents`。
-- **client 認証**: client_secret ＋（拡張で private_key_jwt / PKCE public client）。
-- これで Device Grant（Phase 1）と account chooser（Phase 2）が OP として統合される。
+- **`/authorize`**: authorization_code + **PKCE S256必須**、`scope`/`nonce`/`state`/`prompt`
+  (`none`/`consent`)、consent 画面＋consent永続、redirect_uri 完全一致検証、未ログインは
+  `/login?return_to=`へバウンス。
+- **`/oauth/token`**: `authorization_code`（PKCE検証・code単回120s）/ `refresh_token`
+  （**rotation + reuse検知→family一括失効**）。id_token(RS256, iss/aud/nonce/email) 発行。
+- **`/userinfo`**（Bearer→profile）、**`/oauth/introspect`**(RFC7662)、**`/oauth/revoke`**(RFC7009)、
+  **`/end_session`**（RP-initiated logout, 同一オリジン検証）。
+- **client登録**: `POST /api/v1/oauth/clients`（admin, secret一度だけ返却, public/confidential）。
+- **store/migration**: `oauth_clients` / `oauth_authorization_codes` / `oauth_refresh_tokens` /
+  `oauth_consents`（migration 029）。secret/code/token は hash保管。`handlers/op.rs`。
+- **検証**: 実PGで discovery→authorize→code→token(id/access/refresh)→userinfo→refresh
+  rotation→reuse検知→code単回 を通し確認。store統合test 3本 + 単体。
+- **未（3b-cont / Phase5）**: `prompt=select_account`→Phase2 chooser統合、`max_age`/`login_hint`/
+  `id_token_hint`、private_key_jwt client認証、front/back-channel logout、DPoP。
+- これで Device Grant（Phase 1）と account chooser（Phase 2）が OP として繋がる土台が完成。
 
 ### Phase 4 — 適応認証 ＋ passkey step-up（G4/G5/G6）
 - **risk engine**: signal（新デバイス cookie、IP/ASN 変化、geo velocity、時間帯、UA）を

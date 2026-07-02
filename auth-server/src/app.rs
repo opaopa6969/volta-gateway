@@ -247,6 +247,18 @@ pub fn build_router(state: AppState) -> Router {
         .route("/viz/flows", get(handlers::viz::list_flows))
         .route("/api/v1/admin/flows/{flowId}/transitions", get(handlers::viz::flow_transitions))
 
+        // OpenID Provider (Phase 3b, docs/auth-methods-landscape.md §5).
+        // volta as an authorization server / IdP for downstream apps.
+        .route("/.well-known/openid-configuration", get(handlers::op::discovery))
+        .route("/authorize", get(handlers::op::authorize))
+        .route("/authorize/consent", post(handlers::op::authorize_consent))
+        .route("/userinfo", get(handlers::op::userinfo))
+        .route("/oauth/introspect", post(handlers::op::introspect))
+        .route("/oauth/revoke", post(handlers::op::revoke))
+        .route("/end_session", get(handlers::op::end_session))
+        .route("/api/v1/oauth/clients", post(handlers::op::create_client))
+        .route("/api/v1/oauth/clients", get(handlers::op::list_clients))
+
         // Health + JWKS
         .route("/healthz", get(handlers::health::healthz))
         .route("/.well-known/jwks.json", get(handlers::health::jwks))

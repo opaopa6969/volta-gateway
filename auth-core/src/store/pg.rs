@@ -8,7 +8,7 @@ use chrono::Utc;
 
 use crate::error::AuthError;
 use crate::record::*;
-use crate::store::{UserStore, TenantStore, MembershipStore, InvitationStore, FlowPersistence, SessionStore, MfaStore, RecoveryCodeStore, MagicLinkStore, SigningKeyStore, IdpConfigStore, M2mClientStore, PasskeyStore, OidcFlowStore, PasskeyChallengeRecord, PasskeyChallengeStore, DeviceGrantStore, DevicePollOutcome, DeviceDecisionOutcome, WebhookStore, OutboxStore, WebhookDeliveryStore, AuditStore, DeviceTrustStore, BillingStore, PolicyStore};
+use crate::store::{UserStore, TenantStore, MembershipStore, InvitationStore, FlowPersistence, SessionStore, MfaStore, RecoveryCodeStore, MagicLinkStore, SigningKeyStore, IdpConfigStore, M2mClientStore, PasskeyStore, OidcFlowStore, PasskeyChallengeRecord, PasskeyChallengeStore, DeviceGrantStore, DevicePollOutcome, DeviceDecisionOutcome, OAuthClientStore, AuthzCodeStore, RefreshTokenStore, OAuthConsentStore, RefreshOutcome, WebhookStore, OutboxStore, WebhookDeliveryStore, AuditStore, DeviceTrustStore, BillingStore, PolicyStore};
 
 /// PostgreSQL-backed store — single struct implementing all DAO traits.
 #[derive(Clone)]
@@ -1385,6 +1385,129 @@ impl DeviceGrantStore for PgStore {
         let res = sqlx::query("DELETE FROM device_authorization_grants WHERE expires_at <= now()")
             .execute(&self.pool).await.map_err(AuthError::from)?;
         Ok(res.rows_affected())
+    }
+}
+
+// ─── OAuth Provider stores (Phase 3b) ──────────────────────
+
+const OAUTH_CLIENT_COLS: &str = "id, client_id, client_secret_hash, name, redirect_uris, \
+    grant_types, scopes, is_confidential, created_at";
+const AUTHZ_CODE_COLS: &str = "code_hash, client_id, user_id, tenant_id, redirect_uri, scope, \
+    nonce, code_challenge, code_challenge_method, expires_at, consumed_at, created_at";
+const REFRESH_COLS: &str = "token_hash, family_id, client_id, user_id, tenant_id, scope, \
+    expires_at, revoked_at, created_at";
+
+#[async_trait]
+impl OAuthClientStore for PgStore {
+    async fn create_client(&self, r: OAuthClientRecord) -> Result<(), AuthError> {
+        sqlx::query(
+            "INSERT INTO oauth_clients (id, client_id, client_secret_hash, name, redirect_uris, grant_types, scopes, is_confidential) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)"
+        )
+        .bind(r.id).bind(&r.client_id).bind(&r.client_secret_hash).bind(&r.name)
+        .bind(&r.redirect_uris).bind(&r.grant_types).bind(&r.scopes).bind(r.is_confidential)
+        .execute(&self.pool).await.map_err(AuthError::from)?;
+        Ok(())
+    }
+    async fn find_client(&self, client_id: &str) -> Result<Option<OAuthClientRecord>, AuthError> {
+        sqlx::query_as::<_, OAuthClientRecord>(
+            &format!("SELECT {OAUTH_CLIENT_COLS} FROM oauth_clients WHERE client_id = $1")
+        ).bind(client_id).fetch_optional(&self.pool).await.map_err(AuthError::from)
+    }
+    async fn list_clients(&self) -> Result<Vec<OAuthClientRecord>, AuthError> {
+        sqlx::query_as::<_, OAuthClientRecord>(
+            &format!("SELECT {OAUTH_CLIENT_COLS} FROM oauth_clients ORDER BY created_at DESC")
+        ).fetch_all(&self.pool).await.map_err(AuthError::from)
+    }
+}
+
+#[async_trait]
+impl AuthzCodeStore for PgStore {
+    async fn save_code(&self, r: AuthzCodeRecord) -> Result<(), AuthError> {
+        sqlx::query(
+            "INSERT INTO oauth_authorization_codes (code_hash, client_id, user_id, tenant_id, redirect_uri, scope, nonce, code_challenge, code_challenge_method, expires_at) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)"
+        )
+        .bind(&r.code_hash).bind(&r.client_id).bind(r.user_id).bind(r.tenant_id)
+        .bind(&r.redirect_uri).bind(&r.scope).bind(&r.nonce)
+        .bind(&r.code_challenge).bind(&r.code_challenge_method).bind(r.expires_at)
+        .execute(&self.pool).await.map_err(AuthError::from)?;
+        Ok(())
+    }
+    async fn consume_code(&self, code_hash: &str) -> Result<Option<AuthzCodeRecord>, AuthError> {
+        // Single-use: only return a row that is unexpired AND not yet consumed,
+        // atomically marking it consumed via UPDATE ... RETURNING.
+        sqlx::query_as::<_, AuthzCodeRecord>(
+            &format!("UPDATE oauth_authorization_codes SET consumed_at = now() \
+                      WHERE code_hash = $1 AND consumed_at IS NULL AND expires_at > now() \
+                      RETURNING {AUTHZ_CODE_COLS}")
+        ).bind(code_hash).fetch_optional(&self.pool).await.map_err(AuthError::from)
+    }
+}
+
+#[async_trait]
+impl RefreshTokenStore for PgStore {
+    async fn save_refresh(&self, r: RefreshTokenRecord) -> Result<(), AuthError> {
+        sqlx::query(
+            "INSERT INTO oauth_refresh_tokens (token_hash, family_id, client_id, user_id, tenant_id, scope, expires_at) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7)"
+        )
+        .bind(&r.token_hash).bind(r.family_id).bind(&r.client_id).bind(r.user_id)
+        .bind(r.tenant_id).bind(&r.scope).bind(r.expires_at)
+        .execute(&self.pool).await.map_err(AuthError::from)?;
+        Ok(())
+    }
+    async fn rotate_refresh(&self, token_hash: &str) -> Result<RefreshOutcome, AuthError> {
+        let mut tx = self.pool.begin().await.map_err(AuthError::from)?;
+        let row: Option<RefreshTokenRecord> = sqlx::query_as::<_, RefreshTokenRecord>(
+            &format!("SELECT {REFRESH_COLS} FROM oauth_refresh_tokens WHERE token_hash = $1 FOR UPDATE")
+        ).bind(token_hash).fetch_optional(&mut *tx).await.map_err(AuthError::from)?;
+        let Some(rec) = row else { return Ok(RefreshOutcome::NotFound); };
+        if rec.revoked_at.is_some() {
+            // Reuse of an already-rotated/revoked token → revoke the whole family.
+            sqlx::query("UPDATE oauth_refresh_tokens SET revoked_at = now() WHERE family_id = $1 AND revoked_at IS NULL")
+                .bind(rec.family_id).execute(&mut *tx).await.map_err(AuthError::from)?;
+            tx.commit().await.map_err(AuthError::from)?;
+            return Ok(RefreshOutcome::Reused);
+        }
+        if rec.expires_at <= Utc::now() {
+            return Ok(RefreshOutcome::Expired);
+        }
+        sqlx::query("UPDATE oauth_refresh_tokens SET revoked_at = now() WHERE token_hash = $1")
+            .bind(token_hash).execute(&mut *tx).await.map_err(AuthError::from)?;
+        tx.commit().await.map_err(AuthError::from)?;
+        Ok(RefreshOutcome::Rotated(rec))
+    }
+    async fn revoke_refresh(&self, token_hash: &str) -> Result<(), AuthError> {
+        sqlx::query("UPDATE oauth_refresh_tokens SET revoked_at = now() WHERE token_hash = $1 AND revoked_at IS NULL")
+            .bind(token_hash).execute(&self.pool).await.map_err(AuthError::from)?;
+        Ok(())
+    }
+    async fn revoke_family(&self, family_id: Uuid) -> Result<(), AuthError> {
+        sqlx::query("UPDATE oauth_refresh_tokens SET revoked_at = now() WHERE family_id = $1 AND revoked_at IS NULL")
+            .bind(family_id).execute(&self.pool).await.map_err(AuthError::from)?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl OAuthConsentStore for PgStore {
+    async fn has_consent(&self, user_id: Uuid, client_id: &str, scope: &str) -> Result<bool, AuthError> {
+        // Consent is sufficient if every requested scope is covered by a prior grant.
+        let row: Option<(String,)> = sqlx::query_as(
+            "SELECT scope FROM oauth_consents WHERE user_id = $1 AND client_id = $2"
+        ).bind(user_id).bind(client_id).fetch_optional(&self.pool).await.map_err(AuthError::from)?;
+        let Some((granted,)) = row else { return Ok(false); };
+        let granted: std::collections::HashSet<&str> = granted.split_whitespace().collect();
+        Ok(scope.split_whitespace().all(|s| granted.contains(s)))
+    }
+    async fn grant_consent(&self, user_id: Uuid, client_id: &str, scope: &str) -> Result<(), AuthError> {
+        sqlx::query(
+            "INSERT INTO oauth_consents (user_id, client_id, scope) VALUES ($1,$2,$3) \
+             ON CONFLICT (user_id, client_id) DO UPDATE SET scope = EXCLUDED.scope, created_at = now()"
+        ).bind(user_id).bind(client_id).bind(scope)
+        .execute(&self.pool).await.map_err(AuthError::from)?;
+        Ok(())
     }
 }
 
