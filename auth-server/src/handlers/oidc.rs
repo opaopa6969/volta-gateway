@@ -62,22 +62,45 @@ pub struct LoginQuery {
     pub start: Option<String>,
     pub return_to: Option<String>,
     pub invite: Option<String>,
+    /// `add=1` → "add another account" (multi-account). Remembers the current
+    /// active session and forces the upstream IdP's account chooser
+    /// (`prompt=select_account`) so the user can pick a *different* account.
+    pub add: Option<String>,
 }
 
 /// GET /login — show login page or start OIDC redirect.
 pub async fn login(
     State(state): State<AppState>,
     Query(q): Query<LoginQuery>,
+    jar: CookieJar,
 ) -> Response {
     let return_to = q.return_to.unwrap_or_else(|| format!("{}/", state.base_url));
     let callback_url = format!("{}/callback", state.base_url);
+    let adding = q.add.as_deref() == Some("1");
+    // Multi-account: force the IdP chooser so "add account" doesn't silently
+    // re-select the same upstream identity.
+    let prompt = if adding { Some("select_account") } else { None };
 
     // Build the flow + redirect for both eager (`?start=1`) and lazy (plain
     // /login) paths. The lazy path just wraps the same URL in a minimal HTML.
-    let auth_url = match begin_oidc_flow(&state, &return_to, q.invite.as_deref(), &callback_url).await {
+    let auth_url = match begin_oidc_flow(&state, &return_to, q.invite.as_deref(), &callback_url, prompt).await {
         Ok(url) => url,
         Err(e) => return e.into_response(),
     };
+
+    // "Add account": before the login overwrites `__volta_session` with the new
+    // identity, remember the current active session in the accounts list so both
+    // survive. (Reconciliation of the *new* session happens on /accounts.)
+    if adding {
+        let mut accounts = crate::helpers::read_accounts(&jar);
+        if let Some(active) = crate::helpers::extract_session_id(&jar) {
+            if !accounts.contains(&active) { accounts.insert(0, active); }
+        }
+        let mut resp = Redirect::to(&auth_url).into_response();
+        crate::helpers::set_accounts_cookie(&mut resp, &accounts, &state);
+        no_cache_headers(&mut resp);
+        return resp;
+    }
 
     if q.start.as_deref() == Some("1") {
         let mut resp = Redirect::to(&auth_url).into_response();
@@ -159,6 +182,7 @@ pub async fn root(State(state): State<AppState>, jar: CookieJar) -> Response {
 <h2 style="font-size:1rem;margin:1.4rem 0 .4rem;text-align:left">登録済みパスキー</h2>
 <div id="pk-list" style="font-size:.9rem">読み込み中...</div>
 <button class="btn" id="add-btn" onclick="registerPasskey()" style="display:none">別のパスキーを追加</button>
+<a class="btn" href="/accounts">アカウントを切り替え / 追加</a>
 <a class="btn" href="/auth/logout">サインアウト</a>
 <div id="status"></div>
 <script>
@@ -209,6 +233,7 @@ async fn begin_oidc_flow(
     return_to: &str,
     invite: Option<&str>,
     callback_url: &str,
+    prompt: Option<&str>,
 ) -> Result<String, ApiError> {
     let flow_id = uuid::Uuid::new_v4();
     let opaque_state = random_state();
@@ -237,7 +262,7 @@ async fn begin_oidc_flow(
 
     Ok(state
         .idp
-        .authorization_url_pkce(callback_url, &opaque_state, &nonce, Some(&pkce.challenge)))
+        .authorization_url_pkce_prompt(callback_url, &opaque_state, &nonce, Some(&pkce.challenge), prompt))
 }
 
 /// 32 random bytes → URL-safe-base64 with no padding. Opaque to the IdP and

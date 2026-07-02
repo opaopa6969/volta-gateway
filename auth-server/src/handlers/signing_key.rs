@@ -41,23 +41,20 @@ pub async fn rotate_key(
     let current = SigningKeyStore::load_active(&state.db).await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
 
-    // Generate new RSA key pair
+    // Generate a new RSA (RS256) key pair — the OP publishes its public half at
+    // /.well-known/jwks.json (Phase 3a). The previous key is retired (not
+    // revoked), so tokens it signed still verify until they expire.
     let new_kid = uuid::Uuid::new_v4().to_string();
-
-    // For simplicity, generate HS256 key material (real production would use RSA/EC)
-    use ring::rand::SecureRandom;
-    let rng = ring::rand::SystemRandom::new();
-    let mut key_bytes = [0u8; 32];
-    rng.fill(&mut key_bytes).unwrap();
-    let key_hex = hex::encode(key_bytes);
+    let (public_pem, private_pem) = crate::op_keys::generate_rsa_pem()
+        .map_err(|e| ApiError::internal(&e))?;
 
     match current {
         Some(old) => {
-            SigningKeyStore::rotate(&state.db, &old.kid, &new_kid, &key_hex, &key_hex).await
+            SigningKeyStore::rotate(&state.db, &old.kid, &new_kid, &public_pem, &private_pem).await
                 .map_err(|e| ApiError::internal(&e.to_string()))?;
         }
         None => {
-            SigningKeyStore::save(&state.db, &new_kid, &key_hex, &key_hex).await
+            SigningKeyStore::save(&state.db, &new_kid, &public_pem, &private_pem).await
                 .map_err(|e| ApiError::internal(&e.to_string()))?;
         }
     }

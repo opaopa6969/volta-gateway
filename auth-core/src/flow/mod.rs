@@ -7,6 +7,7 @@ pub mod email_verification;
 pub mod password_reset;
 pub mod mfa_setup;
 pub mod login_challenge;
+pub mod device_grant;
 pub mod mfa;
 pub mod passkey;
 pub mod invite;

@@ -61,6 +61,7 @@ fn all_flows() -> Vec<serde_json::Value> {
         build_flow_view(&flow_tables::PASSWORD_RESET),
         build_flow_view(&flow_tables::MFA_SETUP),
         build_flow_view(&flow_tables::LOGIN_CHALLENGE),
+        build_flow_view(&flow_tables::DEVICE_GRANT),
     ]
 }
 
@@ -314,11 +315,31 @@ mod flow_tables {
     pub static LOGIN_CHALLENGE_EXTERNAL: [Edge; 1] = [
         Edge { from: "CHALLENGE_SENT", to: "CHALLENGE_VERIFIED", label: "LcVerifyChallengeGuard" },
     ];
+
+    // OAuth 2.0 Device Authorization Grant (RFC 8628). Store-authoritative; the
+    // richer PENDING→APPROVED/DENIED/EXPIRED picture (vs the tramli skeleton in
+    // auth-core/src/flow/device_grant.rs) mirrors the imperative reality:
+    // issue → user approves/denies on a 2nd device → device polls → token.
+    pub static DEVICE_GRANT: FlowView = FlowView {
+        name: "device_grant",
+        states: &["PENDING", "APPROVED", "COMPLETED", "DENIED", "EXPIRED"],
+        initial: "PENDING",
+        terminals: &["COMPLETED", "DENIED", "EXPIRED"],
+        edges: &[
+            Edge { from: "PENDING", to: "APPROVED", label: "device_approve" },
+            Edge { from: "PENDING", to: "DENIED", label: "device_deny" },
+            Edge { from: "PENDING", to: "EXPIRED", label: "ttl" },
+            Edge { from: "APPROVED", to: "COMPLETED", label: "token_poll" },
+        ],
+    };
+    pub static DEVICE_GRANT_EXTERNAL: [Edge; 1] = [
+        Edge { from: "PENDING", to: "APPROVED", label: "device_approve" },
+    ];
 }
 
 /// Expose the same descriptors to `auth-core::flow::validate` at startup
 /// (backlog P2 #9). Returns one descriptor per flow so `main.rs` can iterate.
-pub fn flow_descriptors() -> [volta_auth_core::flow::validate::FlowDescriptor; 9] {
+pub fn flow_descriptors() -> [volta_auth_core::flow::validate::FlowDescriptor; 10] {
     use volta_auth_core::flow::validate::FlowDescriptor;
     [
         FlowDescriptor {
@@ -411,6 +432,16 @@ pub fn flow_descriptors() -> [volta_auth_core::flow::validate::FlowDescriptor; 9
             terminals: flow_tables::LOGIN_CHALLENGE.terminals,
             edges: flow_tables::LOGIN_CHALLENGE.edges,
             external_edges: &flow_tables::LOGIN_CHALLENGE_EXTERNAL,
+            processors: &[],
+            flow_data_aliases: &[],
+        },
+        FlowDescriptor {
+            name: flow_tables::DEVICE_GRANT.name,
+            states: flow_tables::DEVICE_GRANT.states,
+            initial: flow_tables::DEVICE_GRANT.initial,
+            terminals: flow_tables::DEVICE_GRANT.terminals,
+            edges: flow_tables::DEVICE_GRANT.edges,
+            external_edges: &flow_tables::DEVICE_GRANT_EXTERNAL,
             processors: &[],
             flow_data_aliases: &[],
         },

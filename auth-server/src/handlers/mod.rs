@@ -11,6 +11,8 @@ pub mod webhook;
 pub mod admin;
 pub mod scim;
 pub mod passkey_flow;
+pub mod device;
+pub mod accounts;
 pub mod extra;
 pub mod saml;
 pub mod registration;

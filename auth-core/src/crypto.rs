@@ -194,6 +194,21 @@ mod tests {
         let ct = a.encrypt(b"portable");
         assert_eq!(b.decrypt(&ct).unwrap(), b"portable");
     }
+
+    #[test]
+    fn user_code_is_grouped_and_unambiguous() {
+        // XXXX-XXXX shape, only the reduced alphabet (no vowels / 0 / 1), and
+        // enough entropy that two draws practically never collide.
+        const ALPHABET: &str = "BCDFGHJKMNPQRSTVWXZ23456789";
+        let code = super::random_user_code();
+        assert_eq!(code.len(), 9);
+        assert_eq!(code.as_bytes()[4], b'-');
+        for (i, c) in code.chars().enumerate() {
+            if i == 4 { continue; }
+            assert!(ALPHABET.contains(c), "unexpected char {c:?} in {code}");
+        }
+        assert_ne!(super::random_user_code(), super::random_user_code());
+    }
 }
 
 /// SHA-256 hex digest. Used to store *hashes* of verification / reset tokens —
@@ -221,4 +236,19 @@ pub fn random_numeric_code(digits: u32) -> String {
     let modulo = 10u64.pow(digits);
     let n: u64 = rand::thread_rng().gen_range(0..modulo);
     format!("{:0width$}", n, width = digits as usize)
+}
+
+/// Generate a human-typeable `user_code` for the OAuth 2.0 Device Authorization
+/// Grant (RFC 8628 §6.1). 8 characters from an unambiguous alphabet (no vowels
+/// so it can't spell words, no `0/1/O/I/L`), grouped `XXXX-XXXX` for readability.
+/// ~40 bits of entropy — combined with a short TTL and rate limiting this is
+/// sufficient for the "type this code on your phone" step.
+pub fn random_user_code() -> String {
+    use rand::Rng;
+    const ALPHABET: &[u8] = b"BCDFGHJKMNPQRSTVWXZ23456789";
+    let mut rng = rand::thread_rng();
+    let s: String = (0..8)
+        .map(|_| ALPHABET[rng.gen_range(0..ALPHABET.len())] as char)
+        .collect();
+    format!("{}-{}", &s[0..4], &s[4..8])
 }

@@ -62,6 +62,17 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/register/resend-verification", post(handlers::registration::register_resend))
         .route_layer(from_fn_with_state(rl_register, limit_by_ip));
 
+    // OAuth 2.0 Device Authorization Grant (RFC 8628). 30/min/IP: the issue call
+    // is unauthenticated and the approve/deny calls are a couple of taps — the
+    // device_code poll on /oauth/token is NOT here (it self-throttles via the
+    // grant's `interval`/slow_down). See docs/auth-methods-landscape.md §5 Phase 1.
+    let rl_device = RateLimiter::new("device", 30, Duration::from_secs(60));
+    let device_routes = Router::new()
+        .route("/oauth/device_authorization", post(handlers::device::device_authorization))
+        .route("/device/approve", post(handlers::device::device_approve))
+        .route("/device/deny", post(handlers::device::device_deny))
+        .route_layer(from_fn_with_state(rl_device, limit_by_ip));
+
     Router::new()
         // Root → session-aware landing (authed: "signed in" page; else /login).
         // Must NOT unconditionally redirect to /login, or a logged-in user
@@ -130,8 +141,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/tenants/{tenantId}/m2m-clients", get(handlers::manage::list_m2m_clients))
         .route("/api/v1/tenants/{tenantId}/m2m-clients", post(handlers::manage::create_m2m_client))
 
-        // OAuth2 Token (M2M)
+        // OAuth2 Token (M2M client_credentials + RFC 8628 device_code)
         .route("/oauth/token", post(handlers::manage::oauth_token))
+        // Device Authorization Grant — approval page (GET, requires login).
+        // Issue/approve/deny are in `device_routes` (rate-limited).
+        .route("/device", get(handlers::device::device_verification_page))
 
         // Passkey
         .route("/api/v1/users/{userId}/passkeys", get(handlers::manage::list_passkeys))
@@ -204,6 +218,14 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/switch-account", post(handlers::extra::switch_account))
         .route("/select-tenant", get(handlers::extra::select_tenant))
 
+        // Multi-account chooser (Phase 2, docs/auth-methods-landscape.md §5).
+        // Google-style "signed in on this browser" pane. `/login?add=1` adds
+        // another account (handled in oidc::login).
+        .route("/accounts", get(handlers::accounts::accounts_page))
+        .route("/accounts/use", post(handlers::accounts::use_account))
+        .route("/accounts/signout", post(handlers::accounts::signout_account))
+        .route("/accounts/signout-all", post(handlers::accounts::signout_all))
+
         // User export (admin)
         .route("/api/v1/users/{userId}/export", post(handlers::extra::admin_export_user))
 
@@ -235,5 +257,6 @@ pub fn build_router(state: AppState) -> Router {
         .merge(invite_routes)
         .merge(magic_routes)
         .merge(registration_routes)
+        .merge(device_routes)
         .with_state(state)
 }

@@ -8,6 +8,7 @@ mod outbox_worker;
 mod notification_worker;
 mod notification_providers;
 pub mod pagination;
+pub mod op_keys;
 pub mod rate_limit;
 pub mod saml;
 pub mod saml_dsig;
@@ -179,11 +180,17 @@ async fn main() {
     let notify_channel = notify_default.trim().to_ascii_uppercase();
     let email_verification_enabled = env("AUTH_EMAIL_VERIFICATION", "enabled") != "disabled";
 
+    // Phase 3a: ensure an OP RS256 signing key exists and build its issuer.
+    // Independent of the internal HS256 session issuer (which the gateway
+    // verifies with the shared secret). `None` → OP token signing unavailable.
+    let op_issuer = op_keys::bootstrap_op_issuer(&db, session_ttl).await;
+
     let state = AppState {
         db,
         idp: Arc::new(idp),
         jwt_issuer: JwtIssuer::new_hs256(jwt_secret.as_bytes(), session_ttl),
         jwt_verifier: JwtVerifier::new_hs256(jwt_secret.as_bytes()),
+        op_issuer,
         cookie_domain,
         session_ttl_secs: session_ttl,
         force_secure_cookie: force_secure,

@@ -18,6 +18,41 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ## [Unreleased]
 
 ### Added
+- **OpenID Provider signing foundation (RS256 + real JWKS)** — Phase 3a. On boot
+  the server ensures an OP RSA signing key exists (`op_keys::bootstrap_op_issuer`,
+  idempotent — reuses the persisted key across restarts) and
+  `GET /.well-known/jwks.json` now publishes the real public key as a JWK
+  (`kty/alg/use/kid/n/e`) instead of an empty array. `JwtIssuer` gained a
+  `kid`-stamping RS256 constructor (`new_rsa_with_kid`); the OP issuer is wired
+  into `AppState.op_issuer` for the upcoming OP token endpoints. The internal
+  session JWT stays HS256 (gateway shared-secret contract unchanged) — the OP
+  uses a separate asymmetric key. `POST /api/v1/admin/keys/rotate` now generates
+  real RSA keypairs (was an HS256 placeholder). Verified end-to-end against
+  Postgres. **Phase 3a** of `docs/auth-methods-landscape.md`.
+- **Multi-account sessions + account chooser** (Google-style "signed in on this
+  browser"). New `__volta_accounts` cookie remembers every session id; `GET
+  /accounts` renders the chooser (active badge / switch / add / per-account &
+  all sign-out), `POST /accounts/{use,signout,signout-all}` act on it, and
+  `GET /login?add=1` adds another account by forcing the upstream IdP chooser
+  (`prompt=select_account`). Implemented via **lazy reconciliation** — the 8
+  login-completion sites are untouched; the active session is folded into the
+  list on `/accounts` and the outgoing active is stashed on `/login?add=1`.
+  New `handlers/accounts.rs`, `idp::authorization_url_pkce_prompt`, cookie
+  helpers in `helpers.rs`. **Phase 2** of `docs/auth-methods-landscape.md`.
+- **OAuth 2.0 Device Authorization Grant (RFC 8628)** — cross-device / QR sign-in
+  for input-constrained & native clients (CLI/TV/desktop). New endpoints
+  `POST /oauth/device_authorization`, `GET /device` (approval UI),
+  `POST /device/{approve,deny}`, and a `device_code` grant on `POST /oauth/token`
+  (with `authorization_pending` / `slow_down` / `access_denied` / `expired_token`
+  polling responses). `device_code` stored as SHA-256 hash, short-lived
+  `user_code`, `slow_down` interval enforcement. New `auth-core` `flow/device_grant.rs`
+  + `store/device_grant.rs` + `record/device_grant.rs`, migration
+  `028_create_device_authorization_grants.sql`, and PG integration tests.
+  Designed as **Phase 1** of `docs/auth-methods-landscape.md`.
+- `docs/auth-methods-landscape.md` — comprehensive map of real-world auth methods,
+  current volta coverage matrix, prioritised gap analysis, and implementation
+  roadmap (RP/passwordless done; OP / multi-account chooser / device-grant / risk
+  the main gaps).
 - `CHANGELOG.md` (this file).
 - `docs/architecture.md` / `-ja.md` — FlowEngine, routing, auth-server 5-merge
   router structure, plugin system, rate limiting.

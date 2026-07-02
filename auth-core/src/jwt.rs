@@ -147,6 +147,10 @@ pub struct JwtIssuer {
     encoding_key: EncodingKey,
     algorithm: Algorithm,
     ttl_secs: u64,
+    /// Optional `kid` header — set for asymmetric (RS256) OP keys so relying
+    /// parties can pick the matching JWKS entry. `None` for the internal HS256
+    /// session issuer (shared secret, no JWKS lookup).
+    kid: Option<String>,
 }
 
 impl JwtIssuer {
@@ -156,17 +160,25 @@ impl JwtIssuer {
             encoding_key: EncodingKey::from_secret(secret),
             algorithm: Algorithm::HS256,
             ttl_secs,
+            kid: None,
         }
     }
 
     /// Create an issuer with RSA private key (PEM).
     pub fn new_rsa(pem: &[u8], ttl_secs: u64) -> Result<Self, String> {
+        Self::new_rsa_with_kid(pem, ttl_secs, None)
+    }
+
+    /// RSA issuer that stamps a `kid` header (for OP id/access tokens verified
+    /// via JWKS).
+    pub fn new_rsa_with_kid(pem: &[u8], ttl_secs: u64, kid: Option<String>) -> Result<Self, String> {
         let key = EncodingKey::from_rsa_pem(pem)
             .map_err(|e| format!("invalid RSA PEM: {}", e))?;
         Ok(Self {
             encoding_key: key,
             algorithm: Algorithm::RS256,
             ttl_secs,
+            kid,
         })
     }
 
@@ -185,7 +197,8 @@ impl JwtIssuer {
         c.iat = Some(now);
         c.exp = Some(now + self.ttl_secs);
 
-        let header = Header::new(self.algorithm);
+        let mut header = Header::new(self.algorithm);
+        header.kid = self.kid.clone();
         encode(&header, &c, &self.encoding_key)
             .map_err(|e| JwtError::InvalidToken(format!("encoding failed: {}", e)))
     }

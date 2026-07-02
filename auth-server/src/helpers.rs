@@ -15,6 +15,14 @@ use volta_auth_core::store::SessionStore;
 type HmacSha256 = Hmac<Sha256>;
 
 const COOKIE_NAME: &str = "__volta_session";
+/// Multi-account list cookie (Phase 2). Holds the comma-separated session ids of
+/// every account signed in on this browser (Google-style multi-login). The
+/// active account is still `__volta_session`; this is just the "remembered
+/// accounts" hint — each id is re-validated against the SessionStore, so a stale
+/// entry is harmless and simply pruned on the next `/accounts` render.
+const ACCOUNTS_COOKIE: &str = "__volta_accounts";
+/// Hard cap on remembered accounts to bound cookie size.
+const MAX_ACCOUNTS: usize = 10;
 
 /// Resolve the current session from the request cookie, or return 401.
 ///
@@ -134,6 +142,28 @@ mod tests {
     use axum::http::HeaderMap;
 
     #[test]
+    fn dedup_cap_accounts_keeps_first_and_caps() {
+        // first-wins dedup, empties dropped
+        let ids = vec!["a".into(), "b".into(), "a".into(), "".into(), "c".into()];
+        assert_eq!(dedup_cap_accounts(&ids), vec!["a", "b", "c"]);
+        // capped at MAX_ACCOUNTS
+        let many: Vec<String> = (0..(MAX_ACCOUNTS + 5)).map(|i| format!("s{i}")).collect();
+        assert_eq!(dedup_cap_accounts(&many).len(), MAX_ACCOUNTS);
+    }
+
+    #[test]
+    fn read_accounts_splits_and_filters() {
+        use axum_extra::extract::CookieJar;
+        use axum::http::header::COOKIE;
+        let mut h = HeaderMap::new();
+        h.insert(COOKIE, "__volta_accounts=s1,s2,,s3".parse().unwrap());
+        let jar = CookieJar::from_headers(&h);
+        assert_eq!(read_accounts(&jar), vec!["s1", "s2", "s3"]);
+        // absent cookie → empty
+        assert!(read_accounts(&CookieJar::from_headers(&HeaderMap::new())).is_empty());
+    }
+
+    #[test]
     fn bearer_header_parses_both_cases() {
         let mut h = HeaderMap::new();
         h.insert("authorization", "Bearer abc.def.ghi".parse().unwrap());
@@ -191,6 +221,43 @@ pub fn set_session_cookie(resp: &mut Response, session_id: &str, state: &AppStat
     if state.force_secure_cookie {
         cookie.push_str("; Secure");
     }
+    resp.headers_mut().append("set-cookie", cookie.parse().unwrap());
+}
+
+/// Read the remembered-accounts list (session ids) from the request cookie.
+/// Order is preserved; entries are opaque and validated by the caller.
+pub fn read_accounts(jar: &CookieJar) -> Vec<String> {
+    jar.get(ACCOUNTS_COOKIE)
+        .map(|c| c.value().split(',').filter(|s| !s.is_empty()).map(String::from).collect())
+        .unwrap_or_default()
+}
+
+/// Dedup (first-wins), drop empties, cap to `MAX_ACCOUNTS`. Pure — the value
+/// that goes into the accounts cookie.
+pub fn dedup_cap_accounts(ids: &[String]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    ids.iter()
+        .filter(|id| !id.is_empty())
+        .filter(|id| seen.insert((*id).clone()))
+        .take(MAX_ACCOUNTS)
+        .cloned()
+        .collect()
+}
+
+/// Set the remembered-accounts cookie (deduped, capped, same attrs as the
+/// session cookie). An empty list clears it.
+pub fn set_accounts_cookie(resp: &mut Response, ids: &[String], state: &AppState) {
+    let deduped = dedup_cap_accounts(ids);
+    let mut cookie = if deduped.is_empty() {
+        format!("{}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax", ACCOUNTS_COOKIE)
+    } else {
+        format!(
+            "{}={}; Path=/; Max-Age={}; HttpOnly; SameSite=Lax",
+            ACCOUNTS_COOKIE, deduped.join(","), state.session_ttl_secs,
+        )
+    };
+    if !state.cookie_domain.is_empty() { cookie.push_str(&format!("; Domain={}", state.cookie_domain)); }
+    if state.force_secure_cookie { cookie.push_str("; Secure"); }
     resp.headers_mut().append("set-cookie", cookie.parse().unwrap());
 }
 

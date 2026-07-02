@@ -8,7 +8,7 @@ use chrono::Utc;
 
 use crate::error::AuthError;
 use crate::record::*;
-use crate::store::{UserStore, TenantStore, MembershipStore, InvitationStore, FlowPersistence, SessionStore, MfaStore, RecoveryCodeStore, MagicLinkStore, SigningKeyStore, IdpConfigStore, M2mClientStore, PasskeyStore, OidcFlowStore, PasskeyChallengeRecord, PasskeyChallengeStore, WebhookStore, OutboxStore, WebhookDeliveryStore, AuditStore, DeviceTrustStore, BillingStore, PolicyStore};
+use crate::store::{UserStore, TenantStore, MembershipStore, InvitationStore, FlowPersistence, SessionStore, MfaStore, RecoveryCodeStore, MagicLinkStore, SigningKeyStore, IdpConfigStore, M2mClientStore, PasskeyStore, OidcFlowStore, PasskeyChallengeRecord, PasskeyChallengeStore, DeviceGrantStore, DevicePollOutcome, DeviceDecisionOutcome, WebhookStore, OutboxStore, WebhookDeliveryStore, AuditStore, DeviceTrustStore, BillingStore, PolicyStore};
 
 /// PostgreSQL-backed store — single struct implementing all DAO traits.
 #[derive(Clone)]
@@ -1291,6 +1291,98 @@ impl PasskeyChallengeStore for PgStore {
 
     async fn delete_expired(&self) -> Result<u64, AuthError> {
         let res = sqlx::query("DELETE FROM passkey_challenges WHERE expires_at <= now()")
+            .execute(&self.pool).await.map_err(AuthError::from)?;
+        Ok(res.rows_affected())
+    }
+}
+
+// ─── DeviceGrantStore (PG-backed, RFC 8628) ────────────────
+
+const DEVICE_GRANT_COLS: &str = "id, device_code_hash, user_code, client_id, scope, \
+    status, user_id, tenant_id, interval_secs, last_polled_at, created_at, expires_at";
+
+#[async_trait]
+impl DeviceGrantStore for PgStore {
+    async fn create(&self, r: DeviceGrantRecord) -> Result<(), AuthError> {
+        sqlx::query(
+            "INSERT INTO device_authorization_grants \
+             (id, device_code_hash, user_code, client_id, scope, status, interval_secs, expires_at) \
+             VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7)"
+        )
+        .bind(r.id).bind(&r.device_code_hash).bind(&r.user_code)
+        .bind(&r.client_id).bind(&r.scope).bind(r.interval_secs).bind(r.expires_at)
+        .execute(&self.pool).await.map_err(AuthError::from)?;
+        Ok(())
+    }
+
+    async fn find_pending_by_user_code(&self, user_code: &str) -> Result<Option<DeviceGrantRecord>, AuthError> {
+        let row: Option<DeviceGrantRecord> = sqlx::query_as::<_, DeviceGrantRecord>(
+            &format!("SELECT {DEVICE_GRANT_COLS} FROM device_authorization_grants \
+                      WHERE user_code = $1 AND status = 'pending' AND expires_at > now()")
+        ).bind(user_code).fetch_optional(&self.pool).await.map_err(AuthError::from)?;
+        Ok(row)
+    }
+
+    async fn decide(&self, user_code: &str, approve: bool, user_id: Uuid, tenant_id: Uuid) -> Result<DeviceDecisionOutcome, AuthError> {
+        let mut tx = self.pool.begin().await.map_err(AuthError::from)?;
+        let row: Option<DeviceGrantRecord> = sqlx::query_as::<_, DeviceGrantRecord>(
+            &format!("SELECT {DEVICE_GRANT_COLS} FROM device_authorization_grants \
+                      WHERE user_code = $1 FOR UPDATE")
+        ).bind(user_code).fetch_optional(&mut *tx).await.map_err(AuthError::from)?;
+        let Some(g) = row else { return Ok(DeviceDecisionOutcome::NotFound); };
+        if g.expires_at <= Utc::now() { return Ok(DeviceDecisionOutcome::Expired); }
+        if g.status != "pending" { return Ok(DeviceDecisionOutcome::AlreadyResolved); }
+        let new_status = if approve { "approved" } else { "denied" };
+        sqlx::query(
+            "UPDATE device_authorization_grants \
+             SET status = $1, user_id = $2, tenant_id = $3 WHERE id = $4"
+        )
+        .bind(new_status).bind(user_id).bind(tenant_id).bind(g.id)
+        .execute(&mut *tx).await.map_err(AuthError::from)?;
+        tx.commit().await.map_err(AuthError::from)?;
+        Ok(DeviceDecisionOutcome::Ok { client_id: g.client_id, scope: g.scope })
+    }
+
+    async fn poll(&self, device_code_hash: &str) -> Result<DevicePollOutcome, AuthError> {
+        let mut tx = self.pool.begin().await.map_err(AuthError::from)?;
+        let row: Option<DeviceGrantRecord> = sqlx::query_as::<_, DeviceGrantRecord>(
+            &format!("SELECT {DEVICE_GRANT_COLS} FROM device_authorization_grants \
+                      WHERE device_code_hash = $1 FOR UPDATE")
+        ).bind(device_code_hash).fetch_optional(&mut *tx).await.map_err(AuthError::from)?;
+        let Some(g) = row else { return Ok(DevicePollOutcome::NotFound); };
+        if g.expires_at <= Utc::now() { return Ok(DevicePollOutcome::Expired); }
+        match g.status.as_str() {
+            "denied" => Ok(DevicePollOutcome::Denied),
+            "approved" => match (g.user_id, g.tenant_id) {
+                (Some(uid), Some(tid)) => Ok(DevicePollOutcome::Approved { user_id: uid, tenant_id: tid, scope: g.scope }),
+                // Should never happen (decide() sets both on approve) — treat as
+                // not-yet-resolved rather than panic.
+                _ => Ok(DevicePollOutcome::Pending),
+            },
+            _ => {
+                // pending: enforce the poll interval (RFC 8628 slow_down).
+                let now = Utc::now();
+                if let Some(last) = g.last_polled_at {
+                    if (now - last).num_seconds() < g.interval_secs as i64 {
+                        return Ok(DevicePollOutcome::SlowDown);
+                    }
+                }
+                sqlx::query("UPDATE device_authorization_grants SET last_polled_at = $1 WHERE id = $2")
+                    .bind(now).bind(g.id).execute(&mut *tx).await.map_err(AuthError::from)?;
+                tx.commit().await.map_err(AuthError::from)?;
+                Ok(DevicePollOutcome::Pending)
+            }
+        }
+    }
+
+    async fn consume(&self, device_code_hash: &str) -> Result<(), AuthError> {
+        sqlx::query("DELETE FROM device_authorization_grants WHERE device_code_hash = $1")
+            .bind(device_code_hash).execute(&self.pool).await.map_err(AuthError::from)?;
+        Ok(())
+    }
+
+    async fn delete_expired(&self) -> Result<u64, AuthError> {
+        let res = sqlx::query("DELETE FROM device_authorization_grants WHERE expires_at <= now()")
             .execute(&self.pool).await.map_err(AuthError::from)?;
         Ok(res.rows_affected())
     }

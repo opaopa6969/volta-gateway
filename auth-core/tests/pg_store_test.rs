@@ -331,3 +331,100 @@ async fn flow_cleanup_expired() {
     let cleaned = flows(&store).cleanup_expired().await.unwrap();
     assert_eq!(cleaned, 1);
 }
+
+// ─── DeviceGrantStore (RFC 8628) ───────────────────────────
+
+fn device_grants(s: &PgStore) -> &(dyn DeviceGrantStore + '_) { s }
+
+async fn setup_device_pool() -> (PgPool, testcontainers::ContainerAsync<testcontainers_modules::postgres::Postgres>) {
+    let (pool, c) = setup_pool().await;
+    // device_authorization_grants has no FKs — apply just its migration.
+    sqlx::raw_sql(include_str!("../migrations/028_create_device_authorization_grants.sql"))
+        .execute(&pool).await.unwrap();
+    (pool, c)
+}
+
+fn new_grant(device_code: &str, user_code: &str, interval: i32, ttl_secs: i64) -> DeviceGrantRecord {
+    DeviceGrantRecord {
+        id: Uuid::new_v4(),
+        device_code_hash: volta_auth_core::crypto::sha256_hex(device_code),
+        user_code: user_code.into(),
+        client_id: "cli-app".into(),
+        scope: Some("openid profile".into()),
+        status: "pending".into(),
+        user_id: None,
+        tenant_id: None,
+        interval_secs: interval,
+        last_polled_at: None,
+        created_at: Utc::now(),
+        expires_at: Utc::now() + chrono::Duration::seconds(ttl_secs),
+    }
+}
+
+#[tokio::test]
+#[ignore]
+async fn device_grant_full_lifecycle() {
+    let (pool, _c) = setup_device_pool().await;
+    let store = PgStore::new(pool);
+    let hash = volta_auth_core::crypto::sha256_hex("device-code-1");
+    let user_id = Uuid::new_v4();
+    let tenant_id = Uuid::new_v4();
+
+    // interval 0 → no slow_down interference for this test.
+    device_grants(&store).create(new_grant("device-code-1", "WDJB-MJHT", 0, 600)).await.unwrap();
+
+    // Visible to the approval page.
+    let pending = device_grants(&store).find_pending_by_user_code("WDJB-MJHT").await.unwrap();
+    assert!(pending.is_some());
+
+    // Before approval the device just gets Pending.
+    assert_eq!(device_grants(&store).poll(&hash).await.unwrap(), DevicePollOutcome::Pending);
+
+    // User approves.
+    let dec = device_grants(&store).decide("WDJB-MJHT", true, user_id, tenant_id).await.unwrap();
+    assert!(matches!(dec, DeviceDecisionOutcome::Ok { .. }));
+
+    // Now the device poll yields the identity.
+    match device_grants(&store).poll(&hash).await.unwrap() {
+        DevicePollOutcome::Approved { user_id: u, tenant_id: t, scope } => {
+            assert_eq!(u, user_id);
+            assert_eq!(t, tenant_id);
+            assert_eq!(scope.as_deref(), Some("openid profile"));
+        }
+        other => panic!("expected Approved, got {other:?}"),
+    }
+
+    // No longer pending on the approval page.
+    assert!(device_grants(&store).find_pending_by_user_code("WDJB-MJHT").await.unwrap().is_none());
+
+    // Token issued → single-use consume → gone.
+    device_grants(&store).consume(&hash).await.unwrap();
+    assert_eq!(device_grants(&store).poll(&hash).await.unwrap(), DevicePollOutcome::NotFound);
+}
+
+#[tokio::test]
+#[ignore]
+async fn device_grant_deny_and_slow_down_and_expiry() {
+    let (pool, _c) = setup_device_pool().await;
+    let store = PgStore::new(pool);
+    let uid = Uuid::new_v4();
+    let tid = Uuid::new_v4();
+
+    // Deny → access_denied.
+    device_grants(&store).create(new_grant("dc-deny", "AAAA-BBBB", 0, 600)).await.unwrap();
+    device_grants(&store).decide("AAAA-BBBB", false, uid, tid).await.unwrap();
+    let h_deny = volta_auth_core::crypto::sha256_hex("dc-deny");
+    assert_eq!(device_grants(&store).poll(&h_deny).await.unwrap(), DevicePollOutcome::Denied);
+
+    // slow_down: interval 5, two quick polls → second is throttled.
+    device_grants(&store).create(new_grant("dc-slow", "CCCC-DDDD", 5, 600)).await.unwrap();
+    let h_slow = volta_auth_core::crypto::sha256_hex("dc-slow");
+    assert_eq!(device_grants(&store).poll(&h_slow).await.unwrap(), DevicePollOutcome::Pending);
+    assert_eq!(device_grants(&store).poll(&h_slow).await.unwrap(), DevicePollOutcome::SlowDown);
+
+    // Expired grant → expired_token, and cleanup removes it.
+    device_grants(&store).create(new_grant("dc-exp", "EEEE-FFFF", 0, -1)).await.unwrap();
+    let h_exp = volta_auth_core::crypto::sha256_hex("dc-exp");
+    assert_eq!(device_grants(&store).poll(&h_exp).await.unwrap(), DevicePollOutcome::Expired);
+    assert_eq!(device_grants(&store).delete_expired().await.unwrap(), 1);
+}

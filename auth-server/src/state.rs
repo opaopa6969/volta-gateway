@@ -15,6 +15,12 @@ pub struct AppState {
     pub idp: Arc<IdpClient>,
     pub jwt_issuer: JwtIssuer,
     pub jwt_verifier: JwtVerifier,
+    /// OpenID Provider (OP) token signer — RS256, `kid`-stamped, public half
+    /// published at `/.well-known/jwks.json` (Phase 3a). `None` when key
+    /// generation was unavailable; OP token issuance then returns 503.
+    /// Consumed by the OP token endpoints (Phase 3b).
+    #[allow(dead_code)]
+    pub op_issuer: Option<JwtIssuer>,
     /// Cookie domain (e.g. ".example.com"). Empty = browser default.
     pub cookie_domain: String,
     /// Session TTL in seconds (default 28800 = 8h).

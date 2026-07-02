@@ -86,7 +86,22 @@ impl IdpClient {
         nonce: &str,
         code_challenge: Option<&str>,
     ) -> String {
-        self.authorization_url_impl(redirect_uri, state, nonce, code_challenge)
+        self.authorization_url_impl(redirect_uri, state, nonce, code_challenge, None)
+    }
+
+    /// Like [`authorization_url_pkce`] but sets the OIDC `prompt` parameter
+    /// (e.g. `select_account` to force the upstream IdP's account chooser, or
+    /// `login` to force re-authentication). Used by the multi-account "add
+    /// another account" flow.
+    pub fn authorization_url_pkce_prompt(
+        &self,
+        redirect_uri: &str,
+        state: &str,
+        nonce: &str,
+        code_challenge: Option<&str>,
+        prompt: Option<&str>,
+    ) -> String {
+        self.authorization_url_impl(redirect_uri, state, nonce, code_challenge, prompt)
     }
 
     fn authorization_url_impl(
@@ -95,6 +110,7 @@ impl IdpClient {
         state: &str,
         nonce: &str,
         code_challenge: Option<&str>,
+        prompt: Option<&str>,
     ) -> String {
         let auth_url = self.config.auth_url.clone().unwrap_or_else(|| {
             match self.config.provider.as_str() {
@@ -132,6 +148,9 @@ impl IdpClient {
                 pairs
                     .append_pair("code_challenge", challenge)
                     .append_pair("code_challenge_method", "S256");
+            }
+            if let Some(p) = prompt {
+                pairs.append_pair("prompt", p);
             }
         }
         url.to_string()
@@ -298,6 +317,18 @@ mod tests {
     fn authorization_url_without_pkce_omits_challenge() {
         let url = test_client().authorization_url("https://app/cb", "s", "n");
         assert!(!url.contains("code_challenge"));
+    }
+
+    #[test]
+    fn authorization_url_prompt_sets_select_account() {
+        // Multi-account "add account" forces the upstream chooser.
+        let url = test_client().authorization_url_pkce_prompt(
+            "https://app/cb", "s", "n", Some("CHAL"), Some("select_account"),
+        );
+        assert!(url.contains("prompt=select_account"), "missing prompt: {url}");
+        // No prompt requested → parameter absent.
+        let none = test_client().authorization_url_pkce("https://app/cb", "s", "n", Some("CHAL"));
+        assert!(!none.contains("prompt="), "unexpected prompt: {none}");
     }
 
     #[test]

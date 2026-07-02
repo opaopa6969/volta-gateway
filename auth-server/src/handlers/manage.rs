@@ -238,19 +238,31 @@ pub async fn delete_user(State(s): State<AppState>, jar: CookieJar) -> Result<Re
 #[derive(Deserialize)]
 pub struct TokenReq {
     pub grant_type: String,
+    #[serde(default)]
     pub client_id: String,
-    pub client_secret: String,
+    /// Required for `client_credentials`; absent for the device grant (public client).
+    pub client_secret: Option<String>,
+    /// Required for `grant_type=urn:ietf:params:oauth:grant-type:device_code`.
+    pub device_code: Option<String>,
 }
 
 pub async fn oauth_token(State(s): State<AppState>, axum::extract::Form(b): axum::extract::Form<TokenReq>) -> Result<Response, ApiError> {
-    if b.grant_type != "client_credentials" {
-        return Err(ApiError::bad_request("UNSUPPORTED_GRANT", "only client_credentials supported"));
+    // RFC 8628 device grant — poll for a token the user approved on a 2nd device.
+    if b.grant_type == crate::handlers::device::DEVICE_CODE_GRANT {
+        let device_code = b.device_code.as_deref()
+            .filter(|c| !c.is_empty())
+            .ok_or_else(|| ApiError::bad_request("invalid_request", "device_code is required"))?;
+        return Ok(crate::handlers::device::device_token_grant(&s, device_code).await);
     }
+    if b.grant_type != "client_credentials" {
+        return Err(ApiError::bad_request("UNSUPPORTED_GRANT", "only client_credentials and device_code supported"));
+    }
+    let client_secret = b.client_secret.as_deref().unwrap_or("");
     let client = M2mClientStore::find_by_client_id(&s.db, &b.client_id).await
         .map_err(|e| ApiError::internal(&e.to_string()))?
         .ok_or_else(|| ApiError::unauthorized("INVALID_CLIENT", "invalid client_id"))?;
 
-    let hash = crate::handlers::mfa::sha256_hex_pub(&b.client_secret);
+    let hash = crate::handlers::mfa::sha256_hex_pub(client_secret);
     // #21: constant-time compare to avoid leaking the hash via early-exit timing.
     if !crate::security::constant_time_eq(hash.as_bytes(), client.client_secret_hash.as_bytes()) {
         return Err(ApiError::unauthorized("INVALID_CLIENT", "invalid client_secret"));

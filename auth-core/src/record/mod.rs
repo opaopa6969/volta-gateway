@@ -11,6 +11,7 @@ mod platform;
 mod notification;
 mod verification;
 mod login_challenge;
+mod device_grant;
 
 pub use session::SessionRecord;
 pub use user::UserRecord;
@@ -24,6 +25,7 @@ pub use oidc_flow::OidcFlowRecord;
 pub use notification::{NotificationJobRecord, NotificationLogRecord};
 pub use verification::EmailVerificationTokenRecord;
 pub use login_challenge::LoginChallengeRecord;
+pub use device_grant::DeviceGrantRecord;
 pub use platform::{
     WebhookRecord, OutboxRecord, WebhookDeliveryRecord,
     AuditLogRecord, KnownDeviceRecord, TrustedDeviceRecord,
