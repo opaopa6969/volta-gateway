@@ -34,7 +34,7 @@ pub use login_challenge::{LoginChallengeStore, ChallengeVerifyOutcome};
 pub use passkey_challenge::{PasskeyChallengeRecord, PasskeyChallengeStore};
 pub use device_grant::{DeviceGrantStore, DevicePollOutcome, DeviceDecisionOutcome};
 pub use oauth::{OAuthClientStore, AuthzCodeStore, RefreshTokenStore, OAuthConsentStore, UserIdentityStore, RefreshOutcome};
-pub use risk_device::RiskDeviceStore;
+pub use risk_device::{RiskDeviceStore, SessionStepUpStore};
 pub use platform::{
     WebhookStore, OutboxStore, WebhookDeliveryStore,
     AuditStore, DeviceTrustStore, BillingStore, PolicyStore,

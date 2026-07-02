@@ -175,7 +175,7 @@ volta の Rust auth は、**フェデレーション RP（OIDC クライアン�
 | 3.9 | passkey 認証（discoverable / 非） | ✅ | discover/start・finish、clone 検知（sign counter atomic） |
 | 3.10 | conditional UI (autofill) | ✅ | feature `conditional-ui` 有効、`/login` で起動 |
 | 3.11 | 複数 credential / transports / AAGUID / backup 追跡 | ✅ | `PasskeyRecord` に列あり |
-| 3.12 | passkey を **2FA / step-up** に使用 | ❌ | 現状 passkey は 1st factor 専用。2 要素目・reauth 用途の配線なし |
+| 3.12 | passkey を **2FA / step-up** に使用 | ✅ | **Phase 4c 実装済**。リスク step-up 時、passkey しか無いユーザも `/mfa/challenge` の「パスキーで確認」で step-up（discover フロー再利用→新セッション） |
 | 3.13 | AAGUID→機種メタ表示（FIDO MDS） | ✅ | **Phase 4b 実装済**。FIDO MDS 主要 AAGUID の静的マップ（`aaguid.rs`）、passkey 一覧が `authenticator` に機種名（iCloud/YubiKey/Windows Hello…）を返す |
 | 3.14 | hybrid / クロスデバイス passkey の明示制御 | 🟡 | ブラウザ/OS 任せ。サーバからの明示的な hint/UX 制御はなし |
 | **パスワードレス** |
@@ -183,7 +183,7 @@ volta の Rust auth は、**フェデレーション RP（OIDC クライアン�
 | **フェデレーション RP** |
 | 3.16 | OIDC RP（ソーシャルログイン） | ✅ | `idp.rs`（Google/GitHub/Microsoft/LinkedIn/Apple）、PKCE S256、nonce、at_hash、`oidc.rs` id_token 検証 |
 | 3.17 | 複数 IdP ルーティング（`?provider=`） | 🟡 | backlog P3。基盤はあるが UI ルーティング未完 |
-| 3.18 | アカウントリンク（1ユーザ複数IdP） | ❌ | `user.google_sub` 中心。複数 provider 紐付けの明示モデルなし |
+| 3.18 | アカウントリンク（1ユーザ複数IdP） | ✅ | **Phase 5 実装済**。`user_identities`(provider,subject)、OIDC callbackで解決＋**email_verified一致で自動リンク**（未verifiedは非リンク=乗っ取り対策）、自己管理API(list/unlink,最後の1件保護) |
 | 3.19 | SAML **SP** | 🟡🧩 | ルート・XML-DSig 実装あり。本番は Java sidecar 併用（DD-005） |
 | **フェデレーション OP（自前 IdP）** |
 | 3.20 | OIDC **OP** / 認可サーバ | ✅ | **Phase 3a+3b 実装済**。3a=RS256署名基盤＋実JWKS。3b=discovery/`/authorize`(code+PKCE+consent)/`/oauth/token`(code,refresh)/`/userinfo`/`/oauth/introspect`/`/oauth/revoke`/`/end_session`＋client登録。`handlers/op.rs`、実PGでフロー通し検証済 |
@@ -200,9 +200,9 @@ volta の Rust auth は、**フェデレーション RP（OIDC クライアン�
 | 3.28 | Session cookie（rotate/revoke/multi） | ✅ | `session.rs`、失効・rotation・複数 session・MFA マーカー |
 | 3.29 | JWT 署名（HS/RS/ES）＋JWKS＋鍵ローテ | ✅ | `jwt.rs`/`jwks.rs`、rotate/revoke。**Phase 3a で `/.well-known/jwks.json` が実RS256公開鍵を公開**（従来は空配列）。内部セッションJWTはHS256のまま（gateway共有秘密検証）、OP用にRS256鍵を別立て |
 | 3.30 | Refresh token（rotation + reuse 検知） | ✅ | **Phase 3b 実装済**。OP の refresh grant で **rotation ＋ reuse 検知**（再利用検知で family 一括失効, OAuth Security BCP）。`oauth_refresh_tokens.family_id`、hash保管。実PG検証済 |
-| 3.31 | DPoP / mTLS-bound token | ❌ | 無し（bearer のみ） |
+| 3.31 | DPoP / mTLS-bound token | ✅ | **DPoP実装済 (RFC 9449)**。`dpop.rs`検証コア(typ/alg/htm/htu/iat/ath/JWK thumbprint, 単体test5)、token endpointで`cnf.jkt`束縛(token_type=DPoP)、`/userinfo`でproof必須＋鍵一致。残: jti replay cache。mTLS-boundは未 |
 | 3.32 | Introspection / Revocation エンドポイント | ✅ | **Phase 3b 実装済**。`POST /oauth/introspect`(RFC 7662, client認証要)・`POST /oauth/revoke`(RFC 7009, refresh失効) |
-| 3.33 | Logout（RP-initiated / front/back-channel） | 🟡 | 自 session logout ✅、**Phase 3b で RP-initiated `/end_session`**（post_logout_redirect_uri は同一オリジン検証）追加。front/back-channel logout はまだ |
+| 3.33 | Logout（RP-initiated / front/back-channel） | ✅ | RP-initiated `/end_session`＋**front/back-channel logout 実装済**。back=署名済`logout_token`(events claim)をRPへPOST、front=iframe描画。client に logout uri 登録(migration 031)。残: session→client厳密紐付け |
 | 3.34 | Token exchange (RFC 8693) | ✅ | **Phase 5 実装済**。`/oauth/token`(grant=token-exchange)、access token を down-scope（拡大は拒否）＋`act`委譲クレーム。AIエージェント委譲等に利用。実サーバ検証済 |
 | **マルチアカウント** |
 | 3.35 | テナント切替 | ✅ | switch-tenant / select-tenant / switch-account |
@@ -210,7 +210,7 @@ volta の Rust auth は、**フェデレーション RP（OIDC クライアン�
 | 3.37 | `prompt=select_account`（RP側→上流IdP） | ✅ | **Phase 2 実装済**。`/login?add=1` が上流 Google 等へ `prompt=select_account` を付与（`idp.rs` `authorization_url_pkce_prompt`）。自前OPとしての select_account は Phase 3 |
 | **適応 / 継続** |
 | 3.38 | リスクベース認証 | ✅ | **Phase 4a+4c 実装済**。4a=`risk.rs`エンジン。4c=OIDC callback配線: `__volta_kd` known-deviceクッキー（新デバイス判定, `risk_known_devices`表, migration 030）＋直近session IP比較→`risk::evaluate`→**Block は拒否(LOGIN_BLOCKED監査)**、session に IP/UA 記録。fail-open（store失敗→Allow）。**geo/impossible-travel と step-up強制は今後** |
-| 3.39 | Step-up 認証 | 🟡 | `PolicyResult::RequireMfa/RequireReauth` の型はあるが実配線は限定的 |
+| 3.39 | Step-up 認証 | ✅ | **Phase 4c 実装済**。リスク=StepUp で `session_stepup` マーク(migration 033)、ForwardAuth ゲートが「TOTP or passkey」で `/mfa/challenge` 強制。**マーカー無し=従来動作**（安全）。残: `acr`/`amr` 反映 |
 | 3.40 | CAEP / SSF（継続的評価） | ❌ | 無し |
 | 3.41 | bot / abuse（CAPTCHA 等） | 🟡 | rate limit はあり ✅。CAPTCHA/fingerprint なし |
 | **プロビジョニング** |

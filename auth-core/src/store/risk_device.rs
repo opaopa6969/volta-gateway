@@ -12,3 +12,12 @@ pub trait RiskDeviceStore: Send + Sync {
     /// **new** (`false`). Idempotent — refreshes `last_seen`.
     async fn check_and_record(&self, user_id: Uuid, device_hash: &str) -> Result<bool, AuthError>;
 }
+
+/// Risk step-up markers (Phase 4c): a session flagged as needing an extra factor.
+#[async_trait]
+pub trait SessionStepUpStore: Send + Sync {
+    /// Flag a session as requiring step-up. Idempotent.
+    async fn mark(&self, session_id: &str) -> Result<(), AuthError>;
+    /// Whether the session still needs step-up.
+    async fn is_required(&self, session_id: &str) -> Result<bool, AuthError>;
+}

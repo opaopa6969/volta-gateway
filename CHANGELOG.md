@@ -18,6 +18,27 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ## [Unreleased]
 
 ### Added
+- **DPoP — sender-constrained tokens (RFC 9449)**. `auth-core::dpop` verifies a
+  proof (typ/alg/htm/htu/iat window, `ath` binding, RFC 7638 JWK thumbprint,
+  5 unit tests). The token endpoint binds the issued access token to the client
+  key (`cnf.jkt`, `token_type: DPoP`); `/userinfo` requires a fresh proof from
+  the same key for bound tokens and accepts the `DPoP` auth scheme. Advertised
+  in discovery. (jti replay cache is a noted follow-up.)
+- **OIDC front/back-channel logout**. RPs register `backchannel_logout_uri` /
+  `frontchannel_logout_uri` (migration 031); `/end_session` sends each a signed
+  `logout_token` (back-channel, fire-and-forget) and/or renders iframe logout
+  (front-channel). Discovery advertises both.
+- **Account linking (multiple IdPs → one user)**. `user_identities`
+  (`provider`,`subject`; migration 032). The OIDC callback resolves a login by
+  identity and **auto-links a new identity to an existing user only on a
+  verified matching email** (unverified never auto-links — takeover guard).
+  Self-service `GET /api/v1/users/me/identities` +
+  `DELETE …/identities/{id}` (last identity protected).
+- **Risk step-up enforcement + passkey step-up** — Phase 4c. A StepUp risk
+  decision marks the session (`session_stepup`, migration 033); ForwardAuth then
+  requires a second factor — **TOTP or passkey** — via `/mfa/challenge`, which
+  now offers a "passkey で確認" option. Unmarked sessions keep the exact prior
+  behaviour (safe by default).
 - **Token exchange (RFC 8693)** — Phase 5. `POST /oauth/token` with
   `grant_type=urn:ietf:params:oauth:grant-type:token-exchange` trades a valid OP
   access token for another one, **down-scoped only** (widening → `invalid_scope`)

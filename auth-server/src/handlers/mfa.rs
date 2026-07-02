@@ -59,10 +59,12 @@ button:hover{background:#16213e}
   <p>認証アプリに表示される 6 桁のコード、または recovery code を入力してください。</p>
   <input name="code" inputmode="numeric" autocomplete="one-time-code" autofocus required>
   <button type="submit">確認</button>
+  <button type="button" id="pk" style="margin-top:8px;background:#0b7">パスキーで確認</button>
   <div class="err" id="e"></div>
 </form>
 <script>
 const f = document.getElementById('f'), e = document.getElementById('e');
+const done = () => location.replace(new URLSearchParams(location.search).get('return_to') || '/');
 f.addEventListener('submit', async ev => {
   ev.preventDefault();
   e.textContent = '';
@@ -73,9 +75,36 @@ f.addEventListener('submit', async ev => {
     credentials: 'include',
     body: JSON.stringify({code}),
   });
-  if (r.ok) { location.replace(new URLSearchParams(location.search).get('return_to') || '/'); return; }
+  if (r.ok) { done(); return; }
   try { const j = await r.json(); e.textContent = j.message || 'コードが正しくありません'; }
   catch { e.textContent = 'コードが正しくありません'; }
+});
+// Phase 4c: passkey step-up. Reuses the discoverable passkey flow — a successful
+// assertion mints a fresh (un-flagged) session, which satisfies the gate.
+const b64u = s => { s = s.replace(/-/g,'+').replace(/_/g,'/'); s += '='.repeat((4 - s.length % 4) % 4); const b = atob(s), a = new Uint8Array(b.length); for (let i=0;i<b.length;i++) a[i]=b.charCodeAt(i); return a.buffer; };
+const b64uEnc = b => btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+document.getElementById('pk').addEventListener('click', async () => {
+  e.textContent = '';
+  try {
+    const s = await fetch('/auth/passkey/discover/start', {method:'POST',headers:{'Accept':'application/json'}});
+    if (!s.ok) throw new Error('開始に失敗');
+    const d = await s.json(), pk = d.options.publicKey;
+    pk.challenge = b64u(pk.challenge);
+    (pk.allowCredentials||[]).forEach(c => c.id = b64u(c.id));
+    const cred = await navigator.credentials.get({publicKey: pk});
+    const asrt = {
+      id: cred.id, rawId: b64uEnc(cred.rawId), type: cred.type,
+      response: {
+        authenticatorData: b64uEnc(cred.response.authenticatorData),
+        clientDataJSON: b64uEnc(cred.response.clientDataJSON),
+        signature: b64uEnc(cred.response.signature),
+        userHandle: cred.response.userHandle ? b64uEnc(cred.response.userHandle) : null,
+      },
+    };
+    const fr = await fetch('/auth/passkey/discover/finish', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({challenge_id:d.challenge_id,credential:asrt})});
+    if (!fr.ok) throw new Error('検証に失敗');
+    done();
+  } catch (err) { e.textContent = 'パスキーでの確認に失敗しました'; }
 });
 </script></body></html>"##;
     let mut resp = Html(html).into_response();

@@ -12,7 +12,7 @@ use crate::auth_events::AuthEvent;
 use crate::error::{no_cache_headers, ApiError};
 use crate::helpers::{extract_session_id, is_json_accept, set_session_cookie, clear_session_cookie};
 use crate::state::AppState;
-use volta_auth_core::store::{SessionStore, MembershipStore, TenantStore, MfaStore};
+use volta_auth_core::store::{SessionStore, MembershipStore, TenantStore, MfaStore, SessionStepUpStore, PasskeyStore};
 
 /// Publish a `LOGOUT` auth event for `/viz/auth/stream` (P1.2) and persist
 /// it to `audit_logs` (P2 #10). Session lookup is best-effort — a missing
@@ -84,11 +84,22 @@ pub async fn verify(
         if session.mfa_verified_at.is_none() {
             if let Some(uri) = forwarded_uri {
                 let is_mfa_path = uri.starts_with("/mfa/") || uri.starts_with("/auth/mfa/");
-                let has_mfa = match session.user_id.parse::<uuid::Uuid>() {
-                    Ok(uid) => MfaStore::has_active(&state.db, uid).await.unwrap_or(false),
-                    Err(_) => false,
+                let uid = session.user_id.parse::<uuid::Uuid>().ok();
+                let has_totp = match uid {
+                    Some(u) => MfaStore::has_active(&state.db, u).await.unwrap_or(false),
+                    None => false,
                 };
-                if !is_mfa_path && has_mfa {
+                // Phase 4c risk step-up: a flagged session must present a second
+                // factor even without a tenant MFA policy — and a passkey counts,
+                // so passkey-only users are covered too. Unflagged sessions keep
+                // the original TOTP-only behaviour exactly.
+                let stepup_required = SessionStepUpStore::is_required(&state.db, &session.session_id).await.unwrap_or(false);
+                let has_passkey = match (stepup_required, uid) {
+                    (true, Some(u)) => PasskeyStore::list_by_user(&state.db, u).await.map(|v| !v.is_empty()).unwrap_or(false),
+                    _ => false,
+                };
+                let needs_challenge = has_totp || (stepup_required && has_passkey);
+                if !is_mfa_path && needs_challenge {
                     let location = format!("{}/mfa/challenge", state.base_url);
                     let mut resp = Redirect::to(&location).into_response();
                     *resp.status_mut() = StatusCode::UNAUTHORIZED;

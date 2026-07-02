@@ -578,3 +578,19 @@ async fn account_linking_multiple_providers() {
     assert!(identities(&store).unlink(user, gh.id).await.unwrap());
     assert_eq!(identities(&store).count_by_user(user).await.unwrap(), 1);
 }
+
+#[tokio::test]
+#[ignore]
+async fn session_stepup_marker() {
+    let (pool, _c) = setup_pool().await;
+    sqlx::raw_sql(include_str!("../migrations/033_create_session_stepup.sql"))
+        .execute(&pool).await.unwrap();
+    let store = PgStore::new(pool);
+    let s: &dyn SessionStepUpStore = &store;
+    assert!(!s.is_required("sess-x").await.unwrap());
+    s.mark("sess-x").await.unwrap();
+    assert!(s.is_required("sess-x").await.unwrap());
+    s.mark("sess-x").await.unwrap(); // idempotent
+    assert!(s.is_required("sess-x").await.unwrap());
+    assert!(!s.is_required("other").await.unwrap());
+}

@@ -8,7 +8,7 @@ use chrono::Utc;
 
 use crate::error::AuthError;
 use crate::record::*;
-use crate::store::{UserStore, TenantStore, MembershipStore, InvitationStore, FlowPersistence, SessionStore, MfaStore, RecoveryCodeStore, MagicLinkStore, SigningKeyStore, IdpConfigStore, M2mClientStore, PasskeyStore, OidcFlowStore, PasskeyChallengeRecord, PasskeyChallengeStore, DeviceGrantStore, DevicePollOutcome, DeviceDecisionOutcome, OAuthClientStore, AuthzCodeStore, RefreshTokenStore, OAuthConsentStore, UserIdentityStore, RefreshOutcome, RiskDeviceStore, WebhookStore, OutboxStore, WebhookDeliveryStore, AuditStore, DeviceTrustStore, BillingStore, PolicyStore};
+use crate::store::{UserStore, TenantStore, MembershipStore, InvitationStore, FlowPersistence, SessionStore, MfaStore, RecoveryCodeStore, MagicLinkStore, SigningKeyStore, IdpConfigStore, M2mClientStore, PasskeyStore, OidcFlowStore, PasskeyChallengeRecord, PasskeyChallengeStore, DeviceGrantStore, DevicePollOutcome, DeviceDecisionOutcome, OAuthClientStore, AuthzCodeStore, RefreshTokenStore, OAuthConsentStore, UserIdentityStore, RefreshOutcome, RiskDeviceStore, SessionStepUpStore, WebhookStore, OutboxStore, WebhookDeliveryStore, AuditStore, DeviceTrustStore, BillingStore, PolicyStore};
 
 /// PostgreSQL-backed store — single struct implementing all DAO traits.
 #[derive(Clone)]
@@ -1545,6 +1545,20 @@ impl UserIdentityStore for PgStore {
         let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM user_identities WHERE user_id = $1")
             .bind(user_id).fetch_one(&self.pool).await.map_err(AuthError::from)?;
         Ok(row.0)
+    }
+}
+
+#[async_trait]
+impl SessionStepUpStore for PgStore {
+    async fn mark(&self, session_id: &str) -> Result<(), AuthError> {
+        sqlx::query("INSERT INTO session_stepup (session_id) VALUES ($1) ON CONFLICT DO NOTHING")
+            .bind(session_id).execute(&self.pool).await.map_err(AuthError::from)?;
+        Ok(())
+    }
+    async fn is_required(&self, session_id: &str) -> Result<bool, AuthError> {
+        let row: Option<(String,)> = sqlx::query_as("SELECT session_id FROM session_stepup WHERE session_id = $1")
+            .bind(session_id).fetch_optional(&self.pool).await.map_err(AuthError::from)?;
+        Ok(row.is_some())
     }
 }
 

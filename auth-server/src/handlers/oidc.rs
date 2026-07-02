@@ -23,7 +23,7 @@ use volta_auth_core::idp::PkcePair;
 use volta_auth_core::record::OidcFlowRecord;
 use volta_auth_core::risk::{self, RiskDecision, RiskSignals, RiskThresholds};
 use volta_auth_core::store::{
-    MembershipStore, OidcFlowStore, RiskDeviceStore, SessionStore, TenantStore, UserIdentityStore, UserStore,
+    MembershipStore, OidcFlowStore, RiskDeviceStore, SessionStepUpStore, SessionStore, TenantStore, UserIdentityStore, UserStore,
 };
 
 /// Per-request context feeding risk-based adaptive auth (Phase 4c).
@@ -602,6 +602,12 @@ async fn complete_oidc(
         roles,
         display_name: user.display_name,
     }).await.map_err(|e| ApiError::internal(&e.to_string()))?;
+
+    // Risk step-up: flag the session so ForwardAuth requires a second factor
+    // (TOTP or passkey) even if tenant policy wouldn't otherwise.
+    if decision == RiskDecision::StepUp {
+        let _ = SessionStepUpStore::mark(&state.db, &session_id).await;
+    }
 
     state.auth_events.publish_and_audit(
         crate::auth_events::AuthEvent::now("LOGIN_SUCCESS")
