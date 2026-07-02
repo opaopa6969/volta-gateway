@@ -435,6 +435,8 @@ async fn setup_oauth_pool() -> (PgPool, testcontainers::ContainerAsync<testconta
     let (pool, c) = setup_pool().await;
     sqlx::raw_sql(include_str!("../migrations/029_create_oauth_provider.sql"))
         .execute(&pool).await.unwrap();
+    sqlx::raw_sql(include_str!("../migrations/031_oauth_client_logout_uris.sql"))
+        .execute(&pool).await.unwrap();
     (pool, c)
 }
 
@@ -453,11 +455,13 @@ async fn oauth_client_and_consent() {
         name: "RP".into(), redirect_uris: vec!["https://rp/cb".into()],
         grant_types: vec!["authorization_code".into(), "refresh_token".into()],
         scopes: vec!["openid".into(), "email".into()], is_confidential: false,
+        backchannel_logout_uri: Some("https://rp/bclogout".into()), frontchannel_logout_uri: None,
         created_at: Utc::now(),
     }).await.unwrap();
     let c = oauth_client(&store).find_client("cli-1").await.unwrap().unwrap();
     assert!(c.allows_redirect("https://rp/cb") && !c.allows_redirect("https://evil/cb"));
     assert!(c.allows_grant("refresh_token"));
+    assert_eq!(c.backchannel_logout_uri.as_deref(), Some("https://rp/bclogout"));
 
     let uid = Uuid::new_v4();
     assert!(!consent(&store).has_consent(uid, "cli-1", "openid email").await.unwrap());

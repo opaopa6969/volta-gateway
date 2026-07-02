@@ -1391,7 +1391,7 @@ impl DeviceGrantStore for PgStore {
 // ─── OAuth Provider stores (Phase 3b) ──────────────────────
 
 const OAUTH_CLIENT_COLS: &str = "id, client_id, client_secret_hash, name, redirect_uris, \
-    grant_types, scopes, is_confidential, created_at";
+    grant_types, scopes, is_confidential, backchannel_logout_uri, frontchannel_logout_uri, created_at";
 const AUTHZ_CODE_COLS: &str = "code_hash, client_id, user_id, tenant_id, redirect_uri, scope, \
     nonce, code_challenge, code_challenge_method, expires_at, consumed_at, created_at";
 const REFRESH_COLS: &str = "token_hash, family_id, client_id, user_id, tenant_id, scope, \
@@ -1401,11 +1401,12 @@ const REFRESH_COLS: &str = "token_hash, family_id, client_id, user_id, tenant_id
 impl OAuthClientStore for PgStore {
     async fn create_client(&self, r: OAuthClientRecord) -> Result<(), AuthError> {
         sqlx::query(
-            "INSERT INTO oauth_clients (id, client_id, client_secret_hash, name, redirect_uris, grant_types, scopes, is_confidential) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)"
+            "INSERT INTO oauth_clients (id, client_id, client_secret_hash, name, redirect_uris, grant_types, scopes, is_confidential, backchannel_logout_uri, frontchannel_logout_uri) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)"
         )
         .bind(r.id).bind(&r.client_id).bind(&r.client_secret_hash).bind(&r.name)
         .bind(&r.redirect_uris).bind(&r.grant_types).bind(&r.scopes).bind(r.is_confidential)
+        .bind(&r.backchannel_logout_uri).bind(&r.frontchannel_logout_uri)
         .execute(&self.pool).await.map_err(AuthError::from)?;
         Ok(())
     }

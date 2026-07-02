@@ -14,6 +14,10 @@ pub struct OAuthClientRecord {
     pub grant_types: Vec<String>,
     pub scopes: Vec<String>,
     pub is_confidential: bool,
+    /// OIDC back-channel logout endpoint (server-to-server logout_token POST).
+    pub backchannel_logout_uri: Option<String>,
+    /// OIDC front-channel logout endpoint (loaded in an iframe from /end_session).
+    pub frontchannel_logout_uri: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 

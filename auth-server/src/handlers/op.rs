@@ -124,6 +124,8 @@ pub async fn discovery(State(s): State<AppState>) -> Response {
         "jwks_uri": format!("{b}/.well-known/jwks.json"),
         "device_authorization_endpoint": format!("{b}/oauth/device_authorization"),
         "end_session_endpoint": format!("{b}/end_session"),
+        "backchannel_logout_supported": true,
+        "frontchannel_logout_supported": true,
         "introspection_endpoint": format!("{b}/oauth/introspect"),
         "revocation_endpoint": format!("{b}/oauth/revoke"),
         "response_types_supported": ["code"],
@@ -638,17 +640,75 @@ pub struct EndSessionQuery {
     pub id_token_hint: Option<String>,
 }
 
-pub async fn end_session(State(s): State<AppState>, Query(q): Query<EndSessionQuery>) -> Response {
-    // Clear the active session cookie. Only honour a post-logout redirect that
-    // is same-origin as the OP (avoid open redirects; per-client registration
-    // of post_logout_redirect_uris is a later refinement).
-    let target = match q.post_logout_redirect_uri {
+/// Build an OIDC back-channel `logout_token` (RS256, signed by the OP key).
+/// Contains the mandatory `events` claim and no `nonce`, per the spec.
+fn build_logout_token(s: &AppState, aud: &str, sub: &str) -> Option<String> {
+    let op = s.op_issuer.as_ref()?;
+    let now = now_unix();
+    let claims = json!({
+        "iss": s.base_url, "aud": aud, "sub": sub,
+        "iat": now, "jti": random_token_hex(16),
+        "events": { "http://schemas.openid.net/event/backchannel-logout": {} },
+    });
+    op.sign(&claims).ok()
+}
+
+pub async fn end_session(State(s): State<AppState>, jar: CookieJar, Query(q): Query<EndSessionQuery>) -> Response {
+    // Identify who is logging out (before clearing) so RPs can be notified.
+    let sub = match crate::helpers::extract_session_id(&jar) {
+        Some(sid) => SessionStore::find(&s.db, &sid).await.ok().flatten().map(|rec| rec.user_id),
+        None => None,
+    };
+
+    // Same-origin-only post-logout redirect (avoid open redirects).
+    let target = match &q.post_logout_redirect_uri {
         Some(uri) if uri.starts_with(&s.base_url) => {
-            match q.state { Some(st) if !st.is_empty() => format!("{}{}state={}", uri, if uri.contains('?') { '&' } else { '?' }, pct(&st)), _ => uri }
+            match &q.state { Some(st) if !st.is_empty() => format!("{}{}state={}", uri, if uri.contains('?') { '&' } else { '?' }, pct(st)), _ => uri.clone() }
         }
         _ => format!("{}/login", s.base_url),
     };
-    let mut resp = Redirect::to(&target).into_response();
+
+    // Notify registered relying parties.
+    let mut frontchannel: Vec<String> = Vec::new();
+    if let (Some(sub), Ok(clients)) = (&sub, OAuthClientStore::list_clients(&s.db).await) {
+        for c in clients {
+            // Back-channel: fire-and-forget signed logout_token POST.
+            if let Some(uri) = c.backchannel_logout_uri.clone() {
+                if let Some(token) = build_logout_token(&s, &c.client_id, sub) {
+                    tokio::spawn(async move {
+                        let http = reqwest::Client::builder()
+                            .timeout(std::time::Duration::from_secs(5))
+                            .build().unwrap_or_else(|_| reqwest::Client::new());
+                        let _ = http.post(&uri).form(&[("logout_token", token.as_str())]).send().await;
+                    });
+                }
+            }
+            // Front-channel: collect iframe URLs (loaded by the browser).
+            if let Some(uri) = c.frontchannel_logout_uri {
+                let sep = if uri.contains('?') { '&' } else { '?' };
+                frontchannel.push(format!("{}{}iss={}", uri, sep, pct(&s.base_url)));
+            }
+        }
+    }
+
+    if frontchannel.is_empty() {
+        let mut resp = Redirect::to(&target).into_response();
+        clear_session_cookie(&mut resp, &s);
+        no_cache_headers(&mut resp);
+        return resp;
+    }
+
+    // Front-channel logout page: load each RP's iframe, then redirect.
+    let iframes: String = frontchannel.iter()
+        .map(|u| format!("<iframe src=\"{}\" style=\"display:none\"></iframe>", html_escape(u)))
+        .collect();
+    let html = format!(
+        "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>ログアウト</title></head>\
+         <body style=\"font-family:system-ui;text-align:center;margin-top:80px\">ログアウトしています…{}\
+         <script>setTimeout(function(){{location.href={};}},800);</script></body></html>",
+        iframes, serde_json::to_string(&target).unwrap_or_else(|_| "\"/\"".into()),
+    );
+    let mut resp = Html(html).into_response();
     clear_session_cookie(&mut resp, &s);
     no_cache_headers(&mut resp);
     resp
@@ -667,6 +727,8 @@ pub struct CreateClientReq {
     /// true → confidential (a client_secret is generated and returned once).
     #[serde(default)]
     pub confidential: bool,
+    pub backchannel_logout_uri: Option<String>,
+    pub frontchannel_logout_uri: Option<String>,
 }
 
 pub async fn create_client(State(s): State<AppState>, jar: CookieJar, Json(b): Json<CreateClientReq>) -> Result<Response, ApiError> {
@@ -681,7 +743,10 @@ pub async fn create_client(State(s): State<AppState>, jar: CookieJar, Json(b): J
     let rec = OAuthClientRecord {
         id: Uuid::new_v4(), client_id: client_id.clone(), client_secret_hash: secret_hash,
         name: b.name, redirect_uris: b.redirect_uris, grant_types, scopes,
-        is_confidential: b.confidential, created_at: chrono::Utc::now(),
+        is_confidential: b.confidential,
+        backchannel_logout_uri: b.backchannel_logout_uri.filter(|u| !u.is_empty()),
+        frontchannel_logout_uri: b.frontchannel_logout_uri.filter(|u| !u.is_empty()),
+        created_at: chrono::Utc::now(),
     };
     OAuthClientStore::create_client(&s.db, rec).await.map_err(|e| ApiError::internal(&e.to_string()))?;
     // client_secret is shown exactly once.
