@@ -8,6 +8,7 @@ mod outbox_worker;
 mod notification_worker;
 mod notification_providers;
 pub mod pagination;
+pub mod aaguid;
 pub mod op_keys;
 pub mod rate_limit;
 pub mod saml;

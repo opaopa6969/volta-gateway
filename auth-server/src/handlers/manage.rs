@@ -202,7 +202,19 @@ pub async fn create_m2m_client(State(s): State<AppState>, jar: CookieJar, Path(t
 pub async fn list_passkeys(State(s): State<AppState>, jar: CookieJar, Path(uid): Path<Uuid>) -> Result<Response, ApiError> {
     let _ = auth(&s, &jar).await?;
     let passkeys = PasskeyStore::list_by_user(&s.db, uid).await.map_err(|e| ApiError::internal(&e.to_string()))?;
-    let items: Vec<serde_json::Value> = passkeys.iter().map(|p| serde_json::json!({"id":p.id,"name":p.name,"created_at":p.created_at.to_rfc3339(),"last_used_at":p.last_used_at.map(|t|t.to_rfc3339())})).collect();
+    let items: Vec<serde_json::Value> = passkeys.iter().map(|p| {
+        // Phase 4b: surface the authenticator model (from AAGUID) so the UI can
+        // show "iCloud キーチェーン" / "YubiKey 5 NFC" instead of an opaque id.
+        let aaguid = p.aaguid.map(|a| a.to_string());
+        serde_json::json!({
+            "id": p.id,
+            "name": p.name,
+            "aaguid": aaguid,
+            "authenticator": crate::aaguid::label_for(aaguid.as_deref()),
+            "created_at": p.created_at.to_rfc3339(),
+            "last_used_at": p.last_used_at.map(|t| t.to_rfc3339()),
+        })
+    }).collect();
     Ok(Json(items).into_response())
 }
 

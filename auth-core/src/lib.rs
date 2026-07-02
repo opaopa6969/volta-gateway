@@ -9,6 +9,7 @@ pub mod error;
 pub mod record;
 pub mod store;
 pub mod policy;
+pub mod risk;
 pub mod token;
 pub mod flow;
 pub mod idp;

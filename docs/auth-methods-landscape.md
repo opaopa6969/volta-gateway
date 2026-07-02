@@ -176,7 +176,7 @@ volta の Rust auth は、**フェデレーション RP（OIDC クライアン�
 | 3.10 | conditional UI (autofill) | ✅ | feature `conditional-ui` 有効、`/login` で起動 |
 | 3.11 | 複数 credential / transports / AAGUID / backup 追跡 | ✅ | `PasskeyRecord` に列あり |
 | 3.12 | passkey を **2FA / step-up** に使用 | ❌ | 現状 passkey は 1st factor 専用。2 要素目・reauth 用途の配線なし |
-| 3.13 | AAGUID→機種メタ表示（FIDO MDS） | ❌ | AAGUID 保存はするが MDS 照合・ラベル表示なし |
+| 3.13 | AAGUID→機種メタ表示（FIDO MDS） | ✅ | **Phase 4b 実装済**。FIDO MDS 主要 AAGUID の静的マップ（`aaguid.rs`）、passkey 一覧が `authenticator` に機種名（iCloud/YubiKey/Windows Hello…）を返す |
 | 3.14 | hybrid / クロスデバイス passkey の明示制御 | 🟡 | ブラウザ/OS 任せ。サーバからの明示的な hint/UX 制御はなし |
 | **パスワードレス** |
 | 3.15 | Magic link | ✅ | send/verify、15分TTL、単回、ユーザ自動生成 |
@@ -209,7 +209,7 @@ volta の Rust auth は、**フェデレーション RP（OIDC クライアン�
 | 3.36 | マルチ *identity* session（Google風 chooser） | ✅ | **Phase 2 実装済**。`__volta_accounts` cookie に複数 session を保持、`GET /accounts` chooser（使用中/切替/追加/個別・全体サインアウト）。`/login?add=1` で追加。遅延リコンサイル方式でログイン完了8箇所は無改変。`handlers/accounts.rs` |
 | 3.37 | `prompt=select_account`（RP側→上流IdP） | ✅ | **Phase 2 実装済**。`/login?add=1` が上流 Google 等へ `prompt=select_account` を付与（`idp.rs` `authorization_url_pkce_prompt`）。自前OPとしての select_account は Phase 3 |
 | **適応 / 継続** |
-| 3.38 | リスクベース認証 | 🟡 | Rust: `RiskCheckResult` は flow に**型だけ**存在、エンジンは placeholder。Java: `RiskCheckProcessor`/`RiskAndMfaBranch` あり |
+| 3.38 | リスクベース認証 | 🟡 | **Phase 4a 実装済**（エンジンcoサ）: `risk.rs` にシグナル加重スコア＋テナント閾値→Allow/StepUp/Block（Java parity, fail-open, 単体test）。**未(4c)**: login/callback への配線（known-deviceクッキー、IP/geo比較、step-up/block実効化） |
 | 3.39 | Step-up 認証 | 🟡 | `PolicyResult::RequireMfa/RequireReauth` の型はあるが実配線は限定的 |
 | 3.40 | CAEP / SSF（継続的評価） | ❌ | 無し |
 | 3.41 | bot / abuse（CAPTCHA 等） | 🟡 | rate limit はあり ✅。CAPTCHA/fingerprint なし |
@@ -356,11 +356,15 @@ volta の Rust auth は、**フェデレーション RP（OIDC クライアン�
 - これで Device Grant（Phase 1）と account chooser（Phase 2）が OP として繋がる土台が完成。
 
 ### Phase 4 — 適応認証 ＋ passkey step-up（G4/G5/G6）
-- **risk engine**: signal（新デバイス cookie、IP/ASN 変化、geo velocity、時間帯、UA）を
-  スコア化→ `allow` / `require_mfa` / `require_reauth` / `block`。Java `RiskCheckProcessor` を移植。
+- **4a risk engine〔✅ 実装済 2026-07-02〕**: `auth-core/src/risk.rs`。signal（新デバイス、
+  IP/ASN 変化、geo velocity、時間帯、UA）を加重スコア化→テナント閾値（既定 action=4/block=5,
+  Java parity）で `Allow`/`StepUp`/`Block`。**fail-open**（無signalは safe=1）。純粋関数＋単体test。
+- **4b AAGUID メタ〔✅ 実装済 2026-07-02〕**: `auth-server/src/aaguid.rs`。FIDO MDS 主要 AAGUID の
+  静的マップ、passkey 一覧が機種名を返す（iCloud/YubiKey/Windows Hello…）。
+- **4c 配線〔次スライス〕**: known-device cookie（新デバイス判定）、直近 session との IP/geo 比較で
+  signal 生成、OIDC callback で risk 評価→ `Block` は拒否 / `StepUp` は MFA 強制（既存 MFA 状態機械へ統合）。
 - **step-up 実配線**: `acr`/`amr` を session/JWT に反映、重要操作 handler で `RequireMfa` を実効化。
 - **passkey as 2FA/step-up**: 既存 passkey を「2 要素目・reauth」ceremonies として再利用。
-- **AAGUID メタ**: FIDO MDS スナップショットを同梱し機種ラベル表示。
 
 ### Phase 5 — 標準準拠の仕上げ（G9–G11, G13, G14）
 - DPoP、front/back-channel logout、アカウントリンク、token exchange、（必要なら）SAML IdP。

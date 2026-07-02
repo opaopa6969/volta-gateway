@@ -18,6 +18,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ## [Unreleased]
 
 ### Added
+- **Risk engine + passkey AAGUID metadata** — Phase 4 (a+b). `auth-core::risk`
+  scores login signals (new device, IP/ASN/geo change, impossible travel,
+  off-hours, UA change) into a level and maps it against tenant thresholds
+  (default action 4 / block 5, matching the Java `RiskCheckProcessor`) to
+  Allow/StepUp/Block — **fail-open** (no signals → safe). `auth-server::aaguid`
+  maps FIDO MDS AAGUIDs to model names, and `GET /api/v1/users/{id}/passkeys`
+  now returns an `authenticator` label (iCloud Keychain / YubiKey 5 NFC /
+  Windows Hello / …) instead of an opaque id. Wiring the engine into the login
+  callback (known-device cookie, IP/geo comparison, step-up/block enforcement)
+  is the next slice (4c). **Phase 4** of `docs/auth-methods-landscape.md`.
 - **OpenID Provider endpoints** — Phase 3b. volta is now an authorization server /
   IdP for downstream apps: `/.well-known/openid-configuration` (discovery),
   `GET /authorize` (authorization_code + **mandatory PKCE S256** + consent screen
