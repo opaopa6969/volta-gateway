@@ -546,7 +546,27 @@ async fn complete_oidc(
         let display = user.display_name.clone().unwrap_or_else(|| email.clone());
         let tenant = TenantStore::create_personal(&state.db, user.id, &display, &slug).await
             .map_err(|e| ApiError::internal(&e.to_string()))?;
-        (tenant.id.to_string(), Some(tenant.slug), vec!["OWNER".into()])
+        // 新規ユーザの初期 role をメールドメインで決める。
+        //   env TRUSTED_EMAIL_DOMAINS(カンマ区切り)に一致 → MEMBER、それ以外 → GUEST。
+        //   env 未設定なら従来どおり OWNER(後方互換・ロックアウト回避)。
+        //   管理者への昇格は個別に patch_member で行う。
+        let initial_role = match std::env::var("TRUSTED_EMAIL_DOMAINS") {
+            Ok(raw) if raw.split(',').any(|s| !s.trim().is_empty()) => {
+                let domain = email.rsplit('@').next().unwrap_or("").to_lowercase();
+                let trusted = raw.split(',')
+                    .map(|s| s.trim().to_lowercase())
+                    .any(|d| !d.is_empty() && d == domain);
+                if trusted { "MEMBER" } else { "GUEST" }
+            }
+            _ => "OWNER",
+        };
+        if initial_role != "OWNER" {
+            // create_personal は OWNER で membership を作るので、初期 role へ更新
+            if let Ok(Some(m)) = MembershipStore::find(&state.db, user.id, tenant.id).await {
+                let _ = MembershipStore::update_role(&state.db, m.id, initial_role).await;
+            }
+        }
+        (tenant.id.to_string(), Some(tenant.slug), vec![initial_role.to_string()])
     };
 
     // ── Risk-based adaptive auth (Phase 4c) ──────────────────
