@@ -79,7 +79,23 @@ stateDiagram-v2
     GatewayTimeout --> [*]
 ```
 
-この図はエンジンが実行するのと**同じ `FlowDefinition`** から生成される。コード = 図。常に同期。
+> **設計上の意図と現行の配線の違い。** 上の図は生成物ではなく、*意図した*
+> ステータスマップである。エンジンが実際に実行する `FlowDefinition`
+> ([`gateway/src/flow.rs`](gateway/src/flow.rs)) は、ハッピーパスの 5 遷移と
+> `.on_any_error(BadGateway)` だけを配線しており、状態機械上のエラーは全て
+> `BadGateway` に集約される。`BadRequest` / `Redirect` / `Denied` /
+> `GatewayTimeout` は `ProxyState` の値として（各々 `as_status_code()` 付きで）
+> 存在するが、フローがそれらの状態へ遷移することはない。400 / 302 / 403 / 504 の
+> 振り分けは [`gateway/src/proxy.rs`](gateway/src/proxy.rs) の
+> `ProxyService::handle()` が手続き的に行う。したがってコードと図の同期は
+> **保証されない**。
+>
+> **既知の課題（ステータス不一致）。** IP アローリスト拒否は
+> `RequestValidator` 内で `FlowError("DENIED")`（意味的には 403）として送出されるが、
+> これは同期の `start_flow` オートチェーン中に発生し、`handle()` は *あらゆる*
+> `start_flow` エラーを `400 Bad Request` に写像する。そのためアローリスト拒否は
+> 現状 **403 ではなく 400** を返す。（図中の 403 は別経路の認証チェック拒否
+> — `AuthResult::Denied` — であり、こちらは影響を受けない。）
 
 全ての状態遷移がログに残る。**どこで時間がかかったか**が一目瞭然:
 
@@ -142,6 +158,10 @@ volta-gateway は本ワークスペースに **Rust auth-server** (`auth-server/
 Rust 着地点への trace: [`auth-server/docs/sync-from-java-2026-04-14.md`](auth-server/docs/sync-from-java-2026-04-14.md)。
 
 ## 機能一覧
+
+> 最新タグ付きリリース: **0.3.0**（[CHANGELOG](CHANGELOG.md) 参照）。開発中の機能
+> — DPoP 送信者制約トークン、OIDC フロント/バックチャネルログアウト、アカウント
+> リンク、リスクステップアップ、トークン交換 — は `[Unreleased]` で追跡している。
 
 | 機能 | 詳細 |
 |------|------|
@@ -248,6 +268,15 @@ Docker label 検出が必要なチームは Config Sources 機能（[設定](#�
 ## vs Traefik (実測済み)
 
 同条件ベンチマーク: localhost mock auth + mock backend。Traefik v3.4 (Docker) + ForwardAuth vs volta-gateway (native release)。[詳細結果](gateway/benches/e2e_results.md)
+
+> **計測の出典。** 下表のレイテンシは
+> [`e2e_results.md`](gateway/benches/e2e_results.md) の **GW-52 同条件ラン**
+> （`oha -n 500 -c 1`、2026-04-07、Linux/WSL2、release ビルド）である。`SM
+> オーバーヘッド`（1.69 μs）は SM フルライフサイクル（start + 2× resume）の
+> criterion マイクロベンチによる別計測で、同じランの一部ではない。同ファイルには
+> より早い proxy+auth ラン（p50 **0.243 ms**、p50 で +40 μs の proxy
+> オーバーヘッド）も記録されているが、これは別ランのため 2 つの p50 は直接比較
+> できない。
 
 | 指標 | volta-gateway | Traefik + ForwardAuth | |
 |------|--------------|----------------------|---|

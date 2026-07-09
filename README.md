@@ -19,7 +19,7 @@ the Java auth-proxy 1:1 — see [`docs/parity.md`](docs/parity.md).
 - [How it works](#how-it-works) — request state machine
 - [Quick Start](#quick-start) — clone, configure, run
 - [Dual implementation (Rust + Java)](#dual-implementation-rust--java)
-- [Features](#features-v020)
+- [Features](#features-v030)
 - [Configuration](#configuration)
 - [Security](#security)
 - [Architecture](#architecture)
@@ -79,7 +79,23 @@ stateDiagram-v2
     GatewayTimeout --> [*]
 ```
 
-This diagram is **generated from the same `FlowDefinition`** that the engine executes. Code = diagram. Always in sync.
+> **Design intent vs. current wiring.** The chart above is the *intended* status
+> map, not a generated artifact. The `FlowDefinition` the engine actually executes
+> ([`gateway/src/flow.rs`](gateway/src/flow.rs)) wires only the five happy-path
+> transitions plus `.on_any_error(BadGateway)` — every in-machine error collapses
+> to `BadGateway`. The `BadRequest` / `Redirect` / `Denied` / `GatewayTimeout`
+> terminals exist on `ProxyState` (each with an `as_status_code()`), but the flow
+> never transitions into them; the 400 / 302 / 403 / 504 responses are dispatched
+> procedurally by `ProxyService::handle()` in
+> [`gateway/src/proxy.rs`](gateway/src/proxy.rs). So code and diagram are **not**
+> guaranteed to stay in sync.
+>
+> **Known issue (status mismatch).** IP-allowlist rejection is raised inside
+> `RequestValidator` as `FlowError("DENIED")` (semantically 403), but it fires
+> during the synchronous `start_flow` auto-chain, and `handle()` maps *any*
+> `start_flow` error to `400 Bad Request`. An allowlist rejection therefore
+> currently returns **400, not 403**. (The 403 edge in the chart is the separate
+> *auth-check* denial — `AuthResult::Denied` — which is unaffected.)
 
 Every state transition is logged. You can see **exactly** where time was spent:
 
@@ -142,7 +158,11 @@ Admin, JWKS, viz/SSE.
 Full route-by-route table: [`docs/parity.md`](docs/parity.md). Tracing every
 Java commit that landed in Rust: [`auth-server/docs/sync-from-java-2026-04-14.md`](auth-server/docs/sync-from-java-2026-04-14.md).
 
-## Features (v0.2.0)
+## Features (v0.3.0)
+
+> Latest tagged release: **0.3.0** (see [CHANGELOG](CHANGELOG.md)). In-development
+> work — DPoP sender-constrained tokens, OIDC front/back-channel logout, account
+> linking, risk step-up, token exchange — is tracked under `[Unreleased]`.
 
 | Feature | Details |
 |---------|---------|
@@ -250,6 +270,15 @@ For teams that need Docker label discovery: the Config Sources feature (see [Con
 ## vs Traefik (benchmarked)
 
 Same-condition benchmark: localhost mock auth + mock backend. Traefik v3.4 (Docker) + ForwardAuth vs volta-gateway (native release). [Full results](gateway/benches/e2e_results.md)
+
+> **Measurement provenance.** The latency figures below are the **GW-52
+> same-condition run** in [`e2e_results.md`](gateway/benches/e2e_results.md)
+> (`oha -n 500 -c 1`, 2026-04-07, Linux/WSL2, release build). The `SM overhead`
+> figure (1.69 μs) is from the criterion micro-benchmark for the full SM lifecycle
+> (start + 2× resume), a separate measurement — not part of the same run. That
+> file also reports an earlier proxy+auth run (p50 **0.243 ms**, +40 μs proxy
+> overhead at p50); it is a different run, so the two p50 numbers are not directly
+> comparable.
 
 | Metric | volta-gateway | Traefik + ForwardAuth | |
 |--------|--------------|----------------------|---|
