@@ -200,6 +200,13 @@ pub fn build_proxy_flow_with_allowlist(
             .from(AuthChecked).external(Forwarded, ForwardGuard)
             .from(Forwarded).auto(Completed, CompletionProcessor)
 
+            // GW-17: an IP-allowlist rejection surfaces as a "DENIED" FlowError
+            // from the RequestValidator (which runs on the Received→Validated
+            // auto step). Route it to the Denied terminal (403) instead of
+            // letting on_any_error collapse it into BadGateway. Checked before
+            // on_any_error, so every other error still falls through unchanged.
+            .on_step_error(Received, |e| e.code == "DENIED", "ip-denied", Denied)
+
             .on_any_error(BadGateway)
 
             .build()

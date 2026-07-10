@@ -234,3 +234,68 @@ fn transition_log_records_all_steps() {
     assert_eq!(log[0].trigger, "RequestValidator");
     assert_eq!(log[1].trigger, "RoutingResolver");
 }
+
+#[test]
+fn ip_not_in_allowlist_transitions_to_denied_403() {
+    // GW-17 regression: a client IP outside the host's allowlist must drive the
+    // flow into the Denied terminal (which maps to 403 Forbidden) — NOT the
+    // BadGateway catch-all that on_any_error used to collapse it into (and which
+    // the proxy layer then mislabelled as 400 Bad Request).
+    let routing = test_routing();
+
+    // Allow only 10.0.0.0/8 for app.example.com.
+    let mut allowlists: HashMap<String, Vec<ipnet::IpNet>> = HashMap::new();
+    allowlists.insert(
+        "app.example.com".into(),
+        vec!["10.0.0.0/8".parse().unwrap()],
+    );
+    let def = flow::build_proxy_flow_with_allowlist(routing, allowlists);
+
+    let mut engine = FlowEngine::new(InMemoryFlowStore::new());
+    let initial: Vec<(TypeId, Box<dyn CloneAny>)> = vec![
+        (TypeId::of::<RequestData>(), Box::new(RequestData {
+            host: "app.example.com".into(),
+            path: "/api/v1/users".into(),
+            method: "GET".into(),
+            header_size: 200,
+            content_length: None,
+            // 203.0.113.7 is NOT in 10.0.0.0/8 → must be denied.
+            client_ip: Some("203.0.113.7".parse().unwrap()),
+        })),
+    ];
+
+    let flow_id = engine.start_flow(def, "denied-session", initial).unwrap();
+    let flow = engine.store.get(&flow_id).unwrap();
+
+    // The flow must land in the dedicated Denied terminal, which maps to 403.
+    assert_eq!(flow.current_state(), ProxyState::Denied);
+    assert!(flow.is_completed());
+    assert_eq!(flow.current_state().as_status_code(), 403);
+}
+
+#[test]
+fn ip_in_allowlist_is_allowed() {
+    // Counterpart: an allowlisted IP passes validation and auto-chains to ROUTED.
+    let routing = test_routing();
+    let mut allowlists: HashMap<String, Vec<ipnet::IpNet>> = HashMap::new();
+    allowlists.insert(
+        "app.example.com".into(),
+        vec!["10.0.0.0/8".parse().unwrap()],
+    );
+    let def = flow::build_proxy_flow_with_allowlist(routing, allowlists);
+
+    let mut engine = FlowEngine::new(InMemoryFlowStore::new());
+    let initial: Vec<(TypeId, Box<dyn CloneAny>)> = vec![
+        (TypeId::of::<RequestData>(), Box::new(RequestData {
+            host: "app.example.com".into(),
+            path: "/api/v1/users".into(),
+            method: "GET".into(),
+            header_size: 200,
+            content_length: None,
+            client_ip: Some("10.1.2.3".parse().unwrap()),
+        })),
+    ];
+
+    let flow_id = engine.start_flow(def, "allowed-session", initial).unwrap();
+    assert_eq!(engine.store.get(&flow_id).unwrap().current_state(), ProxyState::Routed);
+}

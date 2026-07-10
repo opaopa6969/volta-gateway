@@ -650,6 +650,25 @@ impl ProxyService {
             }
         };
 
+        // GW-17: if the sync auto-chain ended in the Denied terminal (IP not in
+        // the host's allowlist), honour that state's HTTP status (403) instead
+        // of falling through to the generic "no route target" path below, which
+        // would mislabel the rejection as 400 Bad Request. Only Denied is
+        // special-cased here; every other error terminal keeps its existing
+        // behaviour.
+        {
+            let eng = engine.lock().unwrap();
+            if let Some(flow) = eng.store.get(&flow_id) {
+                let state = flow.current_state();
+                if state == ProxyState::Denied {
+                    warn!(state = ?state, host = %host, path = %uri_path);
+                    let status = StatusCode::from_u16(state.as_status_code())
+                        .unwrap_or(StatusCode::FORBIDDEN);
+                    return error_response_with_pages(status, &request_id, &hot.error_pages);
+                }
+            }
+        }
+
         // SM should be in ROUTED state now (waiting for External: auth check)
         // Extract route target from SM context
         let (backend_url, app_id) = {
