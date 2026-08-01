@@ -136,7 +136,10 @@ async fn main() {
 
     info!(port = config.server.port, "volta-gateway starting");
 
-    let listener = TcpListener::bind(addr).await.unwrap();
+    let listener = TcpListener::bind(addr).await.unwrap_or_else(|e| {
+        error!("failed to bind {addr}: {e} (port already in use?)");
+        std::process::exit(1);
+    });
     info!(addr = %addr, "listening");
 
     // Shared snapshot of config-source (services.json/docker/http) routes so a
