@@ -23,7 +23,7 @@
 - Benchmark 記事, Getting Started, README 更新
 
 **Tests: 63** (auth-core 55 + gateway 8)
-**Crates: 4** (gateway, auth-core, volta-bin, traefik-to-volta)
+**Crates: 5** (gateway, auth-core, auth-server, volta-bin, traefik-to-volta)
 </details>
 
 ---
