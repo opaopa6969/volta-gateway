@@ -3,14 +3,14 @@
 > **Version:** 0.2.0 (workspace) · `tramli = "3.8"` · `tramli-plugins = "3.6.1"`
 > **Scope:** End-to-end specification for the `volta-gateway` Cargo workspace —
 > covering the 5-crate layout, the dual Rust/Java posture, the per-request
-> FlowEngine, the 96-route `auth-server` Axum router, the 5 rate-limited merge
-> sub-routers, the 4 long-lived `auth-core` flows, the 23 PostgreSQL migrations,
+> FlowEngine, the 126-route `auth-server` Axum router, the 8 rate-limited merge
+> sub-routers, the 4 long-lived `auth-core` flows, the 33 PostgreSQL migrations,
 > the plugin system, the config surface, the non-functional envelope, and the
 > parity test strategy.
 >
 > **Companion docs (kept in sync):**
 > - [`docs/architecture.md`](../docs/architecture.md) — "how the pieces fit together"
-> - [`docs/parity.md`](../docs/parity.md) — 96-route Rust ↔ Java parity table
+> - [`docs/parity.md`](../docs/parity.md) — 126-route Rust ↔ Java parity table
 > - [`docs/beyond-traefik-requirements.md`](../docs/beyond-traefik-requirements.md) — HA/SPOF + 「Traefik を超える」要件（生きた文書）
 > - [`docs/config-persistence.md`](../docs/config-persistence.md) — 設定永続化の設計判断（ファイル overlay vs DB）
 > - [`auth-server/docs/sync-from-java-2026-04-14.md`](../auth-server/docs/sync-from-java-2026-04-14.md) — Java commit → Rust landing trace
@@ -54,7 +54,7 @@ The workspace ships **two deployable artifacts**:
 | Artifact              | Binary name     | Role                                                                 |
 |-----------------------|-----------------|----------------------------------------------------------------------|
 | `volta-gateway`       | `volta-gateway` | The proxy itself (HTTP/1.1 + HTTP/2 + WebSocket + L4 TCP/UDP).       |
-| `volta-auth-server`   | `volta-auth-server` | 96-route Axum HTTP API — drop-in replacement for Java `volta-auth-proxy`. |
+| `volta-auth-server`   | `volta-auth-server` | 126-route Axum HTTP API — drop-in replacement for Java `volta-auth-proxy`. |
 | `volta` (unified)     | `volta`         | `volta-bin` — gateway + auth-core linked in-process (no HTTP hop).   |
 
 ### 1.2 Dual implementation (Rust + Java)
@@ -72,7 +72,7 @@ The dual posture is structural, not incidental:
 
 1. Every route exposed by Rust `auth-server` is matched to a Java
    `volta-auth-proxy` route in [`docs/parity.md`](../docs/parity.md).
-   The current count is ~96 endpoints, organized into 17 categories.
+   The current count is ~126 endpoints, organized into 17 categories.
 2. Every Java security patch from commit `abca91e` (P0 items #1 – #21) has
    been ported into Rust with traceability, logged in
    [`auth-server/docs/sync-from-java-2026-04-14.md`](../auth-server/docs/sync-from-java-2026-04-14.md).
@@ -116,11 +116,11 @@ volta-gateway/                          Cargo workspace root
 │   │   ├── passkey.rs        — webauthn-rs adapter
 │   │   ├── policy.rs         — RBAC engine
 │   │   └── crypto.rs         — KeyCipher (AES-GCM + PBKDF2)
-│   ├── migrations/           — 23 SQL files (001 → 023)
+│   ├── migrations/           — 33 SQL files (001 → 033)
 │   └── tests/                — pg_store_test (testcontainers)
-├── auth-server/                        Axum HTTP API crate (96 routes)
+├── auth-server/                        Axum HTTP API crate (126 routes)
 │   ├── src/
-│   │   ├── app.rs            — Router::build_router (96 routes + 5 merges)
+│   │   ├── app.rs            — Router::build_router (126 routes + 8 merges)
 │   │   ├── handlers/         — 17 handler modules
 │   │   ├── rate_limit.rs     — per-endpoint IP limiter
 │   │   ├── local_bypass.rs   — trusted-network bypass (ForwardAuth)
@@ -159,7 +159,7 @@ created per HTTP request; everything in `auth-core` is lifecycle-scoped.
 | Scenario                                       | Recommendation |
 |------------------------------------------------|----------------|
 | Greenfield, single-language, auth latency-sensitive | **volta-gateway + volta-auth-server** (or `volta` unified) |
-| Migrating from Java volta-auth-proxy           | keep Java sidecar at `path_prefix: /saml/`, route all other 96 routes to auth-server |
+| Migrating from Java volta-auth-proxy           | keep Java sidecar at `path_prefix: /saml/`, route all other 126 routes to auth-server |
 | Production SAML with `xmlsec`-class assurance   | keep Java sidecar for `/saml/*` indefinitely (per DD-005) |
 | Large-scale (50+ services, Kubernetes canaries) | Traefik + volta-auth-proxy via ForwardAuth (Traefik's ecosystem wins) |
 
@@ -250,20 +250,20 @@ bugs are impossible by construction.
 | Guard       | `ForwardGuard`      | `RouteTarget`       | `BackendResponse` | Accepts when backend has deposited a `BackendResponse`. |
 | Processor   | `CompletionProcessor` | `BackendResponse` | —                 | Finalise metrics; emit transition log. |
 
-### 2.4 96-route taxonomy (auth-server)
+### 2.4 126-route taxonomy (auth-server)
 
-The Axum router in `auth-server/src/app.rs` mounts **~96 routes**, split
+The Axum router in `auth-server/src/app.rs` mounts **~126 routes**, split
 across 17 functional categories. Full table with Java-parity annotations is in
 [`docs/parity.md`](../docs/parity.md). Summary:
 
 | # | Category                     | Count | Representative path(s) |
 |---|------------------------------|------:|------------------------|
 | 1 | Auth lifecycle (verify/logout/refresh/switch) | 7 | `/auth/verify`, `/auth/refresh`, `/auth/switch-tenant`, `/select-tenant` |
-| 2 | OIDC (rate-limited 10/min/IP)           | 3 | `/login`, `/callback`, `/auth/callback/complete` |
+| 2 | OIDC (rate-limited 30/min/IP)           | 3 | `/login`, `/callback`, `/auth/callback/complete` |
 | 3 | SAML                                    | 2 | `/auth/saml/login`, `/auth/saml/callback` |
 | 4 | MFA (TOTP + challenge)                  | 8 | `/api/v1/users/{userId}/mfa/totp/{setup,verify}`, `/mfa/challenge`, `/auth/mfa/verify` (5/min) |
 | 5 | Magic Link (5/min/IP)                   | 2 | `/auth/magic-link/{send,verify}` |
-| 6 | Passkey (WebAuthn, 5/min/IP for start/finish) | 6 | `/auth/passkey/{start,finish}`, `/api/v1/users/{id}/passkeys[/{pid}]`, register start/finish |
+| 6 | Passkey (WebAuthn, 30/min/IP for start/finish) | 6 | `/auth/passkey/{start,finish}`, `/api/v1/users/{id}/passkeys[/{pid}]`, register start/finish |
 | 7 | Sessions (user + admin)                 | 7 | `/api/me/sessions`, `/admin/sessions`, `/auth/sessions/revoke-all` |
 | 8 | User profile + admin user ops           | 5 | `/api/v1/users/me`, `/api/v1/users/me/tenants`, PATCH/DELETE users |
 | 9 | Tenant / Member / Invitation (20/min/IP accept) | 11 | `/api/v1/tenants/…`, `/invite/{code}/accept` |
@@ -275,27 +275,29 @@ across 17 functional categories. Full table with Java-parity annotations is in
 | 15| Signing keys                            | 3 | `/api/v1/admin/keys[/rotate|/{kid}/revoke]` |
 | 16| Viz + SSE (tramli-viz integration)      | 3 | `/viz/flows`, `/viz/auth/stream`, `/api/v1/admin/flows/{id}/transitions` |
 | 17| Health + JWKS                           | 2 | `/healthz`, `/.well-known/jwks.json` |
-|   | **Total**                               | **~96** | |
+|   | **Total**                               | **~126** | |
 
 The exact count of lines matching `\.route\(` in `auth-server/src/app.rs` is
 the ground truth. Verify with:
 
 ```bash
-rg -c '^\s+\.route\(' auth-server/src/app.rs   # → ~96
+rg -c '^\s+\.route\(' auth-server/src/app.rs   # → ~126
 ```
 
-### 2.5 Five rate-limited merge sub-routers
+### 2.5 Eight rate-limited merge sub-routers
 
-`build_router()` composes the router as **one main router + 5 rate-limited
+`build_router()` composes the router as **one main router + 8 rate-limited
 sub-routers**, merged at the end (`auth-server/src/app.rs:22-45,210-214`):
 
 | Sub-router         | Limit      | Routes                                                   | Java equivalent |
 |--------------------|------------|----------------------------------------------------------|-----------------|
-| `oidc_routes`      | 10 / min / IP | `GET /login`, `GET /callback`, `POST /auth/callback/complete` | `@RateLimit(limit=10, window=60s)` |
+| `oidc_routes`      | 30 / min / IP | `GET /login`, `GET /callback`, `POST /auth/callback/complete` | `@RateLimit(limit=30, window=60s)` |
 | `mfa_routes`       | 5 / min / IP  | `POST /auth/mfa/verify`                                  | `@RateLimit(limit=5, window=60s)` |
-| `passkey_routes`   | 5 / min / IP  | `POST /auth/passkey/start`, `POST /auth/passkey/finish`  | `@RateLimit(limit=5, window=60s)` |
+| `passkey_routes`   | 30 / min / IP  | `POST /auth/passkey/start`, `POST /auth/passkey/finish`, discover routes | `@RateLimit(limit=30, window=60s)` |
 | `invite_routes`    | 20 / min / IP | `POST /invite/{code}/accept`                             | `@RateLimit(limit=20, window=60s)` |
 | `magic_routes`     | 5 / min / IP  | `POST /auth/magic-link/send`, `GET /auth/magic-link/verify` | `@RateLimit(limit=5, window=60s)` |
+| `registration_routes` | 5 / min / IP | `POST /auth/register/start`, `POST /auth/register/verify-email`, `POST /auth/register/resend-verification` | `@RateLimit(limit=5, window=60s)` |
+| `device_routes`    | 30 / min / IP | `POST /oauth/device_authorization`, `POST /device/approve`, `POST /device/deny` | `@RateLimit(limit=30, window=60s)` |
 
 **Why this shape?** Axum's `route_layer()` only applies to routes declared
 *inside* the sub-router. By colocating only the brute-forceable endpoints and
@@ -347,10 +349,10 @@ off-by-one bug documented as Java issue #20.
 
 ## 3. Data Persistence Layer
 
-### 3.1 Migrations (23 files)
+### 3.1 Migrations (33 files)
 
 All migrations live in `auth-core/migrations/` and are numbered `NNN_*.sql`.
-They are applied in order; the current head is **023**. Each migration is
+They are applied in order; the current head is **033**. Each migration is
 idempotent via `CREATE … IF NOT EXISTS` / `CREATE UNIQUE INDEX IF NOT EXISTS`.
 
 | #   | File                                | Purpose                                                  |
@@ -818,7 +820,7 @@ its nested `cors_origins`/`ip_allowlist`, `error_pages_dir`, and
 `auth`, …) is persisted but reported under `requires_restart` and takes effect on
 the next start. Implementation: `gateway/src/config_overlay.rs` (`ConfigStore`).
 
-### 6.3 auth-server HTTP surface (96 routes)
+### 6.3 auth-server HTTP surface (126 routes)
 
 The complete route-by-route table with Java parity annotations is in
 [`docs/parity.md`](../docs/parity.md). The router is built in
@@ -1190,12 +1192,12 @@ cargo test -p volta-auth-core --features postgres -- --ignored
 cargo test -p volta-gateway --tests
 ```
 
-### 11.3 Parity tests (96 routes)
+### 11.3 Parity tests (126 routes)
 
 The Java ↔ Rust route parity is enforced by:
 
 1. A **route-count sanity check** in CI — `rg -c '^\s+\.route\(' auth-server/src/app.rs`
-   must be approximately 96 (drift raises a review signal).
+   must be approximately 126 (drift raises a review signal).
 2. A **handler-level assertion matrix** in `auth-server/docs/specs/` and
    `auth-server/docs/arch/` documents the Java equivalent for each route.
 3. The **commit-level sync doc** (`auth-server/docs/sync-from-java-2026-04-14.md`)
@@ -1398,7 +1400,7 @@ Headscale sidecar integration is documented in `docs/MESH-VPN-SPEC.md`
   (Docker required).
 - `volta-gateway --validate volta-gateway.yaml` (config lint).
 - Route-count check: `rg -c '^\s+\.route\(' auth-server/src/app.rs` should
-  remain near 96; drift is a review signal.
+  remain near 126; drift is a review signal.
 
 ### 12.9 volta-bin embedding
 
@@ -1911,7 +1913,7 @@ routing:
 
 ## Appendix F — Mermaid Diagrams
 
-### F.1 System Architecture — Rust/Java dual implementation + 5 rate-limited merge routers
+### F.1 System Architecture — Rust/Java dual implementation + 8 rate-limited merge routers
 
 ```mermaid
 graph TB
@@ -1922,10 +1924,10 @@ graph TB
         LB["Load Balancer<br/>Round-robin / Weighted<br/>Circuit Breaker (5 fail / 30 s)"]
     end
 
-    subgraph auth-server ["volta-auth-server (Axum, 96 routes)"]
+    subgraph auth-server ["volta-auth-server (Axum, 126 routes)"]
         MAIN["main_router<br/>(~80 non-rate-limited routes)"]
 
-        subgraph rate_limited ["5 rate-limited merge sub-routers"]
+        subgraph rate_limited ["8 rate-limited merge sub-routers"]
             OIDC["oidc_routes<br/>10 / min / IP<br/>GET /login<br/>GET /callback<br/>POST /auth/callback/complete"]
             MFA["mfa_routes<br/>5 / min / IP<br/>POST /auth/mfa/verify"]
             PK["passkey_routes<br/>5 / min / IP<br/>POST /auth/passkey/start<br/>POST /auth/passkey/finish"]
@@ -1944,7 +1946,7 @@ graph TB
         AC["AuthService<br/>FlowDefinitions<br/>JWT / Session / Passkey<br/>KeyCipher (AES-GCM + PBKDF2)"]
     end
 
-    PG[("PostgreSQL<br/>23 migrations")]
+    PG[("PostgreSQL<br/>33 migrations")]
     REDIS[("Redis<br/>SSE pub/sub")]
     BACKENDS["Backend Apps"]
 
@@ -2233,12 +2235,12 @@ graph TB
     GW --> BE["Backend apps"]
 
     subgraph AS ["volta-auth-server"]
-        AXUM["Axum router<br/>96 routes + 5 merges"]
+        AXUM["Axum router<br/>126 routes + 8 merges"]
         CORE["auth-core lib<br/>(JWT, flows)"]
         AXUM --> CORE
     end
 
-    CORE --> PG[("PostgreSQL<br/>23 tables")]
+    CORE --> PG[("PostgreSQL<br/>33 migrations")]
     CORE --> RD[("Redis (SSE)")]
 ```
 
@@ -2249,10 +2251,10 @@ graph TB
 | Workspace layout             | repo root `Cargo.toml`; this SPEC §1.3                                           |
 | Per-request SM               | `gateway/src/flow.rs` + §4.1                                                     |
 | Long-lived SMs               | `auth-core/src/flow/{oidc,mfa,passkey,invite}.rs` + §4.2–§4.5                    |
-| 96-route table               | `auth-server/src/app.rs` + [`docs/parity.md`](../docs/parity.md) + §2.4          |
-| 5 rate-limited sub-routers   | `auth-server/src/app.rs:22-45,210-214` + §2.5 + §5.3                             |
+| 126-route table               | `auth-server/src/app.rs` + [`docs/parity.md`](../docs/parity.md) + §2.4          |
+| 8 rate-limited sub-routers   | `auth-server/src/app.rs:22-45,210-214` + §2.5 + §5.3                             |
 | Plugin system                | `gateway/src/plugin.rs` + §5.4 + DD-016                                          |
-| 23 migrations                | `auth-core/migrations/*.sql` + §3.1                                              |
+| 33 migrations                | `auth-core/migrations/*.sql` + §3.1                                              |
 | Java sync trail              | `auth-server/docs/sync-from-java-2026-04-14.md` + §6.4                           |
 | Security ledger              | §5.10 + Java `abca91e` commit (#1 – #21) + `security::*`                          |
 | tramli upgrade               | `docs/feedback.md` + §9.1                                                        |

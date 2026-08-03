@@ -29,7 +29,7 @@ Legend:
 
 ---
 
-## Route parity (auth-server, ~96 endpoints)
+## Route parity (auth-server, ~126 endpoints)
 
 Route list generated from `auth-server/src/app.rs`. Method column = Axum
 method used at mount time.
@@ -46,7 +46,7 @@ method used at mount time.
 | POST   | `/auth/switch-account`            | ✅   | ✅   | — |
 | GET    | `/select-tenant`                  | ✅   | ✅   | — |
 
-### OIDC (rate-limited 10/min/IP)
+### OIDC (rate-limited 30/min/IP)
 
 | Method | Path                              | Rust | Java | Notes |
 |--------|-----------------------------------|:----:|:----:|-------|
@@ -79,8 +79,8 @@ method used at mount time.
 
 | Method | Path                                                              | Rust | Java | Notes |
 |--------|-------------------------------------------------------------------|:----:|:----:|-------|
-| POST   | `/auth/passkey/start`                                             | ✅   | ✅   | Rate limit 5/min/IP |
-| POST   | `/auth/passkey/finish`                                            | ✅   | ✅   | Rate limit 5/min/IP |
+| POST   | `/auth/passkey/start`                                             | ✅   | ✅   | Rate limit 30/min/IP |
+| POST   | `/auth/passkey/finish`                                            | ✅   | ✅   | Rate limit 30/min/IP |
 | POST   | `/api/v1/users/{userId}/passkeys/register/start`                  | ✅   | ✅   | — |
 | POST   | `/api/v1/users/{userId}/passkeys/register/finish`                 | ✅   | ✅   | — |
 | GET    | `/api/v1/users/{userId}/passkeys`                                 | ✅   | ✅   | — |
@@ -205,6 +205,39 @@ method used at mount time.
 | GET    | `/healthz`                                            | ✅   | ✅   | — |
 | GET    | `/.well-known/jwks.json`                              | ✅   | ✅   | Signing-key rotation aware |
 
+### Routes added after the original parity table
+
+These routes are mounted in `auth-server/src/app.rs` but were missing from the
+older table above.
+
+| Method | Path |
+|--------|------|
+| GET | `/` |
+| POST | `/auth/passkey/discover/start` |
+| POST | `/auth/passkey/discover/finish` |
+| POST | `/auth/register/start` |
+| POST | `/auth/register/verify-email` |
+| POST | `/auth/register/resend-verification` |
+| POST | `/oauth/device_authorization` |
+| POST | `/device/approve` |
+| POST | `/device/deny` |
+| GET | `/device` |
+| GET | `/accounts` |
+| POST | `/accounts/use` |
+| POST | `/accounts/signout` |
+| POST | `/accounts/signout-all` |
+| GET | `/.well-known/openid-configuration` |
+| GET | `/authorize` |
+| POST | `/authorize/consent` |
+| GET | `/userinfo` |
+| POST | `/oauth/introspect` |
+| POST | `/oauth/revoke` |
+| GET | `/end_session` |
+| POST | `/api/v1/oauth/clients` |
+| GET | `/api/v1/oauth/clients` |
+| GET | `/api/v1/users/me/identities` |
+| DELETE | `/api/v1/users/me/identities/{id}` |
+
 ---
 
 ## Gateway feature parity (gateway crate vs Traefik / Java sidecar)
@@ -265,7 +298,7 @@ cargo test --workspace
 cargo test -p volta-auth-server --bins      # 44 unit tests
 cargo test -p volta-auth-core --features postgres -- --ignored  # integration
 
-# Route count sanity check (should print ~96)
+# Route count sanity check (should print ~126)
 rg -c '^\s+\.route\(' auth-server/src/app.rs
 ```
 

@@ -114,7 +114,7 @@ auth:
   cookie_name: volta_session
 ```
 
-このモードでは 96 本のルート (login, MFA, etc.) は**公開しない**。
+このモードでは 126 本のルート (login, MFA, etc.) は**公開しない**。
 既存セッションの**検証のみ**。完全なフローが必要なら `auth-server` を別途
 立てるか、移行期は Java sidecar を併置する。
 
@@ -227,7 +227,7 @@ cargo bench -p volta-gateway --bench proxy_bench
 ## 12. 次に読むもの
 
 - [README](../README-ja.md) — 概要とポジショニング
-- [`docs/architecture-ja.md`](architecture-ja.md) — FlowEngine / ルーティング / 5 マージルータ / プラグイン
+- [`docs/architecture-ja.md`](architecture-ja.md) — FlowEngine / ルーティング / 8 マージルータ / プラグイン
 - [`docs/parity-ja.md`](parity-ja.md) — Rust vs Java ルート毎
 - [`docs/migration-from-traefik-ja.md`](migration-from-traefik-ja.md) — Traefik 移行ガイド
 - [`docs/feedback.md`](feedback.md) — tramli アップグレードループ (3.2 → 3.8)

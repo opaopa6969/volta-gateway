@@ -27,7 +27,7 @@
 
 ---
 
-## ルートパリティ (auth-server ~96 エンドポイント)
+## ルートパリティ (auth-server ~126 エンドポイント)
 
 一覧は `auth-server/src/app.rs` から抽出。Method 列はマウント時の Axum メソッド。
 
@@ -43,7 +43,7 @@
 | POST   | `/auth/switch-account`            | ✅   | ✅   | — |
 | GET    | `/select-tenant`                  | ✅   | ✅   | — |
 
-### OIDC (レート制限 10/min/IP)
+### OIDC (レート制限 30/min/IP)
 
 | Method | Path                              | Rust | Java | 注記 |
 |--------|-----------------------------------|:----:|:----:|------|
@@ -76,8 +76,8 @@
 
 | Method | Path                                                              | Rust | Java | 注記 |
 |--------|-------------------------------------------------------------------|:----:|:----:|------|
-| POST   | `/auth/passkey/start`                                             | ✅   | ✅   | レート 5/min/IP |
-| POST   | `/auth/passkey/finish`                                            | ✅   | ✅   | レート 5/min/IP |
+| POST   | `/auth/passkey/start`                                             | ✅   | ✅   | レート 30/min/IP |
+| POST   | `/auth/passkey/finish`                                            | ✅   | ✅   | レート 30/min/IP |
 | POST   | `/api/v1/users/{userId}/passkeys/register/start`                  | ✅   | ✅   | — |
 | POST   | `/api/v1/users/{userId}/passkeys/register/finish`                 | ✅   | ✅   | — |
 | GET    | `/api/v1/users/{userId}/passkeys`                                 | ✅   | ✅   | — |
@@ -202,6 +202,39 @@
 | GET    | `/healthz`                                            | ✅   | ✅   | — |
 | GET    | `/.well-known/jwks.json`                              | ✅   | ✅   | 署名鍵ローテ対応 |
 
+### 元のパリティ表作成後に追加されたルート
+
+以下は `auth-server/src/app.rs` にマウントされていますが、旧表から漏れて
+いたルートです。
+
+| Method | Path |
+|--------|------|
+| GET | `/` |
+| POST | `/auth/passkey/discover/start` |
+| POST | `/auth/passkey/discover/finish` |
+| POST | `/auth/register/start` |
+| POST | `/auth/register/verify-email` |
+| POST | `/auth/register/resend-verification` |
+| POST | `/oauth/device_authorization` |
+| POST | `/device/approve` |
+| POST | `/device/deny` |
+| GET | `/device` |
+| GET | `/accounts` |
+| POST | `/accounts/use` |
+| POST | `/accounts/signout` |
+| POST | `/accounts/signout-all` |
+| GET | `/.well-known/openid-configuration` |
+| GET | `/authorize` |
+| POST | `/authorize/consent` |
+| GET | `/userinfo` |
+| POST | `/oauth/introspect` |
+| POST | `/oauth/revoke` |
+| GET | `/end_session` |
+| POST | `/api/v1/oauth/clients` |
+| GET | `/api/v1/oauth/clients` |
+| GET | `/api/v1/users/me/identities` |
+| DELETE | `/api/v1/users/me/identities/{id}` |
+
 ---
 
 ## gateway 機能パリティ (gateway crate vs Traefik / Java sidecar)
@@ -262,7 +295,7 @@ cargo test --workspace
 cargo test -p volta-auth-server --bins      # 44 unit tests
 cargo test -p volta-auth-core --features postgres -- --ignored  # integration
 
-# ルート数サニティチェック (~96 が出るはず)
+# ルート数サニティチェック (~126 が出るはず)
 rg -c '^\s+\.route\(' auth-server/src/app.rs
 ```
 

@@ -5,7 +5,7 @@
 ステートマシン ([tramli 3.8](https://github.com/opaopa6969/tramli)) 駆動の
 認証対応リバースプロキシ。**Rust と Java の二重実装**: Rust 版は本ワークスペース
 (既定)、Java 版は `volta-auth-proxy` sidecar (本番 SAML で引き続き推奨)。
-Rust 側は Java auth-proxy と 1:1 対応する **約 96 ルート**を提供する
+Rust 側は Java auth-proxy と 1:1 対応する **約 126 ルート**を提供する
 ([`docs/parity-ja.md`](docs/parity-ja.md))。
 
 **全てのリクエストはレールの上を走る** — ステートマシンが有効な遷移だけを許可する。リクエストスマグリングなし。認証チェック忘れなし。見えない障害なし。
@@ -144,7 +144,7 @@ curl -H "Host: app.localhost" http://localhost:8080/api/hi
 ## 二重実装 (Rust + Java)
 
 volta-gateway は本ワークスペースに **Rust auth-server** (`auth-server/`) を
-同梱。Java `volta-auth-proxy` の**ルート毎置換**で、約 96 エンドポイント
+同梱。Java `volta-auth-proxy` の**ルート毎置換**で、約 126 エンドポイント
 (auth / OIDC / SAML / MFA / Passkey / Magic Link / SCIM 2.0 / Webhook / Audit
 / Billing / Policy / GDPR / Admin / JWKS / viz・SSE) を提供する。
 
@@ -360,7 +360,7 @@ volta-gateway/
   Cargo.toml              ワークスペースルート (5 crate)
   gateway/                HTTP リバースプロキシ (30+ 機能)
   auth-core/              認証ライブラリ — JWT / セッション / OIDC・MFA・Passkey SM フロー
-  auth-server/            Axum 認証 API — 約 96 ルート、Java volta-auth-proxy と 1:1
+  auth-server/            Axum 認証 API — 約 126 ルート、Java volta-auth-proxy と 1:1
   volta-bin/              統合バイナリ (gateway + auth-core in-process)
   tools/traefik-to-volta/ 設定変換 CLI
 ```
@@ -403,8 +403,8 @@ cargo test -p volta-auth-core --features postgres -- --ignored
 ## ドキュメント
 
 - [Getting Started](docs/getting-started-ja.md) · [English](docs/getting-started.md)
-- [アーキテクチャ](docs/architecture-ja.md) · [English](docs/architecture.md) — FlowEngine、ルーティング、auth-server 5 マージルータ、プラグイン
-- [Rust ↔ Java パリティ](docs/parity-ja.md) · [English](docs/parity.md) — ルート毎対比、96 エンドポイント
+- [アーキテクチャ](docs/architecture-ja.md) · [English](docs/architecture.md) — FlowEngine、ルーティング、auth-server 8 マージルータ、プラグイン
+- [Rust ↔ Java パリティ](docs/parity-ja.md) · [English](docs/parity.md) — ルート毎対比、126 エンドポイント
 - [tramli フィードバックループ](docs/feedback.md) — 3.2 → 3.8 のアップグレード経緯
 - [ベンチマーク](docs/benchmark-article.md) · [Traefik からの移行](docs/migration-from-traefik-ja.md) · [English](docs/migration-from-traefik.md)
 - [CHANGELOG](CHANGELOG.md)

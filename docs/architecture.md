@@ -4,14 +4,14 @@
 
 > Companion doc to the top-level [README](../README.md). This document focuses
 > on *how the pieces fit together*: the FlowEngine at the core, the routing
-> table, the `auth-server` 5-merge router, the plugin system, and the
+> table, the `auth-server` 8-merge router, the plugin system, and the
 > rate-limiting layers.
 
 ## 1. Workspace layout
 
 ```
 volta-gateway/                       Cargo workspace root
-├── gateway/          HTTP reverse proxy (96 routes in auth-server → forwarded)
+├── gateway/          HTTP reverse proxy (126 routes in auth-server → forwarded)
 ├── auth-core/        Auth library — JWT, session, OIDC/MFA/Passkey SM flows
 ├── auth-server/      Axum HTTP API — Java volta-auth-proxy 1:1 replacement
 ├── volta-bin/        Unified binary (gateway + auth-core in-process)
@@ -102,21 +102,23 @@ on `SIGHUP` or `POST /admin/reload`.
 3. `tramli-plugins = 3.6.1` introduces the `NoopTelemetrySink` used in the
    benchmark baseline (see `docs/benchmark-article.md`).
 
-## 5. auth-server: the 5-merge router
+## 5. auth-server: the 8-merge router
 
-`auth-server/src/app.rs` is where **96 Axum routes** are mounted. The router
-is deliberately composed as *one core router* plus **five rate-limited
+`auth-server/src/app.rs` is where **126 Axum routes** are mounted. The router
+is deliberately composed as *one core router* plus **eight rate-limited
 `route_layer` sub-routers** merged at the end:
 
 ```rust
 Router::new()
     // ~ 80 non-rate-limited routes (auth, session, MFA setup, admin, SCIM, …)
     …
-    .merge(oidc_routes)     // rl_oidc    10/min/IP
+    .merge(oidc_routes)     // rl_oidc    30/min/IP
     .merge(mfa_routes)      // rl_mfa      5/min/IP
-    .merge(passkey_routes)  // rl_passkey  5/min/IP
+    .merge(passkey_routes)  // rl_passkey  30/min/IP
     .merge(invite_routes)   // rl_invite  20/min/IP
     .merge(magic_routes)    // rl_magic    5/min/IP
+    .merge(registration_routes) // rl_register 5/min/IP
+    .merge(device_routes)       // rl_device 30/min/IP
     .with_state(state)
 ```
 
@@ -126,7 +128,7 @@ their own sub-router and attaching the `RateLimiter` there, we avoid a global
 middleware that would charge the other ~80 routes. Matches Java's per-endpoint
 `@RateLimit(limit=N, window=60s)` annotations 1:1.
 
-Each limiter is a `RateLimiter::new("oidc", 10, Duration::from_secs(60))`
+Each limiter is a `RateLimiter::new("oidc", 30, Duration::from_secs(60))`
 instance keyed by client IP via `limit_by_ip` middleware.
 
 Route taxonomy (see [`parity.md`](parity.md) for the full table):
@@ -150,7 +152,7 @@ Route taxonomy (see [`parity.md`](parity.md) for the full table):
 | Signing keys               | 3     | `/api/v1/admin/keys[/rotate|/{kid}/revoke]` |
 | Viz + SSE                  | 3     | `/viz/flows`, `/viz/auth/stream`, `/api/v1/admin/flows/{id}/transitions` |
 | Health + JWKS              | 2     | `/healthz`, `/.well-known/jwks.json` |
-| **Total**                  | **~96** | |
+| **Total**                  | **~126** | |
 
 ## 6. auth-core flow library
 

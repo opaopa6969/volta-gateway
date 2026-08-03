@@ -5,7 +5,7 @@
 Auth-aware reverse proxy for small-to-medium SaaS, powered by a state machine
 ([tramli 3.8](https://github.com/opaopa6969/tramli)). **Dual implementation**:
 Rust (default, this workspace) and Java (`volta-auth-proxy` sidecar, still
-supported for production SAML). The Rust side ships **~96 routes** that match
+supported for production SAML). The Rust side ships **~126 routes** that match
 the Java auth-proxy 1:1 — see [`docs/parity.md`](docs/parity.md).
 
 **Every request rides on rails** — the state machine ensures that only valid transitions happen. No request smuggling. No forgotten auth checks. No invisible failures.
@@ -145,7 +145,7 @@ Full walkthrough: [`docs/getting-started.md`](docs/getting-started.md) ·
 
 volta-gateway ships with a **Rust auth-server** (`auth-server/` in this
 workspace) that is a route-by-route replacement for the Java
-`volta-auth-proxy`. ~96 endpoints are covered: auth, OIDC, SAML, MFA,
+`volta-auth-proxy`. ~126 endpoints are covered: auth, OIDC, SAML, MFA,
 Passkey, Magic Link, SCIM 2.0, Webhook, Audit, Billing, Policy, GDPR,
 Admin, JWKS, viz/SSE.
 
@@ -388,7 +388,7 @@ volta-gateway/
   Cargo.toml              Workspace root (5 crates)
   gateway/                HTTP reverse proxy (30+ features)
   auth-core/              Auth library — JWT, session, OIDC/MFA/Passkey SM flows
-  auth-server/            Axum auth API — ~96 routes, Java volta-auth-proxy 1:1
+  auth-server/            Axum auth API — ~126 routes, Java volta-auth-proxy 1:1
   volta-bin/              Unified binary (gateway + auth-core in-process)
   tools/traefik-to-volta/ Config converter CLI
 ```
@@ -442,8 +442,8 @@ cargo run -p volta -- config.yaml
 ## Docs
 
 - [Getting Started](docs/getting-started.md) · [日本語](docs/getting-started-ja.md)
-- [Architecture](docs/architecture.md) · [日本語](docs/architecture-ja.md) — FlowEngine, routing, auth-server 5-merge router, plugins
-- [Rust ↔ Java Parity](docs/parity.md) · [日本語](docs/parity-ja.md) — route-by-route, 96 endpoints
+- [Architecture](docs/architecture.md) · [日本語](docs/architecture-ja.md) — FlowEngine, routing, auth-server 8-merge router, plugins
+- [Rust ↔ Java Parity](docs/parity.md) · [日本語](docs/parity-ja.md) — route-by-route, 126 endpoints
 - [tramli feedback loop](docs/feedback.md) — upgrade trail 3.2 → 3.8
 - [Benchmarks](docs/benchmark-article.md) · [Migration from Traefik](docs/migration-from-traefik.md) · [日本語](docs/migration-from-traefik-ja.md)
 - [CHANGELOG](CHANGELOG.md)

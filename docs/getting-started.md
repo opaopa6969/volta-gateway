@@ -116,7 +116,7 @@ auth:
   cookie_name: volta_session
 ```
 
-This mode does **not** expose the 96 routes (login, MFA, etc.) — it only
+This mode does **not** expose the 126 routes (login, MFA, etc.) — it only
 *verifies* existing sessions. Pair it with an `auth-server` instance for the
 full flow, or keep the Java sidecar during migration.
 
@@ -230,7 +230,7 @@ methodology and the 6.6x vs Traefik result.
 ## 12. What to read next
 
 - [README](../README.md) — features and positioning
-- [`docs/architecture.md`](architecture.md) — FlowEngine, routing, 5-merge router, plugins
+- [`docs/architecture.md`](architecture.md) — FlowEngine, routing, 8-merge router, plugins
 - [`docs/parity.md`](parity.md) — Rust vs Java, route-by-route
 - [`docs/migration-from-traefik.md`](migration-from-traefik.md) — migration guide
 - [`docs/feedback.md`](feedback.md) — tramli upgrade loop (3.2 → 3.8)
