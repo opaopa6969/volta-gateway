@@ -180,8 +180,10 @@ tls:
   domains:
     - "*.example.com"
   contact_email: admin@example.com
-  dns01:
-    cloudflare_api_token_env: CF_DNS_TOKEN
+  challenge: dns-01
+  dns_provider: cloudflare
+  # Omit the token here to read CF_DNS_API_TOKEN from the environment.
+  dns_zone_id: "your-cloudflare-zone-id"
 ```
 
 ## 8. Config validation in CI

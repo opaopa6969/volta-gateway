@@ -54,7 +54,7 @@ The workspace ships **two deployable artifacts**:
 | Artifact              | Binary name     | Role                                                                 |
 |-----------------------|-----------------|----------------------------------------------------------------------|
 | `volta-gateway`       | `volta-gateway` | The proxy itself (HTTP/1.1 + HTTP/2 + WebSocket + L4 TCP/UDP).       |
-| `volta-auth-server`   | `volta-auth-server` | 96-route Axum HTTP API — drop-in replacement for Java `volta-auth-proxy`. |
+| `volta-auth-server`   | `volta-auth-server` | 103 route registrations in the Axum HTTP API — drop-in replacement for Java `volta-auth-proxy`. |
 | `volta` (unified)     | `volta`         | `volta-bin` — gateway + auth-core linked in-process (no HTTP hop).   |
 
 ### 1.2 Dual implementation (Rust + Java)
@@ -942,8 +942,8 @@ routing:
 
 | Key                | Type        | Purpose |
 |--------------------|-------------|---------|
-| `server`           | object      | Port, timeouts, `force_https`, `trusted_proxies` |
-| `auth`             | object      | `volta_url`, `verify_path`, `timeout_ms`, `pool_max_idle`, `jwt_secret` (in-process), `cookie_name`, `auth_public_url` |
+| `server`           | object      | Port, timeouts, `force_https`, `trusted_proxies`, `drain_timeout_secs` |
+| `auth`             | object      | `volta_url`, `verify_path`, `timeout_ms`, `pool_max_idle`, `jwt_secret` (in-process), `cookie_name`, `auth_public_url`, `degraded_mode`, `jwt_public_key_pem`, `jwks_url`, `jwt_issuer`, `jwt_audience` |
 | `routing`          | array       | `host`, `backend`/`backends`, `app_id`, `public`, `auth_bypass_paths`, `cors_origins`, `ip_allowlist`, `path_prefix`, `strip_prefix`, `add_prefix`, `request_headers`, `response_headers`, `geo_allowlist`, `geo_denylist`, `timeout_secs`, `mirror`, `cache`, `backend_tls`, `plugins` |
 | `rate_limit`       | object      | `requests_per_second`, `per_ip_rps` |
 | `backend_pool`     | object      | `max_idle_per_host`, `idle_timeout_secs` |

@@ -6,12 +6,21 @@ server:
   read_timeout_secs: 10         # TCP read timeout
   request_timeout_secs: 30      # Backend request timeout
   force_https: false            # Redirect HTTP → HTTPS (requires tls)
+  trusted_proxies: []           # CIDRs allowed to supply the real client IP
+  drain_timeout_secs: 30        # Graceful shutdown deadline
 
 auth:
   volta_url: http://localhost:7070  # volta-auth-proxy URL
   verify_path: /auth/verify         # Auth verification endpoint
   timeout_ms: 500                   # Auth request timeout
   pool_max_idle: 32                 # Connection pool idle per host
+  cookie_name: __volta_session     # Session cookie name
+  degraded_mode: false              # Keep valid sessions during auth outage
+  # RS256/JWKS degraded-mode options (all optional)
+  # jwks_url: http://localhost:7070/.well-known/jwks.json
+  # jwt_public_key_pem: /etc/volta/auth-proxy-pub.pem
+  # jwt_issuer: volta-auth
+  # jwt_audience: volta-apps
 
 admin:                              # BT-SEC-7: Admin API auth (loopback-only)
   # Bearer token required for all /admin/* requests. Env VOLTA_ADMIN_TOKEN
@@ -31,6 +40,9 @@ routing:
     ip_allowlist:                # Optional: CIDR allowlist
       - 10.0.0.0/8
       - 192.168.0.0/16
+    auth_bypass_paths: []         # Optional: bypass auth for selected prefixes
+      # - prefix: /webhooks/
+      #   backend: http://localhost:3002
 
   - host: "*.example.com"       # Wildcard routing
     backend: http://localhost:3001
@@ -90,3 +102,15 @@ l4_proxy:
   - listen_port: 6380
     protocol: tcp
     backend: 10.0.0.6:6379       # Redis
+
+# Optional dynamic route sources. These routes are merged into routing.
+# config_sources:
+#   - type: services-json
+#     path: /app/services.json
+#     watch: true
+
+# Optional access log output.
+# access_log:
+#   enabled: true
+#   path: /var/log/volta-gateway/access.log
+#   format: json
