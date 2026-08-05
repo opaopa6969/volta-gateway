@@ -116,8 +116,8 @@ gateway の `path_prefix: /saml/` + `public: true` で Java に転送。
 
 | # | Issue | Status |
 |---|-------|--------|
-| #37 | Streaming compression | 🟡 Open |
-| #39 | Access log file separation | 🟡 Open |
+| #37 | Streaming compression | ✅ Done |
+| #39 | Access log file separation | ✅ Done |
 | #43 | ACME DNS-01 | ✅ Done (Phase 1+2) |
 | #44 | Docker labels source | ✅ Done |
 | #45 | Getting Started guide | ✅ Done |
