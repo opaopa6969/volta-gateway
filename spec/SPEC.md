@@ -362,8 +362,8 @@ idempotent via `CREATE … IF NOT EXISTS` / `CREATE UNIQUE INDEX IF NOT EXISTS`.
 | 005 | `005_create_invitation_usages.sql`  | `invitation_usages` — audit of single-use acceptance (idempotent accept) |
 | 006 | `006_create_auth_flows.sql`         | `auth_flows` — tramli FlowInstance persistence (flow_id, flow_name, current_state, data_json, version, ttl_expires_at). Optimistic lock via `version`. |
 | 007 | `007_create_auth_flow_transitions.sql` | `auth_flow_transitions` — append-only transition log (from_state, to_state, duration_micros, data_types, timestamp). Feeds `/api/v1/admin/flows/{id}/transitions`. |
-| 008 | `008_create_sessions.sql`           | `sessions` — id (JWT session_id claim), user_id, tenant_id, created_at, revoked_at, last_used_at, ip, user_agent, mfa_verified_at |
-| 009 | `009_create_user_mfa.sql`           | `user_mfa` — user_id PK, totp_secret (KeyCipher-encrypted), enabled_at |
+| 008 | `008_create_sessions.sql`           | `sessions` — id (VARCHAR PK, JWT session_id claim), user_id, tenant_id, return_to, created_at (BIGINT), last_active_at (BIGINT), expires_at (BIGINT), invalidated_at (BIGINT, replaces revoked_at), mfa_verified_at (BIGINT), ip_address, user_agent, csrf_token, email, tenant_slug, roles, display_name |
+| 009 | `009_create_user_mfa.sql`           | `user_mfa` — id (UUID PK), user_id (FK → users), type (VARCHAR(20), e.g. totp/passkey), secret (TEXT), is_active (BOOLEAN), created_at. UNIQUE INDEX (user_id, type) added by migration 027 for `ON CONFLICT` upsert |
 | 010 | `010_create_mfa_recovery_codes.sql` | `mfa_recovery_codes` — user_id, code_hash (SHA-256), used_at |
 | 011 | `011_create_magic_links.sql`        | `magic_links` — token_hash, email, expires_at, consumed_at |
 | 012 | `012_create_signing_keys.sql`       | `signing_keys` — kid, alg, public_jwk, private_jwk (KeyCipher), not_before, not_after, revoked_at |
@@ -376,8 +376,8 @@ idempotent via `CREATE … IF NOT EXISTS` / `CREATE UNIQUE INDEX IF NOT EXISTS`.
 | 019 | `019_create_billing.sql`            | `plans`, `subscriptions` (Stripe-compatible), `invoices` |
 | 020 | `020_create_policies.sql`           | `tenant_security_policies` — policy_json (RBAC / time-of-day / geo) |
 | 021 | `021_pagination_indexes.sql`        | Composite indexes for admin pagination (P2.1, Java `f31a2f2`) on `audit_logs`, `sessions`, `users`, `invitations`, `members` |
-| 022 | `022_create_oidc_flows.sql`         | `oidc_flows` — state (HMAC-signed), nonce, pkce_verifier (KeyCipher), expires_at. Atomic consume per Java #3. |
-| 023 | `023_create_passkey_challenges.sql` | `passkey_challenges` — user_id, challenge (serialised via `bincode`), expires_at |
+| 022 | `022_create_oidc_flows.sql`         | `oidc_flows` — id (UUID PK), state (VARCHAR UNIQUE — DB-backed opaque value, replaces prior HMAC-signed stateless state), nonce, code_verifier_encrypted (KeyCipher AES-GCM), return_to, invite_code, tenant_id, created_at, expires_at. Atomic single-use consume per Java #3. |
+| 023 | `023_create_passkey_challenges.sql` | `passkey_challenges` — id (UUID PK), user_id (NULL for login — user not yet resolved), state (BYTEA — serde_json-serialised `PasskeyAuthentication`/`PasskeyRegistration`, moved from bincode per CHANGELOG [Unreleased]), kind ("auth" / "register"), created_at, expires_at |
 | 024 | `024_create_notification_jobs.sql` | `notification_jobs` — channel, recipient, template_id, payload (template vars only, no tokens), correlation_id (UNIQUE — idempotency), status, attempt_count, next_attempt_at; `notification_logs` — delivery audit |
 | 025 | `025_create_email_verification_tokens.sql` | `email_verification_tokens` — email, token_hash (SHA-256, plain token never stored), flow_id (optional link), expires_at, used_at (one-time), attempt_count, resend_count, last_sent_at (rate-limit attributes) |
 | 026 | `026_create_login_challenges.sql` | `login_challenges` — user_id, kind (EMAIL_OTP / SMS_OTP / LINE_OTP), code_hash (SHA-256), destination, expires_at, consumed_at (one-time), attempt_count, max_attempts |
