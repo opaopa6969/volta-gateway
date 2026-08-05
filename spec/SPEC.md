@@ -116,7 +116,7 @@ volta-gateway/                          Cargo workspace root
 │   │   ├── passkey.rs        — webauthn-rs adapter
 │   │   ├── policy.rs         — RBAC engine
 │   │   └── crypto.rs         — KeyCipher (AES-GCM + PBKDF2)
-│   ├── migrations/           — 23 SQL files (001 → 023)
+│   ├── migrations/           — 33 SQL files (001 → 033)
 │   └── tests/                — pg_store_test (testcontainers)
 ├── auth-server/                        Axum HTTP API crate (96 routes)
 │   ├── src/
@@ -347,10 +347,10 @@ off-by-one bug documented as Java issue #20.
 
 ## 3. Data Persistence Layer
 
-### 3.1 Migrations (23 files)
+### 3.1 Migrations (33 files)
 
 All migrations live in `auth-core/migrations/` and are numbered `NNN_*.sql`.
-They are applied in order; the current head is **023**. Each migration is
+They are applied in order; the current head is **033**. Each migration is
 idempotent via `CREATE … IF NOT EXISTS` / `CREATE UNIQUE INDEX IF NOT EXISTS`.
 
 | #   | File                                | Purpose                                                  |
@@ -378,6 +378,16 @@ idempotent via `CREATE … IF NOT EXISTS` / `CREATE UNIQUE INDEX IF NOT EXISTS`.
 | 021 | `021_pagination_indexes.sql`        | Composite indexes for admin pagination (P2.1, Java `f31a2f2`) on `audit_logs`, `sessions`, `users`, `invitations`, `members` |
 | 022 | `022_create_oidc_flows.sql`         | `oidc_flows` — state (HMAC-signed), nonce, pkce_verifier (KeyCipher), expires_at. Atomic consume per Java #3. |
 | 023 | `023_create_passkey_challenges.sql` | `passkey_challenges` — user_id, challenge (serialised via `bincode`), expires_at |
+| 024 | `024_create_notification_jobs.sql` | `notification_jobs` — channel, recipient, template_id, payload (template vars only, no tokens), correlation_id (UNIQUE — idempotency), status, attempt_count, next_attempt_at; `notification_logs` — delivery audit |
+| 025 | `025_create_email_verification_tokens.sql` | `email_verification_tokens` — email, token_hash (SHA-256, plain token never stored), flow_id (optional link), expires_at, used_at (one-time), attempt_count, resend_count, last_sent_at (rate-limit attributes) |
+| 026 | `026_create_login_challenges.sql` | `login_challenges` — user_id, kind (EMAIL_OTP / SMS_OTP / LINE_OTP), code_hash (SHA-256), destination, expires_at, consumed_at (one-time), attempt_count, max_attempts |
+| 027 | `027_user_mfa_unique_index.sql` | `UNIQUE INDEX user_mfa_user_type_uniq (user_id, type)` — required for `MfaStore` upsert `ON CONFLICT (user_id, type)` (parity with Java V7; was missing in Rust schema, upsert failed on fresh DB) |
+| 028 | `028_create_device_authorization_grants.sql` | `device_authorization_grants` — device_code_hash (SHA-256, plain device_code never stored), user_code (human code, UNIQUE), client_id, scope, status (pending/approved/denied/expired), user_id/tenant_id (set on approval), interval_secs (slow_down), last_polled_at, expires_at (RFC 8628) |
+| 029 | `029_create_oauth_provider.sql` | `oauth_clients` — client_id (UNIQUE), client_secret_hash (NULL = public/PKCE), redirect_uris[], grant_types[], scopes[], is_confidential; `oauth_authorization_codes` — code_hash (SHA-256 PK), client_id, user_id, tenant_id, redirect_uri, scope, nonce, code_challenge, code_challenge_method, expires_at, consumed_at; `oauth_refresh_tokens` — rotating refresh tokens with reuse detection via family_id; `oauth_consents` — remembered consent |
+| 030 | `030_create_risk_known_devices.sql` | `risk_known_devices` — (user_id, device_hash SHA-256 of `__volta_kd` cookie) PK, first_seen, last_seen. Invisible to user, feeds risk scoring only; distinct from user-managed trusted_devices (018) |
+| 031 | `031_oauth_client_logout_uris.sql` | `ALTER TABLE oauth_clients` ADD `backchannel_logout_uri` / `frontchannel_logout_uri` (OIDC RP-initiated / back-channel / front-channel logout endpoints) |
+| 032 | `032_create_user_identities.sql` | `user_identities` — user_id, provider, subject (UNIQUE (provider, subject) — IdP stable sub), email, email_verified, created_at. Account linking: one user owns several federated identities; verified-email match links to existing user instead of creating a duplicate |
+| 033 | `033_create_session_stepup.sql` | `session_stepup` — session_id PK, created_at. Risk step-up marker set by adaptive auth; ForwardAuth routes marked sessions through `/mfa/challenge` even when tenant policy wouldn't normally require MFA. Per-session so a fresh passkey re-auth (new, unmarked session) satisfies it |
 
 **Extension set:** migrations assume PostgreSQL 13+ with `pgcrypto` and
 `uuid-ossp` (or equivalent server-side UUID). `ON DELETE CASCADE` is used for
