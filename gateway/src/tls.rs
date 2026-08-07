@@ -112,7 +112,12 @@ pub async fn serve_tls(
                         return Ok::<_, hyper::Error>(resp);
                     }
 
-                    if req.uri().path() == "/healthz" {
+                    // Same reservation rule as the plain-HTTP listener: a routed
+                    // Host belongs to a service, so its /healthz must reach that
+                    // service rather than being answered here.
+                    if req.uri().path() == "/healthz"
+                        && !crate::proxy::host_is_routed(&req, &proxy.hot)
+                    {
                         let volta_ok = volta_health.health().await;
                         let body = format!(
                             r#"{{"status":"{}","volta":"{}"}}"#,
