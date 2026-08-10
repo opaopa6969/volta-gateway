@@ -143,6 +143,19 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   dual implementation, 96 routes, `tramli = "3.8"` dependency, TOC.
 - Rate limits raised so page-load-triggered flows don't lock out legitimate
   users: OIDC 10→30/min/IP, passkey 5→30/min/IP.
+- **Rate limits are now configurable from the environment**
+  (`RateLimiter::from_env`): `RATE_LIMIT_<NAME>` overrides one limiter
+  (`magic-link` → `RATE_LIMIT_MAGIC_LINK`), `RATE_LIMIT_MULTIPLIER` scales all
+  defaults, `RATE_LIMIT_WINDOW_SECS` changes the window. `0` disables a limiter
+  (test environments only — never in production). Hard-coded limits meant a
+  rebuild whenever they didn't fit the environment; OIDC and passkey had already
+  been raised twice for that reason, and the auth E2E suite could not pass
+  because magic-link 5/min/IP rejected its 11 login/logout cycles.
+  (volta-platform#53)
+- OIDC `/callback` + `/auth/callback/complete` moved to their own rate-limit
+  bucket (`oidc-callback`, 30/min/IP). They shared `/login`'s bucket, so a few
+  `/login` reloads could exhaust it and stall the IdP handshake at 429 — the
+  user does not control how often the callback fires.
 
 ### Fixed
 - Cutover regressions: `GET /` returned 404 (Java redirected to `/login`) → now
