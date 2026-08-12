@@ -138,6 +138,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   (attestation) + discoverable authentication ceremonies, sign-counter clone
   check, and error terminals (was: happy-path assertion only).
 
+### Fixed
+- **WebSocket over HTTP/2 (RFC 8441)**. An `:authority`-style HTTP/2 `CONNECT`
+  upgrade was forwarded verbatim to the backend: the HTTP/2 pseudo-headers
+  (`:method`, `:protocol`, `:scheme`, `:path`, `:authority`) leaked into the
+  HTTP/1.1 request, and the `Upgrade`/`Connection` headers HTTP/1.1 needs were
+  absent (HTTP/2 CONNECT does not carry them). The client also got a 101, which
+  is not how HTTP/2 signals a successful upgrade. Now: pseudo-headers are
+  filtered, `Upgrade: websocket` / `Connection: upgrade` are synthesized for the
+  HTTP/1.1 backend handshake, the client gets 200 (not 101) for CONNECT, and the
+  hop-by-hop `Upgrade`/`Connection` from the backend are not echoed back
+  (`Sec-WebSocket-*` still are).
+
 ### Changed
 - README.md / README-ja.md rewritten to tramli-quality standard: Rust+Java
   dual implementation, 96 routes, `tramli = "3.8"` dependency, TOC.

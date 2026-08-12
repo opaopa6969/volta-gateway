@@ -138,10 +138,15 @@ pub async fn handle_websocket(
     };
 
     // Forward relevant headers (#48: strip X-Volta-* from client)
+    // HTTP/2 (RFC 8441) pseudo-headers (:protocol, :method, etc.) are filtered out.
+    // HTTP/2 CONNECT lacks Upgrade/Connection headers, so we add them for the
+    // HTTP/1.1 backend Upgrade handshake.
+    let is_h2_connect = req.method() == hyper::Method::CONNECT;
+    let has_upgrade = req.headers().contains_key("upgrade");
     for (name, value) in req.headers() {
         let key = name.as_str();
         match key {
-            "host" => {}
+            "host" | ":method" | ":protocol" | ":scheme" | ":path" | ":authority" => {}
             _ if key.starts_with("x-volta-") => {} // #48: strip client X-Volta-*
             "upgrade" | "connection" | "sec-websocket-key"
             | "sec-websocket-version" | "sec-websocket-protocol"
@@ -153,6 +158,12 @@ pub async fn handle_websocket(
             }
             _ => {}
         }
+    }
+    // HTTP/2 CONNECT → HTTP/1.1 Upgrade: synthesize Upgrade/Connection headers
+    if is_h2_connect && !has_upgrade {
+        backend_req = backend_req
+            .header("upgrade", "websocket")
+            .header("connection", "upgrade");
     }
     backend_req = backend_req
         .header("X-Request-Id", &request_id)
@@ -194,9 +205,15 @@ pub async fn handle_websocket(
         return error_response(StatusCode::BAD_GATEWAY, &request_id);
     }
 
-    // Build 101 response for client, forwarding backend's WebSocket headers
+    // Build response for client, forwarding backend's WebSocket headers.
+    // HTTP/1.1: 101 Switching Protocols. HTTP/2 (RFC 8441): 200 OK.
+    let client_status = if is_h2_connect {
+        StatusCode::OK
+    } else {
+        StatusCode::SWITCHING_PROTOCOLS
+    };
     let mut client_resp = Response::builder()
-        .status(StatusCode::SWITCHING_PROTOCOLS)
+        .status(client_status)
         .header("x-request-id", &request_id);
 
     for (name, value) in backend_resp.headers() {
@@ -204,6 +221,11 @@ pub async fn handle_websocket(
         match key {
             "upgrade" | "connection" | "sec-websocket-accept"
             | "sec-websocket-protocol" | "sec-websocket-extensions" => {
+                // HTTP/2 CONNECT: Upgrade/Connection are HTTP/1.1 hop-by-hop,
+                // but Sec-WebSocket-* are fine to forward.
+                if is_h2_connect && (key == "upgrade" || key == "connection") {
+                    continue;
+                }
                 client_resp = client_resp.header(name, value);
             }
             _ => {}
