@@ -5,13 +5,14 @@
 
 ## 現状
 
-### Workspace: 4 crates, テスト: auth-core 55 (46 unit + 9 integration), gateway 8 integration
+### Workspace: 5 crates, テスト: auth-core 55 (46 unit + 9 integration), gateway 8 integration
 
 ```
 volta-gateway/
   Cargo.toml              workspace root
   gateway/                HTTP reverse proxy (30+ features)
   auth-core/              Auth library (5 tramli SM flows)
+  auth-server/            Auth HTTP API server
   volta-bin/              Unified binary (gateway + auth in-process)
   tools/traefik-to-volta/ Config converter CLI
 ```
