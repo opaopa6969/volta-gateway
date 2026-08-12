@@ -1,6 +1,6 @@
 # volta-gateway — Specification
 
-> **Version:** 0.2.0 (workspace) · `tramli = "3.8"` · `tramli-plugins = "3.6.1"`
+> **Version:** 0.3.0 (workspace) · `[Unreleased]` · `tramli = "3.8"` · `tramli-plugins = "3.6.1"`
 > **Scope:** End-to-end specification for the `volta-gateway` Cargo workspace —
 > covering the 5-crate layout, the dual Rust/Java posture, the per-request
 > FlowEngine, the 126-route `auth-server` Axum router, the 8 rate-limited merge
