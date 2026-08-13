@@ -34,7 +34,7 @@ cargo run --release -p volta-auth-server
 |------|-----------|------|
 | `PORT` | 7070 | HTTP ポート |
 | `DATABASE_URL` | postgres://localhost/volta | PostgreSQL 接続 URL |
-| `JWT_SECRET` | (必須) | JWT 署名シークレット (HS256) |
+| `JWT_SECRET` | `volta-dev-secret-change-me-in-prod` | JWT 署名シークレット (HS256)。本番では必ず変更 |
 | `SESSION_TTL_SECONDS` | 28800 (8h) | セッション有効期間 |
 | `COOKIE_DOMAIN` | (空) | Cookie の Domain 属性 |
 | `FORCE_SECURE_COOKIE` | false | HTTPS なしでも Secure フラグ |

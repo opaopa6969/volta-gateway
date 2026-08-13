@@ -178,8 +178,10 @@ tls:
   domains:
     - "*.example.com"
   contact_email: admin@example.com
-  dns01:
-    cloudflare_api_token_env: CF_DNS_TOKEN
+  challenge: dns-01
+  dns_provider: cloudflare
+  # dns_api_token / dns_zone_id を直接指定することも可能。
+  # 実装は CF_DNS_API_TOKEN と CF_ZONE_ID も参照する。
 ```
 
 ## 8. CI での設定検証

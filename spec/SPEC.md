@@ -192,6 +192,7 @@ stateDiagram-v2
     Forwarded --> Completed : auto / CompletionProcessor
     Completed --> [*]
 
+    Received --> Denied : on_step_error (IP not in allowlist)
     Received --> BadGateway : on_any_error
     Validated --> BadGateway : on_any_error
     Routed --> BadGateway : on_any_error
@@ -200,7 +201,8 @@ stateDiagram-v2
     BadGateway --> [*]
 ```
 
-Terminal error states (declared via `on_any_error` + per-processor `FlowError`):
+Terminal error states (declared via `on_any_error` plus the IP-allowlist
+`on_step_error` exception and procedural response mapping):
 
 | State           | Cause (representative)                           | HTTP |
 |-----------------|--------------------------------------------------|------|
@@ -2079,14 +2081,15 @@ stateDiagram-v2
     [*] --> Received : inbound HTTP request
 
     Received --> Validated : auto / RequestValidator<br/>(header size, body size,<br/>host, path-traversal,<br/>IP allowlist)
-    Received --> BadRequest : on_error (RequestValidator)
+    Received --> Denied : on_step_error (IP not in allowlist)
+    Received --> BadRequest : on_error (other validation failure)
 
     Validated --> Routed : auto / RoutingResolver<br/>(host lookup, wildcard match)
     Validated --> BadRequest : on_error (unknown host)
 
     Routed --> AuthChecked : external / AuthGuard<br/>(async volta-auth-server call)
     Routed --> Redirect : guard → 302 (unauthenticated)
-    Routed --> Denied : guard → 403 (IP not in allowlist)
+    Routed --> Denied : procedural auth denial → 403
     Routed --> BadGateway : on_error (auth-server down)
 
     AuthChecked --> Forwarded : external / ForwardGuard<br/>(async backend call)
