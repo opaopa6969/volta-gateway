@@ -270,6 +270,20 @@ pub struct ServerConfig {
     /// finish before forcing shutdown. Default: 30s.
     #[serde(default = "default_drain_timeout")]
     pub drain_timeout_secs: u64,
+
+    /// SO_REUSEPORT を有効にする（#74 BT-HA-2）。
+    ///
+    /// 有効にすると **同じ :80 に複数プロセスが bind できる**。カーネルが接続を
+    /// 分散するので、バイナリ更新は「新プロセスを上げる → 旧を drain して落とす」
+    /// のローリングにでき、:80 が瞬断しない。
+    ///
+    /// 既定は **false**。既存のデプロイで有効になると、古いプロセスが残っている
+    /// ことに気付かないまま新旧が同時に動く事故が起きうる（「再起動したのに古い
+    /// 挙動のまま」の原因が読めなくなる）。運用手順を整えたうえで opt-in する。
+    ///
+    /// Linux / *BSD のみ。他プラットフォームでは無視して警告を出す。
+    #[serde(default)]
+    pub reuse_port: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -954,6 +968,29 @@ routing:
     }
 
     // ── GatewayConfig::validate ──────────────────────────────────
+
+    #[test]
+    fn reuse_port_defaults_to_false() {
+        // #74: 既定で有効になると、既存デプロイで**古いプロセスが残っていることに
+        // 気付かないまま新旧が同時に動く**。opt-in であることを固定する。
+        let cfg = parse_config(&minimal_config_yaml(""));
+        assert!(!cfg.server.reuse_port);
+    }
+
+    #[test]
+    fn reuse_port_can_be_enabled() {
+        let yaml = r#"
+server:
+  port: 8080
+  reuse_port: true
+auth:
+  volta_url: "http://localhost:7070"
+routing:
+  - host: example.com
+    backend: "http://backend:3000"
+"#;
+        assert!(parse_config(yaml).server.reuse_port);
+    }
 
     #[test]
     fn validate_passes_for_minimal_valid_config() {
