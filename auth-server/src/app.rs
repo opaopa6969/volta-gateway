@@ -13,24 +13,42 @@ use crate::state::AppState;
 pub fn build_router(state: AppState) -> Router {
     // #7, #10: per-endpoint rate limiters, keyed by client IP.
     // (Java: OIDC 10/min, MFA verify 5/min, passkey 5/min, invite 20/min.)
-    // OIDC: 30/min/IP. /login renders + starts a flow on every GET, so a few
+    //
+    // 値は `RATE_LIMIT_<NAME>` で個別に、`RATE_LIMIT_MULTIPLIER` で一括に
+    // 上書きできる（rate_limit::RateLimiter::from_env）。ここの数字は既定値。
+    // 埋め込みのままだと環境に合わないときに再ビルドするしかなく、実際に
+    // oidc と passkey は下の経緯で上げ直している。
+    //
+    // OIDC /login: 30/min/IP. Renders + starts a flow on every GET, so a few
     // page reloads must not lock a legitimate user out (Java limited only the
     // IdP redirect; Rust counts the page load too).
-    let rl_oidc = RateLimiter::new("oidc", 30, Duration::from_secs(60));
-    let rl_mfa = RateLimiter::new("mfa", 5, Duration::from_secs(60));
+    let rl_oidc = RateLimiter::from_env("oidc", 30, Duration::from_secs(60));
+    // OIDC /callback + /auth/callback/complete: the IdP redirect target. The
+    // user does not control how often this fires — it fires once per login
+    // attempt that /login already counted. Sharing the /login bucket meant a
+    // few /login reloads could exhaust it and stall the callback at 429,
+    // blocking the whole Google login flow (kamishibai, 2026-08-10). Separate
+    // bucket so /login churn cannot starve the actual auth handshake.
+    let rl_oidc_callback = RateLimiter::from_env("oidc-callback", 30, Duration::from_secs(60));
+    let rl_mfa = RateLimiter::from_env("mfa", 5, Duration::from_secs(60));
     // passkey: 30/min/IP. Conditional UI fires discover/start on every /login
     // page load (plus the explicit button + finish), so 5/min locked legit
     // users out. Verification still happens at finish; start is a cheap challenge.
-    let rl_passkey = RateLimiter::new("passkey", 30, Duration::from_secs(60));
-    let rl_invite = RateLimiter::new("invite", 20, Duration::from_secs(60));
-    let rl_magic = RateLimiter::new("magic-link", 5, Duration::from_secs(60));
+    let rl_passkey = RateLimiter::from_env("passkey", 30, Duration::from_secs(60));
+    let rl_invite = RateLimiter::from_env("invite", 20, Duration::from_secs(60));
+    let rl_magic = RateLimiter::from_env("magic-link", 5, Duration::from_secs(60));
 
     // Rate-limited route groups (mounted then merged into the main router below).
-    let oidc_routes = Router::new()
+    // /login is the page load (high churn); /callback is the IdP redirect
+    // (low frequency, user does not control it). Separate buckets so one
+    // cannot starve the other.
+    let oidc_login_routes = Router::new()
         .route("/login", get(handlers::oidc::login))
+        .route_layer(from_fn_with_state(rl_oidc, limit_by_ip));
+    let oidc_callback_routes = Router::new()
         .route("/callback", get(handlers::oidc::callback))
         .route("/auth/callback/complete", post(handlers::oidc::callback_complete))
-        .route_layer(from_fn_with_state(rl_oidc, limit_by_ip));
+        .route_layer(from_fn_with_state(rl_oidc_callback, limit_by_ip));
 
     let mfa_routes = Router::new()
         .route("/auth/mfa/verify", post(handlers::mfa::mfa_verify_login))
@@ -55,7 +73,7 @@ pub fn build_router(state: AppState) -> Router {
 
     // Passwordless registration (Phase 2). Rate-limited 5/min/IP like other
     // unauthenticated, email-triggering endpoints.
-    let rl_register = RateLimiter::new("register", 5, Duration::from_secs(60));
+    let rl_register = RateLimiter::from_env("register", 5, Duration::from_secs(60));
     let registration_routes = Router::new()
         .route("/auth/register/start", post(handlers::registration::register_start))
         .route("/auth/register/verify-email", post(handlers::registration::register_verify_email))
@@ -66,7 +84,7 @@ pub fn build_router(state: AppState) -> Router {
     // is unauthenticated and the approve/deny calls are a couple of taps — the
     // device_code poll on /oauth/token is NOT here (it self-throttles via the
     // grant's `interval`/slow_down). See docs/auth-methods-landscape.md §5 Phase 1.
-    let rl_device = RateLimiter::new("device", 30, Duration::from_secs(60));
+    let rl_device = RateLimiter::from_env("device", 30, Duration::from_secs(60));
     let device_routes = Router::new()
         .route("/oauth/device_authorization", post(handlers::device::device_authorization))
         .route("/device/approve", post(handlers::device::device_approve))
@@ -89,7 +107,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/saml/login", get(handlers::saml::saml_login))
         .route("/auth/saml/callback", post(handlers::saml::saml_callback))
 
-        // OIDC — moved into `oidc_routes` sub-router (rate-limited via route_layer)
+        // OIDC — split into `oidc_login_routes` (page load, high churn) and
+        // `oidc_callback_routes` (IdP redirect, low frequency) so /login
+        // reloads cannot starve the /callback handshake via a shared bucket.
 
         // Sessions
         .route("/api/me/sessions", get(handlers::session::list_sessions))
@@ -266,7 +286,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/healthz", get(handlers::health::healthz))
         .route("/.well-known/jwks.json", get(handlers::health::jwks))
 
-        .merge(oidc_routes)
+        .merge(oidc_login_routes)
+        .merge(oidc_callback_routes)
         .merge(mfa_routes)
         .merge(passkey_routes)
         .merge(invite_routes)

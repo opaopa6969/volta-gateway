@@ -138,11 +138,36 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   (attestation) + discoverable authentication ceremonies, sign-counter clone
   check, and error terminals (was: happy-path assertion only).
 
+### Fixed
+- **WebSocket over HTTP/2 (RFC 8441)**. An `:authority`-style HTTP/2 `CONNECT`
+  upgrade was forwarded verbatim to the backend: the HTTP/2 pseudo-headers
+  (`:method`, `:protocol`, `:scheme`, `:path`, `:authority`) leaked into the
+  HTTP/1.1 request, and the `Upgrade`/`Connection` headers HTTP/1.1 needs were
+  absent (HTTP/2 CONNECT does not carry them). The client also got a 101, which
+  is not how HTTP/2 signals a successful upgrade. Now: pseudo-headers are
+  filtered, `Upgrade: websocket` / `Connection: upgrade` are synthesized for the
+  HTTP/1.1 backend handshake, the client gets 200 (not 101) for CONNECT, and the
+  hop-by-hop `Upgrade`/`Connection` from the backend are not echoed back
+  (`Sec-WebSocket-*` still are).
+
 ### Changed
 - README.md / README-ja.md rewritten to tramli-quality standard: Rust+Java
   dual implementation, 96 routes, `tramli = "3.8"` dependency, TOC.
 - Rate limits raised so page-load-triggered flows don't lock out legitimate
   users: OIDC 10→30/min/IP, passkey 5→30/min/IP.
+- **Rate limits are now configurable from the environment**
+  (`RateLimiter::from_env`): `RATE_LIMIT_<NAME>` overrides one limiter
+  (`magic-link` → `RATE_LIMIT_MAGIC_LINK`), `RATE_LIMIT_MULTIPLIER` scales all
+  defaults, `RATE_LIMIT_WINDOW_SECS` changes the window. `0` disables a limiter
+  (test environments only — never in production). Hard-coded limits meant a
+  rebuild whenever they didn't fit the environment; OIDC and passkey had already
+  been raised twice for that reason, and the auth E2E suite could not pass
+  because magic-link 5/min/IP rejected its 11 login/logout cycles.
+  (volta-platform#53)
+- OIDC `/callback` + `/auth/callback/complete` moved to their own rate-limit
+  bucket (`oidc-callback`, 30/min/IP). They shared `/login`'s bucket, so a few
+  `/login` reloads could exhaust it and stall the IdP handshake at 429 — the
+  user does not control how often the callback fires.
 
 ### Fixed
 - Cutover regressions: `GET /` returned 404 (Java redirected to `/login`) → now

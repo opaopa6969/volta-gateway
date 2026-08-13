@@ -550,10 +550,17 @@ impl ProxyService {
         }
 
         // GW-19: WebSocket upgrade → delegate to websocket module
+        // HTTP/1.1: Upgrade: websocket header
+        // HTTP/2 (RFC 8441): CONNECT + :protocol=websocket
         let is_upgrade = req.headers().get("upgrade")
             .and_then(|v| v.to_str().ok())
             .map(|v| v.eq_ignore_ascii_case("websocket"))
-            .unwrap_or(false);
+            .unwrap_or(false)
+            || (req.method() == hyper::Method::CONNECT
+                && req.headers().get(":protocol")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|v| v.eq_ignore_ascii_case("websocket"))
+                    .unwrap_or(false));
         if is_upgrade {
             return crate::websocket::handle_websocket(
                 req, remote_addr, &self.volta, &hot.routing, &self.backend_selector, &self.retry_client,
@@ -1280,6 +1287,34 @@ fn rand_sample() -> f64 {
 
 /// GW-26: Normalize host header — strip port, handle IPv6, lowercase.
 /// Shared by proxy.rs and websocket.rs (fixes extract_host duplication).
+/// Is this request addressed to a host we actually route?
+///
+/// The gateway reserves a few paths for itself (`/healthz`, `/metrics`). Those
+/// used to be answered for EVERY Host, which meant a backend's own `/healthz`
+/// was unreachable from outside — the gateway's "ok" came back instead, so every
+/// service that implemented `/healthz` looked healthy no matter how dead it was.
+/// That is exactly the blind spot external monitoring exists to close
+/// (found 2026-08-07, after abr had been down 33h behind a green check).
+///
+/// A routed Host means the request belongs to a service and must reach it. The
+/// gateway's own liveness is only what an *unrouted* Host asks for: a load
+/// balancer, a direct IP, the docker healthcheck.
+pub fn host_is_routed(req: &Request<Incoming>, hot: &Arc<ArcSwap<HotState>>) -> bool {
+    let raw = req.headers().get("host").and_then(|v| v.to_str().ok());
+    host_is_routed_raw(raw, &hot.load().routing)
+}
+
+/// Body-free core of [`host_is_routed`], so it can be tested without
+/// constructing a `hyper::body::Incoming` (which has no public constructor).
+fn host_is_routed_raw(raw_host: Option<&str>, routing: &RoutingTable) -> bool {
+    let Some(raw) = raw_host else { return false };
+    let host = normalize_host(raw);
+    if host.is_empty() {
+        return false;
+    }
+    routing.contains_key(&host)
+}
+
 pub fn normalize_host(raw: &str) -> String {
     if raw.starts_with('[') {
         // IPv6: [::1]:8080 → [::1]
@@ -1436,5 +1471,67 @@ mod circuit_breaker_tests {
         assert_eq!(cb.state_of(url), "open");
         cb.record_success(url);
         assert_eq!(cb.state_of(url), "closed");
+    }
+
+    // --- host_is_routed -----------------------------------------------------
+    // Regression guard for the 2026-08-07 blind spot: the gateway answered
+    // /healthz for every Host, so a backend's own /healthz was unreachable and
+    // every service looked healthy regardless of its real state.
+
+    fn route_stub() -> RouteInfo {
+        RouteInfo {
+            backends: vec!["http://127.0.0.1:1".into()],
+            weights: vec![],
+            app_id: None,
+            public: false,
+            bypass_paths: vec![],
+            mirror: None,
+            path_prefix: None,
+            strip_prefix: None,
+            add_prefix: None,
+            request_headers: None,
+            response_headers: None,
+            geo_allowlist: vec![],
+            geo_denylist: vec![],
+            timeout_secs: None,
+            cache: None,
+            backend_tls: None,
+        }
+    }
+
+    fn routing_with(hosts: &[&str]) -> RoutingTable {
+        let mut t: RoutingTable = HashMap::new();
+        for h in hosts {
+            t.insert((*h).to_string(), route_stub());
+        }
+        t
+    }
+
+    #[test]
+    fn routed_host_is_not_answered_by_the_gateway() {
+        let r = routing_with(&["aya.unlaxer.org"]);
+        assert!(host_is_routed_raw(Some("aya.unlaxer.org"), &r));
+    }
+
+    #[test]
+    fn port_and_case_do_not_hide_a_route() {
+        let r = routing_with(&["aya.unlaxer.org"]);
+        assert!(host_is_routed_raw(Some("aya.unlaxer.org:80"), &r));
+        assert!(host_is_routed_raw(Some("AYA.unlaxer.org"), &r));
+    }
+
+    #[test]
+    fn unrouted_host_still_asks_about_the_gateway() {
+        let r = routing_with(&["aya.unlaxer.org"]);
+        // LB / direct IP / docker healthcheck reach the gateway itself
+        assert!(!host_is_routed_raw(Some("192.168.1.50"), &r));
+        assert!(!host_is_routed_raw(Some("localhost"), &r));
+        assert!(!host_is_routed_raw(None, &r));
+        assert!(!host_is_routed_raw(Some(""), &r));
+    }
+
+    #[test]
+    fn an_empty_routing_table_answers_for_the_gateway() {
+        assert!(!host_is_routed_raw(Some("aya.unlaxer.org"), &routing_with(&[])));
     }
 }

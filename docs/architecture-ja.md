@@ -3,14 +3,14 @@
 # volta-gateway アーキテクチャ
 
 > [README](../README-ja.md) の補足文書。ここでは「各パーツがどう噛み合うか」を記す。
-> 中心には tramli FlowEngine、その周りにルーティング、auth-server の 5 マージ構成、
+> 中心には tramli FlowEngine、その周りにルーティング、auth-server の 8 マージ構成、
 > プラグインシステム、レートリミッタ多層が並ぶ。
 
 ## 1. ワークスペース構成
 
 ```
 volta-gateway/                       Cargo ワークスペースルート
-├── gateway/          HTTP リバースプロキシ (auth-server の 96 ルートを前段で捌く)
+├── gateway/          HTTP リバースプロキシ (auth-server の 126 ルートを前段で捌く)
 ├── auth-core/        認証ライブラリ — JWT/セッション/OIDC・MFA・Passkey SM フロー
 ├── auth-server/      Axum HTTP API — Java volta-auth-proxy の 1:1 置き換え
 ├── volta-bin/        統合バイナリ (gateway + auth-core in-process)
@@ -100,20 +100,22 @@ Config source (YAML + services.json + Docker labels + HTTP polling) は
 3. `tramli-plugins = 3.6.1` の `NoopTelemetrySink` はベンチマーク基線で必須
    (`docs/benchmark-article.md` 参照)。
 
-## 5. auth-server: 5 マージルータ
+## 5. auth-server: 8 マージルータ
 
-`auth-server/src/app.rs` では **96 本の Axum ルート**をマウントする。ルータは意図的に
-**コアルータ + 5 本のレート制限付き `route_layer` サブルータ**という形で合成される:
+`auth-server/src/app.rs` では **126 本の Axum ルート**をマウントする。ルータは意図的に
+**コアルータ + 8 本のレート制限付き `route_layer` サブルータ**という形で合成される:
 
 ```rust
 Router::new()
     // レート制限なしの ~80 ルート (auth / session / MFA setup / admin / SCIM / …)
     …
-    .merge(oidc_routes)     // rl_oidc    10/min/IP
+    .merge(oidc_routes)     // rl_oidc    30/min/IP
     .merge(mfa_routes)      // rl_mfa      5/min/IP
-    .merge(passkey_routes)  // rl_passkey  5/min/IP
+    .merge(passkey_routes)  // rl_passkey  30/min/IP
     .merge(invite_routes)   // rl_invite  20/min/IP
     .merge(magic_routes)    // rl_magic    5/min/IP
+    .merge(registration_routes) // rl_register 5/min/IP
+    .merge(device_routes)       // rl_device 30/min/IP
     .with_state(state)
 ```
 
@@ -122,7 +124,7 @@ Router::new()
 付与すれば、他の ~80 ルートに余計なミドルウェアコストを払わずに済む。Java 側の
 per-endpoint `@RateLimit(limit=N, window=60s)` と 1:1 対応する。
 
-各リミッタは `RateLimiter::new("oidc", 10, Duration::from_secs(60))` インスタンスで、
+各リミッタは `RateLimiter::new("oidc", 30, Duration::from_secs(60))` インスタンスで、
 `limit_by_ip` ミドルウェアによりクライアント IP を key とする。
 
 ルート分類 (全表は [`parity.md`](parity-ja.md) 参照):
@@ -146,7 +148,7 @@ per-endpoint `@RateLimit(limit=N, window=60s)` と 1:1 対応する。
 | Signing keys                            | 3    | `/api/v1/admin/keys[/rotate|/{kid}/revoke]` |
 | Viz + SSE                               | 3    | `/viz/flows`, `/viz/auth/stream`, `/api/v1/admin/flows/{id}/transitions` |
 | Health + JWKS                           | 2    | `/healthz`, `/.well-known/jwks.json` |
-| **合計**                                | **~96** | |
+| **合計**                                | **~126** | |
 
 ## 6. auth-core フローライブラリ
 

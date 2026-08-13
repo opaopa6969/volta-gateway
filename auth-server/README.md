@@ -4,7 +4,7 @@ Java volta-auth-proxy の 100% 互換 Rust 置き換え。**Java/JVM 不要。**
 
 ## 概要
 
-volta-auth-server は Axum ベースの認証 API サーバーで、auth-core ライブラリの上に 96 の HTTP エンドポイントを公開します。
+volta-auth-server は Axum ベースの認証 API サーバーで、auth-core ライブラリの上に 126 の HTTP エンドポイントを公開します。
 
 ```
 volta-gateway (リバースプロキシ)
@@ -46,7 +46,7 @@ cargo run --release -p volta-auth-server
 | `SAML_SKIP_SIGNATURE` | false | SAML 署名検証スキップ (開発用) |
 | `OUTBOX_POLL_SECS` | 5 | Webhook 配信 worker ポーリング間隔 |
 
-## エンドポイント一覧 (96 routes)
+## エンドポイント一覧 (126 routes)
 
 ### 認証
 | Method | Path | 説明 |

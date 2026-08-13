@@ -39,10 +39,18 @@ async fn main() {
         .init();
 
     // Config from env vars (Java compat: same env var names)
-    let port: u16 = env("PORT", "7070").parse().unwrap();
+    let port: u16 = env("PORT", "7070").parse().unwrap_or_else(|e| {
+        eprintln!("PORT: invalid integer ({e})");
+        std::process::exit(1);
+    });
     let database_url = env("DATABASE_URL", "postgres://localhost/volta");
     let jwt_secret = env("JWT_SECRET", "volta-dev-secret-change-me-in-prod");
-    let session_ttl: u64 = env("SESSION_TTL_SECONDS", "28800").parse().unwrap();
+    let session_ttl: u64 = env("SESSION_TTL_SECONDS", "28800")
+        .parse()
+        .unwrap_or_else(|e| {
+            eprintln!("SESSION_TTL_SECONDS: invalid integer ({e})");
+            std::process::exit(1);
+        });
     let cookie_domain = env("COOKIE_DOMAIN", "");
     let force_secure = env("FORCE_SECURE_COOKIE", "false") == "true";
     let base_url = env("BASE_URL", &format!("http://localhost:{}", port));
@@ -226,7 +234,12 @@ async fn main() {
 
     info!(port = port, "volta-auth-server starting");
 
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("failed to bind {addr}: {e} (port already in use?)");
+            std::process::exit(1);
+        });
     // `into_make_service_with_connect_info` makes peer SocketAddr available to
     // handlers/middleware via `ConnectInfo<SocketAddr>` — needed for the IP-keyed
     // rate limiter (#7, #10).

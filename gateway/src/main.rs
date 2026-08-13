@@ -33,7 +33,7 @@ mod dns01;
 mod websocket;
 
 use auth::VoltaAuthClient;
-use proxy::{HotState, ProxyService};
+use proxy::{host_is_routed, HotState, ProxyService};
 
 #[tokio::main]
 async fn main() {
@@ -136,7 +136,10 @@ async fn main() {
 
     info!(port = config.server.port, "volta-gateway starting");
 
-    let listener = TcpListener::bind(addr).await.unwrap();
+    let listener = TcpListener::bind(addr).await.unwrap_or_else(|e| {
+        error!("failed to bind {addr}: {e} (port already in use?)");
+        std::process::exit(1);
+    });
     info!(addr = %addr, "listening");
 
     // Shared snapshot of config-source (services.json/docker/http) routes so a
@@ -389,10 +392,21 @@ async fn main() {
                         return Ok::<_, hyper::Error>(resp);
                     }
 
-                    if req.uri().path() == "/healthz" {
+                    if req.uri().path() == "/healthz" && !host_is_routed(&req, &hot_admin) {
                         // GW-15: during graceful drain, report 503 so the upstream
                         // LB/CF stops sending new traffic while in-flight requests
                         // finish. The auth probe is skipped while draining.
+                        //
+                        // The `host_is_routed` guard matters: this used to answer
+                        // /healthz for EVERY Host, so a backend's own /healthz was
+                        // unreachable from outside and the gateway's "ok" was
+                        // returned instead. Every service that implemented /healthz
+                        // reported healthy no matter how dead it was — the exact
+                        // blind spot external monitoring exists to close
+                        // (found 2026-08-07). A routed Host means the request is for
+                        // a service, so it must go to that service; the gateway's own
+                        // liveness is only what an unrouted Host asks for (LB, direct
+                        // IP, docker healthcheck).
                         let draining = shutdown_admin.load(Ordering::SeqCst);
                         let volta_ok = if draining { false } else { volta_health.health().await };
                         let status = lifecycle::healthz_status(draining, volta_ok);
