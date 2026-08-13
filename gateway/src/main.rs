@@ -35,6 +35,66 @@ mod websocket;
 use auth::VoltaAuthClient;
 use proxy::{host_is_routed, HotState, ProxyService};
 
+/// リスナーを作る。`reuse_port` が真なら SO_REUSEPORT を立てる（#74 BT-HA-2）。
+///
+/// SO_REUSEPORT を立てると **同じアドレスに複数プロセスが bind できる**。
+/// カーネルが接続を分散するので、デプロイを
+///
+///   1. 新バイナリのプロセスを起動（同じ :80 に bind される）
+///   2. 旧プロセスに drain を指示（`/admin/drain` か SIGTERM）
+///   3. 旧プロセスが in-flight を流し切って終了
+///
+/// の順で回せる。この間 :80 は常にどちらかが受けているので瞬断しない。
+///
+/// SO_REUSEADDR だけでは足りない（TIME_WAIT の再利用はできるが、**同時に**
+/// listen はできない）ので、両方立てる。
+///
+/// Linux / *BSD 以外では SO_REUSEPORT が無いので、警告を出して通常の bind に
+/// 落ちる。**黙って無効にすると「有効にしたつもりで瞬断する」**ため。
+fn bind_listener(addr: std::net::SocketAddr, reuse_port: bool) -> std::io::Result<TcpListener> {
+    if !reuse_port {
+        return TcpListener::from_std(std::net::TcpListener::bind(addr)?);
+    }
+
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        target_os = "macos"
+    )))]
+    {
+        warn!(
+            "server.reuse_port is set but SO_REUSEPORT is not available on this platform \
+               — falling back to a plain bind (deploys will still cause a brief drop)"
+        );
+        return TcpListener::from_std(std::net::TcpListener::bind(addr)?);
+    }
+
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        target_os = "macos"
+    ))]
+    {
+        use socket2::{Domain, Protocol, Socket, Type};
+
+        let socket = Socket::new(Domain::for_address(addr), Type::STREAM, Some(Protocol::TCP))?;
+        socket.set_reuse_address(true)?;
+        socket.set_reuse_port(true)?;
+        // tokio に渡す前に non-blocking にしておく（blocking のままだと accept で固まる）
+        socket.set_nonblocking(true)?;
+        socket.bind(&addr.into())?;
+        // backlog: ローリング中は2プロセスで受けるので、片方あたりも余裕を持たせる
+        socket.listen(1024)?;
+        TcpListener::from_std(std::net::TcpListener::from(socket))
+    }
+}
+
 #[tokio::main]
 async fn main() {
     // GW-24: VOLTA_LOG_FORMAT=pretty for human-readable logs (default: json)
@@ -188,11 +248,11 @@ async fn main() {
 
     info!(port = config.server.port, "volta-gateway starting");
 
-    let listener = TcpListener::bind(addr).await.unwrap_or_else(|e| {
+    let listener = bind_listener(addr, config.server.reuse_port).unwrap_or_else(|e| {
         error!("failed to bind {addr}: {e} (port already in use?)");
         std::process::exit(1);
     });
-    info!(addr = %addr, "listening");
+    info!(addr = %addr, reuse_port = config.server.reuse_port, "listening");
 
     // Shared snapshot of config-source (services.json/docker/http) routes so a
     // SIGHUP / admin reload can re-merge them instead of dropping them.
