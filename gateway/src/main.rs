@@ -77,14 +77,30 @@ async fn main() {
     let config_store = Arc::new(config_store);
 
     // PH2-4: Config validation
-    if let Err(errors) = config.validate() {
-        for e in &errors { error!("config error: {e}"); }
-        error!("config validation failed ({} errors) — exiting", errors.len());
-        std::process::exit(1);
+    //
+    // #95: SPEC §11.8 の終了コード（0-5）に合わせる。CI が「何が悪かったのか」を
+    // 終了コードで区別できるようにするのが目的。以前は 0/1 だけだった。
+    // 複数種類のエラーがある場合は**小さいコード（より根本的な問題）**を返す。
+    if let Err(errors) = config.validate_detailed() {
+        for (code, e) in &errors { error!("config error (exit {code}): {e}"); }
+        let code = errors.iter().map(|(c, _)| *c).min().unwrap_or(1);
+        error!("config validation failed ({} errors) — exiting with {}", errors.len(), code);
+        std::process::exit(code as i32);
     }
 
-    // #36: --validate mode exits after successful validation
+    // #36 / #95: --validate mode。ここまで来ればスキーマと URL/plugin/TLS は OK。
+    // 残るのは proxy flow が build できるか（tramli の不変条件）= exit 2。
     if validate_only {
+        // build_proxy_flow は Result を返さず、tramli の不変条件違反では panic する。
+        // --validate は「CI で落とす」用途なので、panic を捕まえて exit 2 にする。
+        let routing = std::sync::Arc::new(config.routing_table());
+        let built = std::panic::catch_unwind(|| {
+            let _ = flow::build_proxy_flow(routing);
+        });
+        if built.is_err() {
+            error!("proxy flow build failed (tramli invariant violation)");
+            std::process::exit(config::GatewayConfig::EXIT_FLOW_BUILD as i32);
+        }
         info!(routes = config.routing.len(), "config valid: {}", config_path);
         std::process::exit(0);
     }

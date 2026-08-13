@@ -1325,6 +1325,12 @@ Exit codes:
 | 4    | Unknown plugin name in `plugins` array                       |
 | 5    | TLS challenge requested but required credentials missing      |
 
+実装 (#95): コードは `GatewayConfig::EXIT_*` 定数、判定は
+`GatewayConfig::validate_detailed()` と `main.rs` の `--validate` 分岐。
+**複数種類のエラーがある場合は最も小さいコード**（より根本的な問題）を返す。
+2 は `build_proxy_flow` が panic するかで判定する（tramli は Result を返さない）。
+既存の `validate()` は文字列だけを返すラッパとして残してある。
+
 Sample usage in CI:
 
 ```yaml
