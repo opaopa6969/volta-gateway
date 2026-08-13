@@ -55,7 +55,7 @@ The workspace ships **two deployable artifacts**:
 |-----------------------|-----------------|----------------------------------------------------------------------|
 | `volta-gateway`       | `volta-gateway` | The proxy itself (HTTP/1.1 + HTTP/2 + WebSocket + L4 TCP/UDP).       |
 | `volta-auth-server`   | `volta-auth-server` | 126-route Axum HTTP API — drop-in replacement for Java `volta-auth-proxy`. |
-| `volta` (unified)     | `volta`         | `volta-bin` — gateway + auth-core linked in-process (no HTTP hop).   |
+| `volta` (unified)     | `volta`         | `volta-bin` — **スタブ (#86)**。auth-core の構築と全 tramli flow の build を確認して終了するだけで、トラフィックは通さない。in-process 化は設計目標。本番は `volta-gateway` + `volta-auth-server` を使う |
 
 ### 1.2 Dual implementation (Rust + Java)
 
@@ -1003,6 +1003,13 @@ into a minimal `volta-gateway.yaml`. This is the migration on-ramp described
 in `docs/migration-from-traefik.md`.
 
 ### 8.6 volta-bin build modes
+
+> ⚠️ **未実装 (#86)。** 以下はこの crate の**設計目標**であり、現状の
+> `volta-bin/src/main.rs` は 60行のスタートアップ確認（auth-core の構築と
+> tramli flow の build を検証して終了）にとどまる。トラフィックは通さず、
+> gateway の起動も auth-core の結線も入っていない
+> （`// TODO: Launch gateway with auth-core wired in`）。
+> **本番は `volta-gateway` + `volta-auth-server` の2バイナリ構成**を使う。
 
 The `volta-bin` crate exposes a single binary named `volta` that links
 `volta-gateway` + `volta-auth-core` *in process*. There is no HTTP round-trip
