@@ -30,6 +30,9 @@ type Body = BoxBody<Bytes, hyper::Error>;
 struct Ctx {
     shutdown: AtomicBool,
     admin_token: Option<String>,
+    /// Hosts that have a configured route — their `/admin/*` is proxied
+    /// through to the backend instead of being claimed by the gateway.
+    routed_hosts: Vec<String>,
 }
 
 /// A tiny replica of the relevant branches of the real connection service,
@@ -50,7 +53,18 @@ async fn handle(
         return Ok(lifecycle::healthz_response(status));
     }
 
-    if path.starts_with("/admin/") {
+    // Mirror of main.rs: a Host matching a configured route keeps its own
+    // /admin/* (proxied through — represented here by the 404 fall-through);
+    // the gateway only claims the path on unrouted hosts.
+    let host = req
+        .headers()
+        .get(hyper::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .map(|h| h.split(':').next().unwrap_or(h).to_lowercase())
+        .unwrap_or_default();
+    let host_routed = ctx.routed_hosts.iter().any(|r| r == &host);
+
+    if path.starts_with("/admin/") && lifecycle::admin_is_gateway_admin(host_routed) {
         if !lifecycle::admin_loopback_allowed(peer.ip().is_loopback()) {
             return Ok(lifecycle::admin_loopback_denied_response());
         }
@@ -120,11 +134,23 @@ async fn spawn_server(ctx: Arc<Ctx>) -> SocketAddr {
 /// Send a raw HTTP/1.1 request over a fresh TCP connection and return
 /// `(status_line, full_response_text)`.
 async fn raw_request(addr: SocketAddr, method: &str, path: &str, extra_headers: &str) -> (u16, String) {
+    raw_request_with_host(addr, method, path, "127.0.0.1", extra_headers).await
+}
+
+/// Like [`raw_request`] but with an explicit `Host` header (for the routed-host
+/// admin passthrough tests).
+async fn raw_request_with_host(
+    addr: SocketAddr,
+    method: &str,
+    path: &str,
+    host: &str,
+    extra_headers: &str,
+) -> (u16, String) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let mut stream = TcpStream::connect(addr).await.expect("connect");
     let req = format!(
-        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n{extra_headers}\r\n"
+        "{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n{extra_headers}\r\n"
     );
     stream.write_all(req.as_bytes()).await.expect("write");
 
@@ -148,6 +174,7 @@ async fn healthz_200_then_503_after_drain() {
     let ctx = Arc::new(Ctx {
         shutdown: AtomicBool::new(false),
         admin_token: Some(token.to_string()),
+        routed_hosts: vec![],
     });
     let addr = spawn_server(ctx.clone()).await;
 
@@ -181,6 +208,7 @@ async fn admin_401_then_200_with_token() {
     let ctx = Arc::new(Ctx {
         shutdown: AtomicBool::new(false),
         admin_token: Some(token.to_string()),
+        routed_hosts: vec![],
     });
     let addr = spawn_server(ctx).await;
 
@@ -201,4 +229,30 @@ async fn admin_401_then_200_with_token() {
     let auth = format!("Authorization: Bearer {token}\r\n");
     let (code, _) = raw_request(addr, "GET", "/admin/routes", &auth).await;
     assert_eq!(code, 200, "GET /admin/* with correct token must be 200");
+}
+
+#[tokio::test]
+async fn routed_host_admin_passes_through_to_backend() {
+    let ctx = Arc::new(Ctx {
+        shutdown: AtomicBool::new(false),
+        admin_token: Some("s3cr3t".to_string()),
+        routed_hosts: vec!["auth.example.org".to_string()],
+    });
+    let addr = spawn_server(ctx).await;
+
+    // A routed Host keeps its own /admin/* — no gateway admin auth, the
+    // request falls through to the proxy (the replica's 404 branch).
+    let (code, body) =
+        raw_request_with_host(addr, "GET", "/admin/tenants", "auth.example.org", "").await;
+    assert_eq!(code, 404, "routed-host /admin/* must be proxied, not claimed: {body}");
+    assert!(body.contains("not found"), "body: {body}");
+
+    // Host normalization: port and case must not defeat the route match.
+    let (code, _) =
+        raw_request_with_host(addr, "GET", "/admin/tenants", "AUTH.example.org:8080", "").await;
+    assert_eq!(code, 404, "host with port/upper-case must still match the route");
+
+    // An unrouted Host is still the gateway's own admin API (401 without token).
+    let (code, _) = raw_request(addr, "GET", "/admin/tenants", "").await;
+    assert_eq!(code, 401, "unrouted host must still hit the gateway admin auth");
 }

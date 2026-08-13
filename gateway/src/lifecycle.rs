@@ -10,7 +10,10 @@
 //! Behaviour is identical to the previous inline implementation:
 //! - `/healthz` returns 503 while draining, otherwise 200 if volta is healthy
 //!   and 503 if it is degraded.
-//! - `/admin/*` is loopback-only; non-loopback peers get 403.
+//! - `/admin/*` on an *unrouted* Host (localhost / raw IP) is the gateway's own
+//!   admin API: loopback-only, non-loopback peers get 403. On a Host that
+//!   matches a configured route, `/admin/*` belongs to the backend app and is
+//!   proxied through like any other path.
 //! - The accept loop stops taking new connections once the drain flag is set.
 
 use bytes::Bytes;
@@ -74,6 +77,19 @@ pub fn should_accept_new(draining: bool) -> bool {
 /// Bearer-token check (see [`crate::admin_auth`]) happens afterwards.
 pub fn admin_loopback_allowed(peer_is_loopback: bool) -> bool {
     peer_is_loopback
+}
+
+/// Whether a `/admin/*` request is addressed to the *gateway's own* admin API
+/// rather than a routed backend app's own `/admin` pages.
+///
+/// The gateway claims the path only when the request's Host matches no
+/// configured route (`localhost`, a raw IP, …). A routed Host — e.g.
+/// `auth.example.org/admin/tenants` — belongs to the backend app, so the
+/// request must fall through to the proxy where the route's normal auth
+/// applies. The loopback gate ([`admin_loopback_allowed`]) only applies to
+/// requests this function claims for the gateway.
+pub fn admin_is_gateway_admin(host_matches_route: bool) -> bool {
+    !host_matches_route
 }
 
 // ── Response helpers (shared by main.rs and the integration tests) ───────────
@@ -160,6 +176,20 @@ mod tests {
     fn loopback_gate() {
         assert!(admin_loopback_allowed(true));
         assert!(!admin_loopback_allowed(false));
+    }
+
+    // ── admin_is_gateway_admin ───────────────────────────────────
+
+    #[test]
+    fn routed_host_owns_its_admin_pages() {
+        // auth.example.org/admin/tenants → proxy through, not gateway admin
+        assert!(!admin_is_gateway_admin(true));
+    }
+
+    #[test]
+    fn unrouted_host_is_gateway_admin() {
+        // curl localhost/admin/routes → gateway's own admin API
+        assert!(admin_is_gateway_admin(false));
     }
 
     // ── response helpers ─────────────────────────────────────────
