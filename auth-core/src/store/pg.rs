@@ -2,13 +2,21 @@
 //! Requires the `postgres` feature.
 
 use async_trait::async_trait;
+use chrono::Utc;
 use sqlx::PgPool;
 use uuid::Uuid;
-use chrono::Utc;
 
 use crate::error::AuthError;
 use crate::record::*;
-use crate::store::{UserStore, TenantStore, MembershipStore, InvitationStore, FlowPersistence, SessionStore, MfaStore, RecoveryCodeStore, MagicLinkStore, SigningKeyStore, IdpConfigStore, M2mClientStore, PasskeyStore, OidcFlowStore, PasskeyChallengeRecord, PasskeyChallengeStore, DeviceGrantStore, DevicePollOutcome, DeviceDecisionOutcome, OAuthClientStore, AuthzCodeStore, RefreshTokenStore, OAuthConsentStore, UserIdentityStore, RefreshOutcome, RiskDeviceStore, SessionStepUpStore, WebhookStore, OutboxStore, WebhookDeliveryStore, AuditStore, DeviceTrustStore, BillingStore, PolicyStore};
+use crate::store::{
+    AuditStore, AuthzCodeStore, BillingStore, DeviceDecisionOutcome, DeviceGrantStore,
+    DevicePollOutcome, DeviceTrustStore, FlowPersistence, IdpConfigStore, InvitationStore,
+    M2mClientStore, MagicLinkStore, MembershipStore, MfaStore, OAuthClientStore, OAuthConsentStore,
+    OidcFlowStore, OutboxStore, PasskeyChallengeRecord, PasskeyChallengeStore, PasskeyStore,
+    PolicyStore, RecoveryCodeStore, RefreshOutcome, RefreshTokenStore, RiskDeviceStore,
+    SessionStepUpStore, SessionStore, SigningKeyStore, TenantStore, UserIdentityStore, UserStore,
+    WebhookDeliveryStore, WebhookStore,
+};
 
 /// PostgreSQL-backed store — single struct implementing all DAO traits.
 #[derive(Clone)]
@@ -66,7 +74,15 @@ impl From<SessionRow> for SessionRecord {
             csrf_token: r.csrf_token,
             email: r.email,
             tenant_slug: r.tenant_slug,
-            roles: r.roles.map(|s| s.split(',').filter(|s| !s.is_empty()).map(String::from).collect()).unwrap_or_default(),
+            roles: r
+                .roles
+                .map(|s| {
+                    s.split(',')
+                        .filter(|s| !s.is_empty())
+                        .map(String::from)
+                        .collect()
+                })
+                .unwrap_or_default(),
             display_name: r.display_name,
         }
     }
@@ -117,7 +133,7 @@ impl SessionStore for PgStore {
             "SELECT id, user_id, tenant_id, return_to, created_at, last_active_at, \
                     expires_at, invalidated_at, mfa_verified_at, ip_address, user_agent, \
                     csrf_token, email, tenant_slug, roles, display_name \
-             FROM sessions WHERE id = $1 AND invalidated_at IS NULL AND expires_at > $2"
+             FROM sessions WHERE id = $1 AND invalidated_at IS NULL AND expires_at > $2",
         )
         .bind(session_id)
         .bind(now)
@@ -164,7 +180,7 @@ impl SessionStore for PgStore {
     async fn revoke_all_for_user(&self, user_id: &str) -> Result<usize, AuthError> {
         let now = now_epoch();
         let result = sqlx::query(
-            "UPDATE sessions SET invalidated_at = $1 WHERE user_id = $2 AND invalidated_at IS NULL"
+            "UPDATE sessions SET invalidated_at = $1 WHERE user_id = $2 AND invalidated_at IS NULL",
         )
         .bind(now)
         .bind(user_id)
@@ -179,7 +195,7 @@ impl SessionStore for PgStore {
             "SELECT id, user_id, tenant_id, return_to, created_at, last_active_at, \
                     expires_at, invalidated_at, mfa_verified_at, ip_address, user_agent, \
                     csrf_token, email, tenant_slug, roles, display_name \
-             FROM sessions WHERE user_id = $1 ORDER BY created_at DESC"
+             FROM sessions WHERE user_id = $1 ORDER BY created_at DESC",
         )
         .bind(user_id)
         .fetch_all(&self.pool)
@@ -300,7 +316,7 @@ impl TenantStore for PgStore {
         sqlx::query_as::<_, TenantRecord>(
             "SELECT id, name, slug, email_domain, auto_join, created_by, created_at, \
                     plan, max_members, is_active, mfa_required, mfa_grace_until \
-             FROM tenants WHERE id = $1"
+             FROM tenants WHERE id = $1",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -312,7 +328,7 @@ impl TenantStore for PgStore {
         sqlx::query_as::<_, TenantRecord>(
             "SELECT id, name, slug, email_domain, auto_join, created_by, created_at, \
                     plan, max_members, is_active, mfa_required, mfa_grace_until \
-             FROM tenants WHERE slug = $1"
+             FROM tenants WHERE slug = $1",
         )
         .bind(slug)
         .fetch_optional(&self.pool)
@@ -358,14 +374,19 @@ impl TenantStore for PgStore {
         .map_err(AuthError::from)
     }
 
-    async fn create_personal(&self, user_id: Uuid, name: &str, slug: &str) -> Result<TenantRecord, AuthError> {
+    async fn create_personal(
+        &self,
+        user_id: Uuid,
+        name: &str,
+        slug: &str,
+    ) -> Result<TenantRecord, AuthError> {
         let mut tx = self.pool.begin().await.map_err(AuthError::from)?;
 
         let tenant = sqlx::query_as::<_, TenantRecord>(
             "INSERT INTO tenants (name, slug, created_by, plan, max_members) \
              VALUES ($1, $2, $3, 'FREE', 1) \
              RETURNING id, name, slug, email_domain, auto_join, created_by, created_at, \
-                       plan, max_members, is_active, mfa_required, mfa_grace_until"
+                       plan, max_members, is_active, mfa_required, mfa_grace_until",
         )
         .bind(name)
         .bind(slug)
@@ -374,14 +395,12 @@ impl TenantStore for PgStore {
         .await
         .map_err(AuthError::from)?;
 
-        sqlx::query(
-            "INSERT INTO memberships (user_id, tenant_id, role) VALUES ($1, $2, 'OWNER')"
-        )
-        .bind(user_id)
-        .bind(tenant.id)
-        .execute(&mut *tx)
-        .await
-        .map_err(AuthError::from)?;
+        sqlx::query("INSERT INTO memberships (user_id, tenant_id, role) VALUES ($1, $2, 'OWNER')")
+            .bind(user_id)
+            .bind(tenant.id)
+            .execute(&mut *tx)
+            .await
+            .map_err(AuthError::from)?;
 
         tx.commit().await.map_err(AuthError::from)?;
         Ok(tenant)
@@ -392,10 +411,14 @@ impl TenantStore for PgStore {
 
 #[async_trait]
 impl MembershipStore for PgStore {
-    async fn find(&self, user_id: Uuid, tenant_id: Uuid) -> Result<Option<MembershipRecord>, AuthError> {
+    async fn find(
+        &self,
+        user_id: Uuid,
+        tenant_id: Uuid,
+    ) -> Result<Option<MembershipRecord>, AuthError> {
         sqlx::query_as::<_, MembershipRecord>(
             "SELECT id, user_id, tenant_id, role, joined_at, invited_by, is_active \
-             FROM memberships WHERE user_id = $1 AND tenant_id = $2"
+             FROM memberships WHERE user_id = $1 AND tenant_id = $2",
         )
         .bind(user_id)
         .bind(tenant_id)
@@ -408,7 +431,7 @@ impl MembershipStore for PgStore {
         sqlx::query_as::<_, MembershipRecord>(
             "SELECT id, user_id, tenant_id, role, joined_at, invited_by, is_active \
              FROM memberships WHERE tenant_id = $1 AND is_active = true \
-             ORDER BY joined_at"
+             ORDER BY joined_at",
         )
         .bind(tenant_id)
         .fetch_all(&self.pool)
@@ -456,7 +479,7 @@ impl MembershipStore for PgStore {
     async fn count_active_owners(&self, tenant_id: Uuid) -> Result<usize, AuthError> {
         let row: (i64,) = sqlx::query_as(
             "SELECT COUNT(*) FROM memberships \
-             WHERE tenant_id = $1 AND role = 'OWNER' AND is_active = true"
+             WHERE tenant_id = $1 AND role = 'OWNER' AND is_active = true",
         )
         .bind(tenant_id)
         .fetch_one(&self.pool)
@@ -474,7 +497,7 @@ impl InvitationStore for PgStore {
         sqlx::query(
             "INSERT INTO invitations (id, tenant_id, code, email, role, max_uses, used_count, \
                                       created_by, created_at, expires_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         )
         .bind(record.id)
         .bind(record.tenant_id)
@@ -496,7 +519,7 @@ impl InvitationStore for PgStore {
         sqlx::query_as::<_, InvitationRecord>(
             "SELECT id, tenant_id, code, email, role, max_uses, used_count, \
                     created_by, created_at, expires_at \
-             FROM invitations WHERE code = $1"
+             FROM invitations WHERE code = $1",
         )
         .bind(code)
         .fetch_optional(&self.pool)
@@ -511,7 +534,7 @@ impl InvitationStore for PgStore {
         let inv = sqlx::query_as::<_, InvitationRecord>(
             "SELECT id, tenant_id, code, email, role, max_uses, used_count, \
                     created_by, created_at, expires_at \
-             FROM invitations WHERE code = $1 FOR UPDATE"
+             FROM invitations WHERE code = $1 FOR UPDATE",
         )
         .bind(code)
         .fetch_optional(&mut *tx)
@@ -520,7 +543,9 @@ impl InvitationStore for PgStore {
         .ok_or_else(|| AuthError::NotFound(format!("invitation code={}", code)))?;
 
         if !inv.is_usable_at(Utc::now()) {
-            return Err(AuthError::Conflict("invitation expired or fully used".into()));
+            return Err(AuthError::Conflict(
+                "invitation expired or fully used".into(),
+            ));
         }
 
         // Increment used_count
@@ -531,21 +556,19 @@ impl InvitationStore for PgStore {
             .map_err(AuthError::from)?;
 
         // Record usage
-        sqlx::query(
-            "INSERT INTO invitation_usages (invitation_id, used_by) VALUES ($1, $2)"
-        )
-        .bind(inv.id)
-        .bind(user_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(AuthError::from)?;
+        sqlx::query("INSERT INTO invitation_usages (invitation_id, used_by) VALUES ($1, $2)")
+            .bind(inv.id)
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(AuthError::from)?;
 
         // Create membership (upsert: if already member, update role)
         sqlx::query(
             "INSERT INTO memberships (user_id, tenant_id, role, invited_by) \
              VALUES ($1, $2, $3, $4) \
              ON CONFLICT (user_id, tenant_id) DO UPDATE SET \
-               role = EXCLUDED.role, is_active = true"
+               role = EXCLUDED.role, is_active = true",
         )
         .bind(user_id)
         .bind(inv.tenant_id)
@@ -564,7 +587,7 @@ impl InvitationStore for PgStore {
             "SELECT id, tenant_id, code, email, role, max_uses, used_count, \
                     created_by, created_at, expires_at \
              FROM invitations WHERE tenant_id = $1 \
-             ORDER BY created_at DESC"
+             ORDER BY created_at DESC",
         )
         .bind(tenant_id)
         .fetch_all(&self.pool)
@@ -591,7 +614,7 @@ impl FlowPersistence for PgStore {
             "INSERT INTO auth_flows (id, session_id, flow_type, current_state, \
                                      guard_failure_count, version, created_at, updated_at, \
                                      expires_at, completed_at, exit_state, summary) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)"
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
         )
         .bind(record.id)
         .bind(&record.session_id)
@@ -616,7 +639,7 @@ impl FlowPersistence for PgStore {
             "SELECT id, session_id, flow_type, current_state, guard_failure_count, \
                     version, created_at, updated_at, expires_at, completed_at, \
                     exit_state, summary \
-             FROM auth_flows WHERE id = $1"
+             FROM auth_flows WHERE id = $1",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -627,7 +650,7 @@ impl FlowPersistence for PgStore {
     async fn update_state(&self, id: Uuid, state: &str, version: i32) -> Result<(), AuthError> {
         let result = sqlx::query(
             "UPDATE auth_flows SET current_state = $1, version = $2, updated_at = now() \
-             WHERE id = $3 AND version = $2 - 1"
+             WHERE id = $3 AND version = $2 - 1",
         )
         .bind(state)
         .bind(version)
@@ -637,7 +660,9 @@ impl FlowPersistence for PgStore {
         .map_err(AuthError::from)?;
 
         if result.rows_affected() == 0 {
-            return Err(AuthError::Conflict("flow version conflict (optimistic lock)".into()));
+            return Err(AuthError::Conflict(
+                "flow version conflict (optimistic lock)".into(),
+            ));
         }
         Ok(())
     }
@@ -651,7 +676,7 @@ impl FlowPersistence for PgStore {
         sqlx::query(
             "UPDATE auth_flows SET exit_state = $1, completed_at = now(), \
                                    updated_at = now(), summary = $2 \
-             WHERE id = $3"
+             WHERE id = $3",
         )
         .bind(exit_state)
         .bind(&summary)
@@ -692,7 +717,7 @@ impl FlowPersistence for PgStore {
                     exit_state, summary \
              FROM auth_flows \
              WHERE session_id = $1 AND completed_at IS NULL AND expires_at > now() \
-             ORDER BY created_at DESC"
+             ORDER BY created_at DESC",
         )
         .bind(session_id)
         .fetch_all(&self.pool)
@@ -701,12 +726,11 @@ impl FlowPersistence for PgStore {
     }
 
     async fn cleanup_expired(&self) -> Result<usize, AuthError> {
-        let result = sqlx::query(
-            "DELETE FROM auth_flows WHERE expires_at < now() AND completed_at IS NULL"
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(AuthError::from)?;
+        let result =
+            sqlx::query("DELETE FROM auth_flows WHERE expires_at < now() AND completed_at IS NULL")
+                .execute(&self.pool)
+                .await
+                .map_err(AuthError::from)?;
         Ok(result.rows_affected() as usize)
     }
 }
@@ -718,55 +742,91 @@ impl MfaStore for PgStore {
     async fn upsert(&self, user_id: Uuid, mfa_type: &str, secret: &str) -> Result<(), AuthError> {
         sqlx::query(
             "INSERT INTO user_mfa (user_id, type, secret) VALUES ($1, $2, $3) \
-             ON CONFLICT (user_id, type) DO UPDATE SET secret = EXCLUDED.secret, is_active = true"
-        ).bind(user_id).bind(mfa_type).bind(secret)
-        .execute(&self.pool).await.map_err(AuthError::from)?;
+             ON CONFLICT (user_id, type) DO UPDATE SET secret = EXCLUDED.secret, is_active = true",
+        )
+        .bind(user_id)
+        .bind(mfa_type)
+        .bind(secret)
+        .execute(&self.pool)
+        .await
+        .map_err(AuthError::from)?;
         Ok(())
     }
 
     async fn find(&self, user_id: Uuid, mfa_type: &str) -> Result<Option<MfaRecord>, AuthError> {
         sqlx::query_as::<_, MfaRecord>(
             "SELECT id, user_id, type, secret, is_active, created_at \
-             FROM user_mfa WHERE user_id = $1 AND type = $2 AND is_active = true"
-        ).bind(user_id).bind(mfa_type)
-        .fetch_optional(&self.pool).await.map_err(AuthError::from)
+             FROM user_mfa WHERE user_id = $1 AND type = $2 AND is_active = true",
+        )
+        .bind(user_id)
+        .bind(mfa_type)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(AuthError::from)
     }
 
     async fn has_active(&self, user_id: Uuid) -> Result<bool, AuthError> {
-        let row: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM user_mfa WHERE user_id = $1 AND is_active = true"
-        ).bind(user_id).fetch_one(&self.pool).await.map_err(AuthError::from)?;
+        let row: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM user_mfa WHERE user_id = $1 AND is_active = true")
+                .bind(user_id)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(AuthError::from)?;
         Ok(row.0 > 0)
     }
 
     async fn deactivate(&self, user_id: Uuid, mfa_type: &str) -> Result<(), AuthError> {
         sqlx::query("UPDATE user_mfa SET is_active = false WHERE user_id = $1 AND type = $2")
-            .bind(user_id).bind(mfa_type)
-            .execute(&self.pool).await.map_err(AuthError::from)?;
+            .bind(user_id)
+            .bind(mfa_type)
+            .execute(&self.pool)
+            .await
+            .map_err(AuthError::from)?;
         Ok(())
     }
 
-    async fn upsert_pending(&self, user_id: Uuid, mfa_type: &str, secret: &str) -> Result<(), AuthError> {
+    async fn upsert_pending(
+        &self,
+        user_id: Uuid,
+        mfa_type: &str,
+        secret: &str,
+    ) -> Result<(), AuthError> {
         sqlx::query(
             "INSERT INTO user_mfa (user_id, type, secret, is_active) VALUES ($1, $2, $3, false) \
-             ON CONFLICT (user_id, type) DO UPDATE SET secret = EXCLUDED.secret, is_active = false"
-        ).bind(user_id).bind(mfa_type).bind(secret)
-        .execute(&self.pool).await.map_err(AuthError::from)?;
+             ON CONFLICT (user_id, type) DO UPDATE SET secret = EXCLUDED.secret, is_active = false",
+        )
+        .bind(user_id)
+        .bind(mfa_type)
+        .bind(secret)
+        .execute(&self.pool)
+        .await
+        .map_err(AuthError::from)?;
         Ok(())
     }
 
-    async fn find_any(&self, user_id: Uuid, mfa_type: &str) -> Result<Option<MfaRecord>, AuthError> {
+    async fn find_any(
+        &self,
+        user_id: Uuid,
+        mfa_type: &str,
+    ) -> Result<Option<MfaRecord>, AuthError> {
         sqlx::query_as::<_, MfaRecord>(
             "SELECT id, user_id, type, secret, is_active, created_at \
-             FROM user_mfa WHERE user_id = $1 AND type = $2"
-        ).bind(user_id).bind(mfa_type)
-        .fetch_optional(&self.pool).await.map_err(AuthError::from)
+             FROM user_mfa WHERE user_id = $1 AND type = $2",
+        )
+        .bind(user_id)
+        .bind(mfa_type)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(AuthError::from)
     }
 
     async fn activate(&self, user_id: Uuid, mfa_type: &str) -> Result<(), AuthError> {
         sqlx::query("UPDATE user_mfa SET is_active = true WHERE user_id = $1 AND type = $2")
-            .bind(user_id).bind(mfa_type)
-            .execute(&self.pool).await.map_err(AuthError::from)?;
+            .bind(user_id)
+            .bind(mfa_type)
+            .execute(&self.pool)
+            .await
+            .map_err(AuthError::from)?;
         Ok(())
     }
 }
@@ -778,10 +838,17 @@ impl RecoveryCodeStore for PgStore {
     async fn replace_all(&self, user_id: Uuid, code_hashes: &[String]) -> Result<(), AuthError> {
         let mut tx = self.pool.begin().await.map_err(AuthError::from)?;
         sqlx::query("DELETE FROM mfa_recovery_codes WHERE user_id = $1")
-            .bind(user_id).execute(&mut *tx).await.map_err(AuthError::from)?;
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(AuthError::from)?;
         for hash in code_hashes {
             sqlx::query("INSERT INTO mfa_recovery_codes (user_id, code_hash) VALUES ($1, $2)")
-                .bind(user_id).bind(hash).execute(&mut *tx).await.map_err(AuthError::from)?;
+                .bind(user_id)
+                .bind(hash)
+                .execute(&mut *tx)
+                .await
+                .map_err(AuthError::from)?;
         }
         tx.commit().await.map_err(AuthError::from)?;
         Ok(())
@@ -790,21 +857,33 @@ impl RecoveryCodeStore for PgStore {
     async fn consume(&self, user_id: Uuid, code_hash: &str) -> Result<bool, AuthError> {
         let result = sqlx::query(
             "UPDATE mfa_recovery_codes SET used_at = now() \
-             WHERE user_id = $1 AND code_hash = $2 AND used_at IS NULL"
-        ).bind(user_id).bind(code_hash).execute(&self.pool).await.map_err(AuthError::from)?;
+             WHERE user_id = $1 AND code_hash = $2 AND used_at IS NULL",
+        )
+        .bind(user_id)
+        .bind(code_hash)
+        .execute(&self.pool)
+        .await
+        .map_err(AuthError::from)?;
         Ok(result.rows_affected() > 0)
     }
 
     async fn count_unused(&self, user_id: Uuid) -> Result<usize, AuthError> {
         let row: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM mfa_recovery_codes WHERE user_id = $1 AND used_at IS NULL"
-        ).bind(user_id).fetch_one(&self.pool).await.map_err(AuthError::from)?;
+            "SELECT COUNT(*) FROM mfa_recovery_codes WHERE user_id = $1 AND used_at IS NULL",
+        )
+        .bind(user_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(AuthError::from)?;
         Ok(row.0 as usize)
     }
 
     async fn delete_all(&self, user_id: Uuid) -> Result<(), AuthError> {
         sqlx::query("DELETE FROM mfa_recovery_codes WHERE user_id = $1")
-            .bind(user_id).execute(&self.pool).await.map_err(AuthError::from)?;
+            .bind(user_id)
+            .execute(&self.pool)
+            .await
+            .map_err(AuthError::from)?;
         Ok(())
     }
 }
@@ -816,9 +895,14 @@ impl MagicLinkStore for PgStore {
     async fn create(&self, email: &str, token: &str, ttl_minutes: i64) -> Result<(), AuthError> {
         sqlx::query(
             "INSERT INTO magic_links (email, token, expires_at) \
-             VALUES ($1, $2, now() + make_interval(mins => $3))"
-        ).bind(email).bind(token).bind(ttl_minutes as i32)
-        .execute(&self.pool).await.map_err(AuthError::from)?;
+             VALUES ($1, $2, now() + make_interval(mins => $3))",
+        )
+        .bind(email)
+        .bind(token)
+        .bind(ttl_minutes as i32)
+        .execute(&self.pool)
+        .await
+        .map_err(AuthError::from)?;
         Ok(())
     }
 
@@ -826,8 +910,12 @@ impl MagicLinkStore for PgStore {
         sqlx::query_as::<_, MagicLinkRecord>(
             "UPDATE magic_links SET used_at = now() \
              WHERE token = $1 AND used_at IS NULL AND expires_at > now() \
-             RETURNING id, email, token, expires_at, used_at, created_at"
-        ).bind(token).fetch_optional(&self.pool).await.map_err(AuthError::from)
+             RETURNING id, email, token, expires_at, used_at, created_at",
+        )
+        .bind(token)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(AuthError::from)
     }
 }
 
@@ -837,39 +925,69 @@ impl MagicLinkStore for PgStore {
 impl SigningKeyStore for PgStore {
     async fn save(&self, kid: &str, public_pem: &str, private_pem: &str) -> Result<(), AuthError> {
         sqlx::query("INSERT INTO signing_keys (kid, public_key, private_key) VALUES ($1, $2, $3)")
-            .bind(kid).bind(public_pem).bind(private_pem)
-            .execute(&self.pool).await.map_err(AuthError::from)?;
+            .bind(kid)
+            .bind(public_pem)
+            .bind(private_pem)
+            .execute(&self.pool)
+            .await
+            .map_err(AuthError::from)?;
         Ok(())
     }
 
     async fn load_active(&self) -> Result<Option<SigningKeyRecord>, AuthError> {
         sqlx::query_as::<_, SigningKeyRecord>(
             "SELECT kid, public_key, private_key, status, created_at, rotated_at, expires_at \
-             FROM signing_keys WHERE status = 'active' ORDER BY created_at DESC LIMIT 1"
-        ).fetch_optional(&self.pool).await.map_err(AuthError::from)
+             FROM signing_keys WHERE status = 'active' ORDER BY created_at DESC LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(AuthError::from)
     }
 
     async fn list(&self) -> Result<Vec<SigningKeyRecord>, AuthError> {
         sqlx::query_as::<_, SigningKeyRecord>(
             "SELECT kid, public_key, private_key, status, created_at, rotated_at, expires_at \
-             FROM signing_keys ORDER BY created_at DESC"
-        ).fetch_all(&self.pool).await.map_err(AuthError::from)
+             FROM signing_keys ORDER BY created_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(AuthError::from)
     }
 
-    async fn rotate(&self, old_kid: &str, new_kid: &str, public_pem: &str, private_pem: &str) -> Result<(), AuthError> {
+    async fn rotate(
+        &self,
+        old_kid: &str,
+        new_kid: &str,
+        public_pem: &str,
+        private_pem: &str,
+    ) -> Result<(), AuthError> {
         let mut tx = self.pool.begin().await.map_err(AuthError::from)?;
-        sqlx::query("UPDATE signing_keys SET status = 'retired', rotated_at = now() WHERE kid = $1")
-            .bind(old_kid).execute(&mut *tx).await.map_err(AuthError::from)?;
+        sqlx::query(
+            "UPDATE signing_keys SET status = 'retired', rotated_at = now() WHERE kid = $1",
+        )
+        .bind(old_kid)
+        .execute(&mut *tx)
+        .await
+        .map_err(AuthError::from)?;
         sqlx::query("INSERT INTO signing_keys (kid, public_key, private_key) VALUES ($1, $2, $3)")
-            .bind(new_kid).bind(public_pem).bind(private_pem)
-            .execute(&mut *tx).await.map_err(AuthError::from)?;
+            .bind(new_kid)
+            .bind(public_pem)
+            .bind(private_pem)
+            .execute(&mut *tx)
+            .await
+            .map_err(AuthError::from)?;
         tx.commit().await.map_err(AuthError::from)?;
         Ok(())
     }
 
     async fn revoke(&self, kid: &str) -> Result<(), AuthError> {
-        sqlx::query("UPDATE signing_keys SET status = 'revoked', rotated_at = now() WHERE kid = $1")
-            .bind(kid).execute(&self.pool).await.map_err(AuthError::from)?;
+        sqlx::query(
+            "UPDATE signing_keys SET status = 'revoked', rotated_at = now() WHERE kid = $1",
+        )
+        .bind(kid)
+        .execute(&self.pool)
+        .await
+        .map_err(AuthError::from)?;
         Ok(())
     }
 }
@@ -902,7 +1020,11 @@ impl IdpConfigStore for PgStore {
         ).bind(tenant_id).fetch_all(&self.pool).await.map_err(AuthError::from)
     }
 
-    async fn find(&self, tenant_id: Uuid, provider_type: &str) -> Result<Option<IdpConfigRecord>, AuthError> {
+    async fn find(
+        &self,
+        tenant_id: Uuid,
+        provider_type: &str,
+    ) -> Result<Option<IdpConfigRecord>, AuthError> {
         sqlx::query_as::<_, IdpConfigRecord>(
             "SELECT id, tenant_id, provider_type, metadata_url, issuer, client_id, client_secret, x509_cert, created_at, is_active \
              FROM idp_configs WHERE tenant_id = $1 AND provider_type = $2 AND is_active = true"
@@ -917,26 +1039,42 @@ impl M2mClientStore for PgStore {
     async fn create(&self, record: M2mClientRecord) -> Result<Uuid, AuthError> {
         let row: (Uuid,) = sqlx::query_as(
             "INSERT INTO m2m_clients (id, tenant_id, client_id, client_secret_hash, scopes) \
-             VALUES ($1, $2, $3, $4, $5) RETURNING id"
+             VALUES ($1, $2, $3, $4, $5) RETURNING id",
         )
-        .bind(record.id).bind(record.tenant_id).bind(&record.client_id)
-        .bind(&record.client_secret_hash).bind(&record.scopes)
-        .fetch_one(&self.pool).await.map_err(AuthError::from)?;
+        .bind(record.id)
+        .bind(record.tenant_id)
+        .bind(&record.client_id)
+        .bind(&record.client_secret_hash)
+        .bind(&record.scopes)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(AuthError::from)?;
         Ok(row.0)
     }
 
-    async fn find_by_client_id(&self, client_id: &str) -> Result<Option<M2mClientRecord>, AuthError> {
+    async fn find_by_client_id(
+        &self,
+        client_id: &str,
+    ) -> Result<Option<M2mClientRecord>, AuthError> {
         sqlx::query_as::<_, M2mClientRecord>(
             "SELECT id, tenant_id, client_id, client_secret_hash, scopes, is_active, created_at \
-             FROM m2m_clients WHERE client_id = $1 AND is_active = true"
-        ).bind(client_id).fetch_optional(&self.pool).await.map_err(AuthError::from)
+             FROM m2m_clients WHERE client_id = $1 AND is_active = true",
+        )
+        .bind(client_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(AuthError::from)
     }
 
     async fn list_by_tenant(&self, tenant_id: Uuid) -> Result<Vec<M2mClientRecord>, AuthError> {
         sqlx::query_as::<_, M2mClientRecord>(
             "SELECT id, tenant_id, client_id, client_secret_hash, scopes, is_active, created_at \
-             FROM m2m_clients WHERE tenant_id = $1 AND is_active = true ORDER BY created_at"
-        ).bind(tenant_id).fetch_all(&self.pool).await.map_err(AuthError::from)
+             FROM m2m_clients WHERE tenant_id = $1 AND is_active = true ORDER BY created_at",
+        )
+        .bind(tenant_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(AuthError::from)
     }
 }
 
@@ -948,13 +1086,21 @@ impl PasskeyStore for PgStore {
         let row: (Uuid,) = sqlx::query_as(
             "INSERT INTO user_passkeys (id, user_id, credential_id, public_key, sign_count, \
                                         transports, name, aaguid, backup_eligible, backup_state) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id"
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id",
         )
-        .bind(record.id).bind(record.user_id).bind(&record.credential_id)
-        .bind(&record.public_key).bind(record.sign_count)
-        .bind(&record.transports).bind(&record.name).bind(record.aaguid)
-        .bind(record.backup_eligible).bind(record.backup_state)
-        .fetch_one(&self.pool).await.map_err(AuthError::from)?;
+        .bind(record.id)
+        .bind(record.user_id)
+        .bind(&record.credential_id)
+        .bind(&record.public_key)
+        .bind(record.sign_count)
+        .bind(&record.transports)
+        .bind(&record.name)
+        .bind(record.aaguid)
+        .bind(record.backup_eligible)
+        .bind(record.backup_state)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(AuthError::from)?;
         Ok(row.0)
     }
 
@@ -962,16 +1108,27 @@ impl PasskeyStore for PgStore {
         sqlx::query_as::<_, PasskeyRecord>(
             "SELECT id, user_id, credential_id, public_key, sign_count, transports, name, \
                     aaguid, backup_eligible, backup_state, created_at, last_used_at \
-             FROM user_passkeys WHERE user_id = $1 ORDER BY created_at"
-        ).bind(user_id).fetch_all(&self.pool).await.map_err(AuthError::from)
+             FROM user_passkeys WHERE user_id = $1 ORDER BY created_at",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(AuthError::from)
     }
 
-    async fn find_by_credential_id(&self, credential_id: &[u8]) -> Result<Option<PasskeyRecord>, AuthError> {
+    async fn find_by_credential_id(
+        &self,
+        credential_id: &[u8],
+    ) -> Result<Option<PasskeyRecord>, AuthError> {
         sqlx::query_as::<_, PasskeyRecord>(
             "SELECT id, user_id, credential_id, public_key, sign_count, transports, name, \
                     aaguid, backup_eligible, backup_state, created_at, last_used_at \
-             FROM user_passkeys WHERE credential_id = $1"
-        ).bind(credential_id).fetch_optional(&self.pool).await.map_err(AuthError::from)
+             FROM user_passkeys WHERE credential_id = $1",
+        )
+        .bind(credential_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(AuthError::from)
     }
 
     async fn update_counter(&self, id: Uuid, new_sign_count: i64) -> Result<bool, AuthError> {
@@ -979,21 +1136,32 @@ impl PasskeyStore for PgStore {
         // value. Rejects concurrent replays and cloned-authenticator attacks.
         let result = sqlx::query(
             "UPDATE user_passkeys SET sign_count = $1, last_used_at = now() \
-             WHERE id = $2 AND sign_count < $1"
-        ).bind(new_sign_count).bind(id).execute(&self.pool).await.map_err(AuthError::from)?;
+             WHERE id = $2 AND sign_count < $1",
+        )
+        .bind(new_sign_count)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(AuthError::from)?;
         Ok(result.rows_affected() > 0)
     }
 
     async fn delete(&self, user_id: Uuid, id: Uuid) -> Result<(), AuthError> {
         sqlx::query("DELETE FROM user_passkeys WHERE id = $1 AND user_id = $2")
-            .bind(id).bind(user_id).execute(&self.pool).await.map_err(AuthError::from)?;
+            .bind(id)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await
+            .map_err(AuthError::from)?;
         Ok(())
     }
 
     async fn count(&self, user_id: Uuid) -> Result<usize, AuthError> {
-        let row: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM user_passkeys WHERE user_id = $1"
-        ).bind(user_id).fetch_one(&self.pool).await.map_err(AuthError::from)?;
+        let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM user_passkeys WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(AuthError::from)?;
         Ok(row.0 as usize)
     }
 }
@@ -1005,9 +1173,16 @@ impl WebhookStore for PgStore {
     async fn create(&self, r: WebhookRecord) -> Result<Uuid, AuthError> {
         let row: (Uuid,) = sqlx::query_as(
             "INSERT INTO webhook_subscriptions (id, tenant_id, endpoint_url, secret, events) \
-             VALUES ($1, $2, $3, $4, $5) RETURNING id"
-        ).bind(r.id).bind(r.tenant_id).bind(&r.endpoint_url).bind(&r.secret).bind(&r.events)
-        .fetch_one(&self.pool).await.map_err(AuthError::from)?;
+             VALUES ($1, $2, $3, $4, $5) RETURNING id",
+        )
+        .bind(r.id)
+        .bind(r.tenant_id)
+        .bind(&r.endpoint_url)
+        .bind(&r.secret)
+        .bind(&r.events)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(AuthError::from)?;
         Ok(row.0)
     }
     async fn list_by_tenant(&self, tenant_id: Uuid) -> Result<Vec<WebhookRecord>, AuthError> {
@@ -1022,15 +1197,31 @@ impl WebhookStore for PgStore {
              FROM webhook_subscriptions WHERE id = $1 AND tenant_id = $2"
         ).bind(id).bind(tenant_id).fetch_optional(&self.pool).await.map_err(AuthError::from)
     }
-    async fn update(&self, id: Uuid, endpoint_url: &str, events: &str, is_active: bool) -> Result<(), AuthError> {
-        sqlx::query("UPDATE webhook_subscriptions SET endpoint_url=$1, events=$2, is_active=$3 WHERE id=$4")
-            .bind(endpoint_url).bind(events).bind(is_active).bind(id)
-            .execute(&self.pool).await.map_err(AuthError::from)?;
+    async fn update(
+        &self,
+        id: Uuid,
+        endpoint_url: &str,
+        events: &str,
+        is_active: bool,
+    ) -> Result<(), AuthError> {
+        sqlx::query(
+            "UPDATE webhook_subscriptions SET endpoint_url=$1, events=$2, is_active=$3 WHERE id=$4",
+        )
+        .bind(endpoint_url)
+        .bind(events)
+        .bind(is_active)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(AuthError::from)?;
         Ok(())
     }
     async fn deactivate(&self, id: Uuid) -> Result<(), AuthError> {
         sqlx::query("UPDATE webhook_subscriptions SET is_active=false WHERE id=$1")
-            .bind(id).execute(&self.pool).await.map_err(AuthError::from)?;
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(AuthError::from)?;
         Ok(())
     }
 }
@@ -1039,7 +1230,12 @@ impl WebhookStore for PgStore {
 
 #[async_trait]
 impl OutboxStore for PgStore {
-    async fn enqueue(&self, tenant_id: Option<Uuid>, event_type: &str, payload: serde_json::Value) -> Result<Uuid, AuthError> {
+    async fn enqueue(
+        &self,
+        tenant_id: Option<Uuid>,
+        event_type: &str,
+        payload: serde_json::Value,
+    ) -> Result<Uuid, AuthError> {
         let row: (Uuid,) = sqlx::query_as(
             "INSERT INTO outbox_events (tenant_id, event_type, payload) VALUES ($1, $2, $3) RETURNING id"
         ).bind(tenant_id).bind(event_type).bind(&payload)
@@ -1055,7 +1251,10 @@ impl OutboxStore for PgStore {
     }
     async fn mark_published(&self, id: Uuid) -> Result<(), AuthError> {
         sqlx::query("UPDATE outbox_events SET published_at=now() WHERE id=$1")
-            .bind(id).execute(&self.pool).await.map_err(AuthError::from)?;
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(AuthError::from)?;
         Ok(())
     }
     async fn mark_retry(&self, id: Uuid, attempt: i32, error: &str) -> Result<(), AuthError> {
@@ -1069,8 +1268,12 @@ impl OutboxStore for PgStore {
         // inside its payload (covers "actor_id", "user_id", "target_id" variants).
         sqlx::query(
             "DELETE FROM outbox_events \
-             WHERE payload::text LIKE '%' || $1::text || '%'"
-        ).bind(user_id).execute(&self.pool).await.map_err(AuthError::from)?;
+             WHERE payload::text LIKE '%' || $1::text || '%'",
+        )
+        .bind(user_id)
+        .execute(&self.pool)
+        .await
+        .map_err(AuthError::from)?;
         Ok(())
     }
 }
@@ -1088,7 +1291,11 @@ impl WebhookDeliveryStore for PgStore {
         .execute(&self.pool).await.map_err(AuthError::from)?;
         Ok(())
     }
-    async fn list_by_webhook(&self, webhook_id: Uuid, limit: i64) -> Result<Vec<WebhookDeliveryRecord>, AuthError> {
+    async fn list_by_webhook(
+        &self,
+        webhook_id: Uuid,
+        limit: i64,
+    ) -> Result<Vec<WebhookDeliveryRecord>, AuthError> {
         sqlx::query_as::<_, WebhookDeliveryRecord>(
             "SELECT id, outbox_event_id, webhook_id, event_type, status, status_code, response_body, created_at \
              FROM webhook_deliveries WHERE webhook_id=$1 ORDER BY created_at DESC LIMIT $2"
@@ -1109,7 +1316,12 @@ impl AuditStore for PgStore {
         .execute(&self.pool).await.map_err(AuthError::from)?;
         Ok(())
     }
-    async fn list(&self, tenant_id: Uuid, offset: i64, limit: i64) -> Result<Vec<AuditLogRecord>, AuthError> {
+    async fn list(
+        &self,
+        tenant_id: Uuid,
+        offset: i64,
+        limit: i64,
+    ) -> Result<Vec<AuditLogRecord>, AuthError> {
         sqlx::query_as::<_, AuditLogRecord>(
             "SELECT id, timestamp, event_type, actor_id, actor_ip::varchar, tenant_id, target_type, target_id, detail, request_id \
              FROM audit_logs WHERE tenant_id=$1 ORDER BY timestamp DESC OFFSET $2 LIMIT $3"
@@ -1118,7 +1330,10 @@ impl AuditStore for PgStore {
     }
     async fn anonymize(&self, user_id: Uuid) -> Result<(), AuthError> {
         sqlx::query("UPDATE audit_logs SET actor_id=NULL, detail=NULL WHERE actor_id=$1")
-            .bind(user_id).execute(&self.pool).await.map_err(AuthError::from)?;
+            .bind(user_id)
+            .execute(&self.pool)
+            .await
+            .map_err(AuthError::from)?;
         Ok(())
     }
     async fn delete_flow_transitions_by_user(&self, user_id: Uuid) -> Result<(), AuthError> {
@@ -1128,8 +1343,12 @@ impl AuditStore for PgStore {
                  SELECT id FROM auth_flows WHERE session_id IN (\
                      SELECT session_id FROM sessions WHERE user_id = $1::text\
                  )\
-             )"
-        ).bind(user_id).execute(&self.pool).await.map_err(AuthError::from)?;
+             )",
+        )
+        .bind(user_id)
+        .execute(&self.pool)
+        .await
+        .map_err(AuthError::from)?;
         Ok(())
     }
 }
@@ -1155,12 +1374,19 @@ impl DeviceTrustStore for PgStore {
     }
     async fn delete_trusted(&self, user_id: Uuid, device_id: Uuid) -> Result<(), AuthError> {
         sqlx::query("DELETE FROM trusted_devices WHERE user_id=$1 AND device_id=$2")
-            .bind(user_id).bind(device_id).execute(&self.pool).await.map_err(AuthError::from)?;
+            .bind(user_id)
+            .bind(device_id)
+            .execute(&self.pool)
+            .await
+            .map_err(AuthError::from)?;
         Ok(())
     }
     async fn delete_all_trusted(&self, user_id: Uuid) -> Result<(), AuthError> {
         sqlx::query("DELETE FROM trusted_devices WHERE user_id=$1")
-            .bind(user_id).execute(&self.pool).await.map_err(AuthError::from)?;
+            .bind(user_id)
+            .execute(&self.pool)
+            .await
+            .map_err(AuthError::from)?;
         Ok(())
     }
 }
@@ -1170,14 +1396,25 @@ impl DeviceTrustStore for PgStore {
 #[async_trait]
 impl BillingStore for PgStore {
     async fn list_plans(&self) -> Result<Vec<PlanRecord>, AuthError> {
-        sqlx::query_as::<_, PlanRecord>("SELECT id, name, max_members, max_apps, features FROM plans ORDER BY max_members")
-            .fetch_all(&self.pool).await.map_err(AuthError::from)
+        sqlx::query_as::<_, PlanRecord>(
+            "SELECT id, name, max_members, max_apps, features FROM plans ORDER BY max_members",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(AuthError::from)
     }
-    async fn find_subscription(&self, tenant_id: Uuid) -> Result<Option<SubscriptionRecord>, AuthError> {
+    async fn find_subscription(
+        &self,
+        tenant_id: Uuid,
+    ) -> Result<Option<SubscriptionRecord>, AuthError> {
         sqlx::query_as::<_, SubscriptionRecord>(
             "SELECT id, tenant_id, plan_id, status, stripe_sub_id, started_at, expires_at \
-             FROM subscriptions WHERE tenant_id=$1 ORDER BY started_at DESC LIMIT 1"
-        ).bind(tenant_id).fetch_optional(&self.pool).await.map_err(AuthError::from)
+             FROM subscriptions WHERE tenant_id=$1 ORDER BY started_at DESC LIMIT 1",
+        )
+        .bind(tenant_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(AuthError::from)
     }
     async fn upsert_subscription(&self, r: SubscriptionRecord) -> Result<Uuid, AuthError> {
         let row: (Uuid,) = sqlx::query_as(
@@ -1200,10 +1437,18 @@ impl PolicyStore for PgStore {
     async fn create(&self, r: PolicyRecord) -> Result<Uuid, AuthError> {
         let row: (Uuid,) = sqlx::query_as(
             "INSERT INTO policies (id, tenant_id, resource, action, condition, effect, priority) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id"
-        ).bind(r.id).bind(r.tenant_id).bind(&r.resource).bind(&r.action)
-        .bind(&r.condition).bind(&r.effect).bind(r.priority)
-        .fetch_one(&self.pool).await.map_err(AuthError::from)?;
+             VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+        )
+        .bind(r.id)
+        .bind(r.tenant_id)
+        .bind(&r.resource)
+        .bind(&r.action)
+        .bind(&r.condition)
+        .bind(&r.effect)
+        .bind(r.priority)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(AuthError::from)?;
         Ok(row.0)
     }
     async fn list_by_tenant(&self, tenant_id: Uuid) -> Result<Vec<PolicyRecord>, AuthError> {
@@ -1212,7 +1457,12 @@ impl PolicyStore for PgStore {
              FROM policies WHERE tenant_id=$1 AND is_active=true ORDER BY priority DESC"
         ).bind(tenant_id).fetch_all(&self.pool).await.map_err(AuthError::from)
     }
-    async fn find_matching(&self, tenant_id: Uuid, resource: &str, action: &str) -> Result<Option<PolicyRecord>, AuthError> {
+    async fn find_matching(
+        &self,
+        tenant_id: Uuid,
+        resource: &str,
+        action: &str,
+    ) -> Result<Option<PolicyRecord>, AuthError> {
         sqlx::query_as::<_, PolicyRecord>(
             "SELECT id, tenant_id, resource, action, condition, effect, priority, is_active, created_at \
              FROM policies WHERE tenant_id=$1 AND resource=$2 AND action=$3 AND is_active=true \
@@ -1251,16 +1501,20 @@ impl OidcFlowStore for PgStore {
             "DELETE FROM oidc_flows \
              WHERE state = $1 AND expires_at > now() \
              RETURNING id, state, nonce, code_verifier_encrypted, return_to, invite_code, \
-                       tenant_id, created_at, expires_at"
+                       tenant_id, created_at, expires_at",
         )
         .bind(state)
-        .fetch_optional(&self.pool).await.map_err(AuthError::from)?;
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(AuthError::from)?;
         Ok(row)
     }
 
     async fn delete_expired(&self) -> Result<u64, AuthError> {
         let res = sqlx::query("DELETE FROM oidc_flows WHERE expires_at <= now()")
-            .execute(&self.pool).await.map_err(AuthError::from)?;
+            .execute(&self.pool)
+            .await
+            .map_err(AuthError::from)?;
         Ok(res.rows_affected())
     }
 }
@@ -1272,10 +1526,16 @@ impl PasskeyChallengeStore for PgStore {
     async fn save(&self, r: PasskeyChallengeRecord) -> Result<(), AuthError> {
         sqlx::query(
             "INSERT INTO passkey_challenges (id, user_id, state, kind, expires_at) \
-             VALUES ($1, $2, $3, $4, $5)"
+             VALUES ($1, $2, $3, $4, $5)",
         )
-        .bind(r.id).bind(r.user_id).bind(&r.state).bind(&r.kind).bind(r.expires_at)
-        .execute(&self.pool).await.map_err(AuthError::from)?;
+        .bind(r.id)
+        .bind(r.user_id)
+        .bind(&r.state)
+        .bind(&r.kind)
+        .bind(r.expires_at)
+        .execute(&self.pool)
+        .await
+        .map_err(AuthError::from)?;
         Ok(())
     }
 
@@ -1283,15 +1543,20 @@ impl PasskeyChallengeStore for PgStore {
         let row: Option<PasskeyChallengeRecord> = sqlx::query_as::<_, PasskeyChallengeRecord>(
             "DELETE FROM passkey_challenges \
              WHERE id = $1 AND expires_at > now() \
-             RETURNING id, user_id, state, kind, created_at, expires_at"
+             RETURNING id, user_id, state, kind, created_at, expires_at",
         )
-        .bind(id).fetch_optional(&self.pool).await.map_err(AuthError::from)?;
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(AuthError::from)?;
         Ok(row)
     }
 
     async fn delete_expired(&self) -> Result<u64, AuthError> {
         let res = sqlx::query("DELETE FROM passkey_challenges WHERE expires_at <= now()")
-            .execute(&self.pool).await.map_err(AuthError::from)?;
+            .execute(&self.pool)
+            .await
+            .map_err(AuthError::from)?;
         Ok(res.rows_affected())
     }
 }
@@ -1315,46 +1580,89 @@ impl DeviceGrantStore for PgStore {
         Ok(())
     }
 
-    async fn find_pending_by_user_code(&self, user_code: &str) -> Result<Option<DeviceGrantRecord>, AuthError> {
-        let row: Option<DeviceGrantRecord> = sqlx::query_as::<_, DeviceGrantRecord>(
-            &format!("SELECT {DEVICE_GRANT_COLS} FROM device_authorization_grants \
-                      WHERE user_code = $1 AND status = 'pending' AND expires_at > now()")
-        ).bind(user_code).fetch_optional(&self.pool).await.map_err(AuthError::from)?;
+    async fn find_pending_by_user_code(
+        &self,
+        user_code: &str,
+    ) -> Result<Option<DeviceGrantRecord>, AuthError> {
+        let row: Option<DeviceGrantRecord> = sqlx::query_as::<_, DeviceGrantRecord>(&format!(
+            "SELECT {DEVICE_GRANT_COLS} FROM device_authorization_grants \
+                      WHERE user_code = $1 AND status = 'pending' AND expires_at > now()"
+        ))
+        .bind(user_code)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(AuthError::from)?;
         Ok(row)
     }
 
-    async fn decide(&self, user_code: &str, approve: bool, user_id: Uuid, tenant_id: Uuid) -> Result<DeviceDecisionOutcome, AuthError> {
+    async fn decide(
+        &self,
+        user_code: &str,
+        approve: bool,
+        user_id: Uuid,
+        tenant_id: Uuid,
+    ) -> Result<DeviceDecisionOutcome, AuthError> {
         let mut tx = self.pool.begin().await.map_err(AuthError::from)?;
-        let row: Option<DeviceGrantRecord> = sqlx::query_as::<_, DeviceGrantRecord>(
-            &format!("SELECT {DEVICE_GRANT_COLS} FROM device_authorization_grants \
-                      WHERE user_code = $1 FOR UPDATE")
-        ).bind(user_code).fetch_optional(&mut *tx).await.map_err(AuthError::from)?;
-        let Some(g) = row else { return Ok(DeviceDecisionOutcome::NotFound); };
-        if g.expires_at <= Utc::now() { return Ok(DeviceDecisionOutcome::Expired); }
-        if g.status != "pending" { return Ok(DeviceDecisionOutcome::AlreadyResolved); }
+        let row: Option<DeviceGrantRecord> = sqlx::query_as::<_, DeviceGrantRecord>(&format!(
+            "SELECT {DEVICE_GRANT_COLS} FROM device_authorization_grants \
+                      WHERE user_code = $1 FOR UPDATE"
+        ))
+        .bind(user_code)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(AuthError::from)?;
+        let Some(g) = row else {
+            return Ok(DeviceDecisionOutcome::NotFound);
+        };
+        if g.expires_at <= Utc::now() {
+            return Ok(DeviceDecisionOutcome::Expired);
+        }
+        if g.status != "pending" {
+            return Ok(DeviceDecisionOutcome::AlreadyResolved);
+        }
         let new_status = if approve { "approved" } else { "denied" };
         sqlx::query(
             "UPDATE device_authorization_grants \
-             SET status = $1, user_id = $2, tenant_id = $3 WHERE id = $4"
+             SET status = $1, user_id = $2, tenant_id = $3 WHERE id = $4",
         )
-        .bind(new_status).bind(user_id).bind(tenant_id).bind(g.id)
-        .execute(&mut *tx).await.map_err(AuthError::from)?;
+        .bind(new_status)
+        .bind(user_id)
+        .bind(tenant_id)
+        .bind(g.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(AuthError::from)?;
         tx.commit().await.map_err(AuthError::from)?;
-        Ok(DeviceDecisionOutcome::Ok { client_id: g.client_id, scope: g.scope })
+        Ok(DeviceDecisionOutcome::Ok {
+            client_id: g.client_id,
+            scope: g.scope,
+        })
     }
 
     async fn poll(&self, device_code_hash: &str) -> Result<DevicePollOutcome, AuthError> {
         let mut tx = self.pool.begin().await.map_err(AuthError::from)?;
-        let row: Option<DeviceGrantRecord> = sqlx::query_as::<_, DeviceGrantRecord>(
-            &format!("SELECT {DEVICE_GRANT_COLS} FROM device_authorization_grants \
-                      WHERE device_code_hash = $1 FOR UPDATE")
-        ).bind(device_code_hash).fetch_optional(&mut *tx).await.map_err(AuthError::from)?;
-        let Some(g) = row else { return Ok(DevicePollOutcome::NotFound); };
-        if g.expires_at <= Utc::now() { return Ok(DevicePollOutcome::Expired); }
+        let row: Option<DeviceGrantRecord> = sqlx::query_as::<_, DeviceGrantRecord>(&format!(
+            "SELECT {DEVICE_GRANT_COLS} FROM device_authorization_grants \
+                      WHERE device_code_hash = $1 FOR UPDATE"
+        ))
+        .bind(device_code_hash)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(AuthError::from)?;
+        let Some(g) = row else {
+            return Ok(DevicePollOutcome::NotFound);
+        };
+        if g.expires_at <= Utc::now() {
+            return Ok(DevicePollOutcome::Expired);
+        }
         match g.status.as_str() {
             "denied" => Ok(DevicePollOutcome::Denied),
             "approved" => match (g.user_id, g.tenant_id) {
-                (Some(uid), Some(tid)) => Ok(DevicePollOutcome::Approved { user_id: uid, tenant_id: tid, scope: g.scope }),
+                (Some(uid), Some(tid)) => Ok(DevicePollOutcome::Approved {
+                    user_id: uid,
+                    tenant_id: tid,
+                    scope: g.scope,
+                }),
                 // Should never happen (decide() sets both on approve) — treat as
                 // not-yet-resolved rather than panic.
                 _ => Ok(DevicePollOutcome::Pending),
@@ -1367,8 +1675,14 @@ impl DeviceGrantStore for PgStore {
                         return Ok(DevicePollOutcome::SlowDown);
                     }
                 }
-                sqlx::query("UPDATE device_authorization_grants SET last_polled_at = $1 WHERE id = $2")
-                    .bind(now).bind(g.id).execute(&mut *tx).await.map_err(AuthError::from)?;
+                sqlx::query(
+                    "UPDATE device_authorization_grants SET last_polled_at = $1 WHERE id = $2",
+                )
+                .bind(now)
+                .bind(g.id)
+                .execute(&mut *tx)
+                .await
+                .map_err(AuthError::from)?;
                 tx.commit().await.map_err(AuthError::from)?;
                 Ok(DevicePollOutcome::Pending)
             }
@@ -1377,13 +1691,18 @@ impl DeviceGrantStore for PgStore {
 
     async fn consume(&self, device_code_hash: &str) -> Result<(), AuthError> {
         sqlx::query("DELETE FROM device_authorization_grants WHERE device_code_hash = $1")
-            .bind(device_code_hash).execute(&self.pool).await.map_err(AuthError::from)?;
+            .bind(device_code_hash)
+            .execute(&self.pool)
+            .await
+            .map_err(AuthError::from)?;
         Ok(())
     }
 
     async fn delete_expired(&self) -> Result<u64, AuthError> {
         let res = sqlx::query("DELETE FROM device_authorization_grants WHERE expires_at <= now()")
-            .execute(&self.pool).await.map_err(AuthError::from)?;
+            .execute(&self.pool)
+            .await
+            .map_err(AuthError::from)?;
         Ok(res.rows_affected())
     }
 }
@@ -1411,14 +1730,21 @@ impl OAuthClientStore for PgStore {
         Ok(())
     }
     async fn find_client(&self, client_id: &str) -> Result<Option<OAuthClientRecord>, AuthError> {
-        sqlx::query_as::<_, OAuthClientRecord>(
-            &format!("SELECT {OAUTH_CLIENT_COLS} FROM oauth_clients WHERE client_id = $1")
-        ).bind(client_id).fetch_optional(&self.pool).await.map_err(AuthError::from)
+        sqlx::query_as::<_, OAuthClientRecord>(&format!(
+            "SELECT {OAUTH_CLIENT_COLS} FROM oauth_clients WHERE client_id = $1"
+        ))
+        .bind(client_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(AuthError::from)
     }
     async fn list_clients(&self) -> Result<Vec<OAuthClientRecord>, AuthError> {
-        sqlx::query_as::<_, OAuthClientRecord>(
-            &format!("SELECT {OAUTH_CLIENT_COLS} FROM oauth_clients ORDER BY created_at DESC")
-        ).fetch_all(&self.pool).await.map_err(AuthError::from)
+        sqlx::query_as::<_, OAuthClientRecord>(&format!(
+            "SELECT {OAUTH_CLIENT_COLS} FROM oauth_clients ORDER BY created_at DESC"
+        ))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(AuthError::from)
     }
 }
 
@@ -1438,11 +1764,15 @@ impl AuthzCodeStore for PgStore {
     async fn consume_code(&self, code_hash: &str) -> Result<Option<AuthzCodeRecord>, AuthError> {
         // Single-use: only return a row that is unexpired AND not yet consumed,
         // atomically marking it consumed via UPDATE ... RETURNING.
-        sqlx::query_as::<_, AuthzCodeRecord>(
-            &format!("UPDATE oauth_authorization_codes SET consumed_at = now() \
+        sqlx::query_as::<_, AuthzCodeRecord>(&format!(
+            "UPDATE oauth_authorization_codes SET consumed_at = now() \
                       WHERE code_hash = $1 AND consumed_at IS NULL AND expires_at > now() \
-                      RETURNING {AUTHZ_CODE_COLS}")
-        ).bind(code_hash).fetch_optional(&self.pool).await.map_err(AuthError::from)
+                      RETURNING {AUTHZ_CODE_COLS}"
+        ))
+        .bind(code_hash)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(AuthError::from)
     }
 }
 
@@ -1460,10 +1790,16 @@ impl RefreshTokenStore for PgStore {
     }
     async fn rotate_refresh(&self, token_hash: &str) -> Result<RefreshOutcome, AuthError> {
         let mut tx = self.pool.begin().await.map_err(AuthError::from)?;
-        let row: Option<RefreshTokenRecord> = sqlx::query_as::<_, RefreshTokenRecord>(
-            &format!("SELECT {REFRESH_COLS} FROM oauth_refresh_tokens WHERE token_hash = $1 FOR UPDATE")
-        ).bind(token_hash).fetch_optional(&mut *tx).await.map_err(AuthError::from)?;
-        let Some(rec) = row else { return Ok(RefreshOutcome::NotFound); };
+        let row: Option<RefreshTokenRecord> = sqlx::query_as::<_, RefreshTokenRecord>(&format!(
+            "SELECT {REFRESH_COLS} FROM oauth_refresh_tokens WHERE token_hash = $1 FOR UPDATE"
+        ))
+        .bind(token_hash)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(AuthError::from)?;
+        let Some(rec) = row else {
+            return Ok(RefreshOutcome::NotFound);
+        };
         if rec.revoked_at.is_some() {
             // Reuse of an already-rotated/revoked token → revoke the whole family.
             sqlx::query("UPDATE oauth_refresh_tokens SET revoked_at = now() WHERE family_id = $1 AND revoked_at IS NULL")
@@ -1475,7 +1811,10 @@ impl RefreshTokenStore for PgStore {
             return Ok(RefreshOutcome::Expired);
         }
         sqlx::query("UPDATE oauth_refresh_tokens SET revoked_at = now() WHERE token_hash = $1")
-            .bind(token_hash).execute(&mut *tx).await.map_err(AuthError::from)?;
+            .bind(token_hash)
+            .execute(&mut *tx)
+            .await
+            .map_err(AuthError::from)?;
         tx.commit().await.map_err(AuthError::from)?;
         Ok(RefreshOutcome::Rotated(rec))
     }
@@ -1493,16 +1832,33 @@ impl RefreshTokenStore for PgStore {
 
 #[async_trait]
 impl OAuthConsentStore for PgStore {
-    async fn has_consent(&self, user_id: Uuid, client_id: &str, scope: &str) -> Result<bool, AuthError> {
+    async fn has_consent(
+        &self,
+        user_id: Uuid,
+        client_id: &str,
+        scope: &str,
+    ) -> Result<bool, AuthError> {
         // Consent is sufficient if every requested scope is covered by a prior grant.
         let row: Option<(String,)> = sqlx::query_as(
-            "SELECT scope FROM oauth_consents WHERE user_id = $1 AND client_id = $2"
-        ).bind(user_id).bind(client_id).fetch_optional(&self.pool).await.map_err(AuthError::from)?;
-        let Some((granted,)) = row else { return Ok(false); };
+            "SELECT scope FROM oauth_consents WHERE user_id = $1 AND client_id = $2",
+        )
+        .bind(user_id)
+        .bind(client_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(AuthError::from)?;
+        let Some((granted,)) = row else {
+            return Ok(false);
+        };
         let granted: std::collections::HashSet<&str> = granted.split_whitespace().collect();
         Ok(scope.split_whitespace().all(|s| granted.contains(s)))
     }
-    async fn grant_consent(&self, user_id: Uuid, client_id: &str, scope: &str) -> Result<(), AuthError> {
+    async fn grant_consent(
+        &self,
+        user_id: Uuid,
+        client_id: &str,
+        scope: &str,
+    ) -> Result<(), AuthError> {
         sqlx::query(
             "INSERT INTO oauth_consents (user_id, client_id, scope) VALUES ($1,$2,$3) \
              ON CONFLICT (user_id, client_id) DO UPDATE SET scope = EXCLUDED.scope, created_at = now()"
@@ -1512,14 +1868,24 @@ impl OAuthConsentStore for PgStore {
     }
 }
 
-const USER_IDENTITY_COLS: &str = "id, user_id, provider, subject, email, email_verified, created_at";
+const USER_IDENTITY_COLS: &str =
+    "id, user_id, provider, subject, email, email_verified, created_at";
 
 #[async_trait]
 impl UserIdentityStore for PgStore {
-    async fn find_by_subject(&self, provider: &str, subject: &str) -> Result<Option<UserIdentityRecord>, AuthError> {
-        sqlx::query_as::<_, UserIdentityRecord>(
-            &format!("SELECT {USER_IDENTITY_COLS} FROM user_identities WHERE provider = $1 AND subject = $2")
-        ).bind(provider).bind(subject).fetch_optional(&self.pool).await.map_err(AuthError::from)
+    async fn find_by_subject(
+        &self,
+        provider: &str,
+        subject: &str,
+    ) -> Result<Option<UserIdentityRecord>, AuthError> {
+        sqlx::query_as::<_, UserIdentityRecord>(&format!(
+            "SELECT {USER_IDENTITY_COLS} FROM user_identities WHERE provider = $1 AND subject = $2"
+        ))
+        .bind(provider)
+        .bind(subject)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(AuthError::from)
     }
     async fn list_by_user(&self, user_id: Uuid) -> Result<Vec<UserIdentityRecord>, AuthError> {
         sqlx::query_as::<_, UserIdentityRecord>(
@@ -1530,20 +1896,34 @@ impl UserIdentityStore for PgStore {
         sqlx::query(
             "INSERT INTO user_identities (id, user_id, provider, subject, email, email_verified) \
              VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (provider, subject) DO UPDATE \
-             SET email = EXCLUDED.email, email_verified = EXCLUDED.email_verified"
+             SET email = EXCLUDED.email, email_verified = EXCLUDED.email_verified",
         )
-        .bind(r.id).bind(r.user_id).bind(&r.provider).bind(&r.subject).bind(&r.email).bind(r.email_verified)
-        .execute(&self.pool).await.map_err(AuthError::from)?;
+        .bind(r.id)
+        .bind(r.user_id)
+        .bind(&r.provider)
+        .bind(&r.subject)
+        .bind(&r.email)
+        .bind(r.email_verified)
+        .execute(&self.pool)
+        .await
+        .map_err(AuthError::from)?;
         Ok(())
     }
     async fn unlink(&self, user_id: Uuid, id: Uuid) -> Result<bool, AuthError> {
         let res = sqlx::query("DELETE FROM user_identities WHERE id = $1 AND user_id = $2")
-            .bind(id).bind(user_id).execute(&self.pool).await.map_err(AuthError::from)?;
+            .bind(id)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await
+            .map_err(AuthError::from)?;
         Ok(res.rows_affected() > 0)
     }
     async fn count_by_user(&self, user_id: Uuid) -> Result<i64, AuthError> {
         let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM user_identities WHERE user_id = $1")
-            .bind(user_id).fetch_one(&self.pool).await.map_err(AuthError::from)?;
+            .bind(user_id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(AuthError::from)?;
         Ok(row.0)
     }
 }
@@ -1552,12 +1932,19 @@ impl UserIdentityStore for PgStore {
 impl SessionStepUpStore for PgStore {
     async fn mark(&self, session_id: &str) -> Result<(), AuthError> {
         sqlx::query("INSERT INTO session_stepup (session_id) VALUES ($1) ON CONFLICT DO NOTHING")
-            .bind(session_id).execute(&self.pool).await.map_err(AuthError::from)?;
+            .bind(session_id)
+            .execute(&self.pool)
+            .await
+            .map_err(AuthError::from)?;
         Ok(())
     }
     async fn is_required(&self, session_id: &str) -> Result<bool, AuthError> {
-        let row: Option<(String,)> = sqlx::query_as("SELECT session_id FROM session_stepup WHERE session_id = $1")
-            .bind(session_id).fetch_optional(&self.pool).await.map_err(AuthError::from)?;
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT session_id FROM session_stepup WHERE session_id = $1")
+                .bind(session_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(AuthError::from)?;
         Ok(row.is_some())
     }
 }
@@ -1570,10 +1957,13 @@ impl RiskDeviceStore for PgStore {
         let row: (bool,) = sqlx::query_as(
             "INSERT INTO risk_known_devices (user_id, device_hash) VALUES ($1, $2) \
              ON CONFLICT (user_id, device_hash) DO UPDATE SET last_seen = now() \
-             RETURNING (xmax <> 0) AS existed"
+             RETURNING (xmax <> 0) AS existed",
         )
-        .bind(user_id).bind(device_hash)
-        .fetch_one(&self.pool).await.map_err(AuthError::from)?;
+        .bind(user_id)
+        .bind(device_hash)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(AuthError::from)?;
         Ok(row.0)
     }
 }
@@ -1603,20 +1993,35 @@ impl PgStore {
              ORDER BY {} LIMIT $2 OFFSET $3",
             order
         );
-        let rows: Vec<(Uuid, String, Option<String>, bool, chrono::DateTime<chrono::Utc>, Option<String>, i64)> =
-            sqlx::query_as(&sql).bind(q).bind(limit).bind(offset)
-                .fetch_all(&self.pool).await.map_err(AuthError::from)?;
+        let rows: Vec<(
+            Uuid,
+            String,
+            Option<String>,
+            bool,
+            chrono::DateTime<chrono::Utc>,
+            Option<String>,
+            i64,
+        )> = sqlx::query_as(&sql)
+            .bind(q)
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(AuthError::from)?;
         let total = rows.first().map(|r| r.6).unwrap_or(0);
-        let items = rows.into_iter().map(|(id, email, name, active, created, locale, _)| {
-            serde_json::json!({
-                "id": id,
-                "email": email,
-                "display_name": name,
-                "is_active": active,
-                "created_at": created.to_rfc3339(),
-                "locale": locale,
+        let items = rows
+            .into_iter()
+            .map(|(id, email, name, active, created, locale, _)| {
+                serde_json::json!({
+                    "id": id,
+                    "email": email,
+                    "display_name": name,
+                    "is_active": active,
+                    "created_at": created.to_rfc3339(),
+                    "locale": locale,
+                })
             })
-        }).collect();
+            .collect();
         Ok((items, total))
     }
 
@@ -1636,23 +2041,40 @@ impl PgStore {
              ORDER BY {} LIMIT $2 OFFSET $3",
             order
         );
-        let rows: Vec<(String, String, String, i64, i64, Option<i64>, Option<String>, Option<String>, i64)> =
-            sqlx::query_as(&sql).bind(user_id).bind(limit).bind(offset)
-                .fetch_all(&self.pool).await.map_err(AuthError::from)?;
+        let rows: Vec<(
+            String,
+            String,
+            String,
+            i64,
+            i64,
+            Option<i64>,
+            Option<String>,
+            Option<String>,
+            i64,
+        )> = sqlx::query_as(&sql)
+            .bind(user_id)
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(AuthError::from)?;
         let total = rows.first().map(|r| r.8).unwrap_or(0);
-        let items = rows.into_iter().map(|(id, uid, tid, created, expires, invalidated, ip, ua, _)| {
-            serde_json::json!({
-                "session_id": id,
-                "user_id": uid,
-                "tenant_id": tid,
-                "created_at": created,
-                "expires_at": expires,
-                "invalidated_at": invalidated,
-                "ip_address": ip,
-                "user_agent": ua,
-                "active": invalidated.is_none(),
+        let items = rows
+            .into_iter()
+            .map(|(id, uid, tid, created, expires, invalidated, ip, ua, _)| {
+                serde_json::json!({
+                    "session_id": id,
+                    "user_id": uid,
+                    "tenant_id": tid,
+                    "created_at": created,
+                    "expires_at": expires,
+                    "invalidated_at": invalidated,
+                    "ip_address": ip,
+                    "user_agent": ua,
+                    "active": invalidated.is_none(),
+                })
             })
-        }).collect();
+            .collect();
         Ok((items, total))
     }
 
@@ -1678,21 +2100,40 @@ impl PgStore {
              ORDER BY {} LIMIT $5 OFFSET $6",
             order
         );
-        let rows: Vec<(i64, chrono::DateTime<chrono::Utc>, String, Option<Uuid>, Option<Uuid>, Option<String>, Option<String>, i64)> =
-            sqlx::query_as(&sql).bind(tenant_id).bind(from).bind(to).bind(event).bind(limit).bind(offset)
-                .fetch_all(&self.pool).await.map_err(AuthError::from)?;
+        let rows: Vec<(
+            i64,
+            chrono::DateTime<chrono::Utc>,
+            String,
+            Option<Uuid>,
+            Option<Uuid>,
+            Option<String>,
+            Option<String>,
+            i64,
+        )> = sqlx::query_as(&sql)
+            .bind(tenant_id)
+            .bind(from)
+            .bind(to)
+            .bind(event)
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(AuthError::from)?;
         let total = rows.first().map(|r| r.7).unwrap_or(0);
-        let items = rows.into_iter().map(|(id, ts, ev, actor, tid, ttype, tid_str, _)| {
-            serde_json::json!({
-                "id": id,
-                "timestamp": ts.to_rfc3339(),
-                "event_type": ev,
-                "actor_id": actor,
-                "tenant_id": tid,
-                "target_type": ttype,
-                "target_id": tid_str,
+        let items = rows
+            .into_iter()
+            .map(|(id, ts, ev, actor, tid, ttype, tid_str, _)| {
+                serde_json::json!({
+                    "id": id,
+                    "timestamp": ts.to_rfc3339(),
+                    "event_type": ev,
+                    "actor_id": actor,
+                    "tenant_id": tid,
+                    "target_type": ttype,
+                    "target_id": tid_str,
+                })
             })
-        }).collect();
+            .collect();
         Ok((items, total))
     }
 
@@ -1713,21 +2154,37 @@ impl PgStore {
              ORDER BY {} LIMIT $2 OFFSET $3",
             order
         );
-        let rows: Vec<(Uuid, Uuid, Option<String>, Option<String>, String, bool, chrono::DateTime<chrono::Utc>, i64)> =
-            sqlx::query_as(&sql).bind(tenant_id).bind(limit).bind(offset)
-                .fetch_all(&self.pool).await.map_err(AuthError::from)?;
+        let rows: Vec<(
+            Uuid,
+            Uuid,
+            Option<String>,
+            Option<String>,
+            String,
+            bool,
+            chrono::DateTime<chrono::Utc>,
+            i64,
+        )> = sqlx::query_as(&sql)
+            .bind(tenant_id)
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(AuthError::from)?;
         let total = rows.first().map(|r| r.7).unwrap_or(0);
-        let items = rows.into_iter().map(|(id, uid, email, name, role, active, joined, _)| {
-            serde_json::json!({
-                "id": id,
-                "user_id": uid,
-                "email": email,
-                "display_name": name,
-                "role": role,
-                "is_active": active,
-                "joined_at": joined.to_rfc3339(),
+        let items = rows
+            .into_iter()
+            .map(|(id, uid, email, name, role, active, joined, _)| {
+                serde_json::json!({
+                    "id": id,
+                    "user_id": uid,
+                    "email": email,
+                    "display_name": name,
+                    "role": role,
+                    "is_active": active,
+                    "joined_at": joined.to_rfc3339(),
+                })
             })
-        }).collect();
+            .collect();
         Ok((items, total))
     }
 
@@ -1747,19 +2204,33 @@ impl PgStore {
              ORDER BY {} LIMIT $2 OFFSET $3",
             order
         );
-        let rows: Vec<(Uuid, String, String, bool, chrono::DateTime<chrono::Utc>, i64)> =
-            sqlx::query_as(&sql).bind(q).bind(limit).bind(offset)
-                .fetch_all(&self.pool).await.map_err(AuthError::from)?;
+        let rows: Vec<(
+            Uuid,
+            String,
+            String,
+            bool,
+            chrono::DateTime<chrono::Utc>,
+            i64,
+        )> = sqlx::query_as(&sql)
+            .bind(q)
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(AuthError::from)?;
         let total = rows.first().map(|r| r.5).unwrap_or(0);
-        let items = rows.into_iter().map(|(id, name, slug, active, created, _)| {
-            serde_json::json!({
-                "id": id,
-                "name": name,
-                "slug": slug,
-                "is_active": active,
-                "created_at": created.to_rfc3339(),
+        let items = rows
+            .into_iter()
+            .map(|(id, name, slug, active, created, _)| {
+                serde_json::json!({
+                    "id": id,
+                    "name": name,
+                    "slug": slug,
+                    "is_active": active,
+                    "created_at": created.to_rfc3339(),
+                })
             })
-        }).collect();
+            .collect();
         Ok((items, total))
     }
 
@@ -1788,23 +2259,43 @@ impl PgStore {
              ORDER BY {} LIMIT $2 OFFSET $3",
             status_sql, order
         );
-        let rows: Vec<(Uuid, Uuid, String, Option<String>, String, i32, i32, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>, i64)> =
-            sqlx::query_as(&sql).bind(tenant_id).bind(limit).bind(offset)
-                .fetch_all(&self.pool).await.map_err(AuthError::from)?;
+        let rows: Vec<(
+            Uuid,
+            Uuid,
+            String,
+            Option<String>,
+            String,
+            i32,
+            i32,
+            chrono::DateTime<chrono::Utc>,
+            chrono::DateTime<chrono::Utc>,
+            i64,
+        )> = sqlx::query_as(&sql)
+            .bind(tenant_id)
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(AuthError::from)?;
         let total = rows.first().map(|r| r.9).unwrap_or(0);
-        let items = rows.into_iter().map(|(id, tid, code, email, role, used, max, created, expires, _)| {
-            serde_json::json!({
-                "id": id,
-                "tenant_id": tid,
-                "code": code,
-                "email": email,
-                "role": role,
-                "used_count": used,
-                "max_uses": max,
-                "created_at": created.to_rfc3339(),
-                "expires_at": expires.to_rfc3339(),
-            })
-        }).collect();
+        let items = rows
+            .into_iter()
+            .map(
+                |(id, tid, code, email, role, used, max, created, expires, _)| {
+                    serde_json::json!({
+                        "id": id,
+                        "tenant_id": tid,
+                        "code": code,
+                        "email": email,
+                        "role": role,
+                        "used_count": used,
+                        "max_uses": max,
+                        "created_at": created.to_rfc3339(),
+                        "expires_at": expires.to_rfc3339(),
+                    })
+                },
+            )
+            .collect();
         Ok((items, total))
     }
 }
@@ -2074,7 +2565,9 @@ impl crate::store::LoginChallengeStore for PgStore {
             if new_attempts >= rec.max_attempts {
                 Ok(O::TooManyAttempts)
             } else {
-                Ok(O::WrongCode { attempts_remaining: rec.max_attempts - new_attempts })
+                Ok(O::WrongCode {
+                    attempts_remaining: rec.max_attempts - new_attempts,
+                })
             }
         }
     }

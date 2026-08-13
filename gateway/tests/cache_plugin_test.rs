@@ -8,10 +8,12 @@ use std::time::Duration;
 #[test]
 fn cache_put_and_get() {
     let cache = volta_gateway::cache::ResponseCache::new(100);
-    let key = volta_gateway::cache::ResponseCache::key("GET", "docs.test.com", "/page", None, false);
+    let key =
+        volta_gateway::cache::ResponseCache::key("GET", "docs.test.com", "/page", None, false);
 
     cache.put(
-        key.clone(), 200,
+        key.clone(),
+        200,
         vec![("content-type".into(), "text/html".into())],
         bytes::Bytes::from("<h1>hello</h1>"),
         Duration::from_secs(300),
@@ -37,7 +39,10 @@ fn cache_expires_after_ttl() {
     let key = "GET:test:/:".to_string();
 
     cache.put(
-        key.clone(), 200, vec![], bytes::Bytes::new(),
+        key.clone(),
+        200,
+        vec![],
+        bytes::Bytes::new(),
         Duration::from_millis(1), // 1ms TTL
     );
 
@@ -49,9 +54,27 @@ fn cache_expires_after_ttl() {
 fn cache_lru_eviction() {
     let cache = volta_gateway::cache::ResponseCache::new(2); // max 2 entries
 
-    cache.put("k1".into(), 200, vec![], bytes::Bytes::new(), Duration::from_secs(300));
-    cache.put("k2".into(), 200, vec![], bytes::Bytes::new(), Duration::from_secs(300));
-    cache.put("k3".into(), 200, vec![], bytes::Bytes::new(), Duration::from_secs(300));
+    cache.put(
+        "k1".into(),
+        200,
+        vec![],
+        bytes::Bytes::new(),
+        Duration::from_secs(300),
+    );
+    cache.put(
+        "k2".into(),
+        200,
+        vec![],
+        bytes::Bytes::new(),
+        Duration::from_secs(300),
+    );
+    cache.put(
+        "k3".into(),
+        200,
+        vec![],
+        bytes::Bytes::new(),
+        Duration::from_secs(300),
+    );
 
     // k1 should be evicted (oldest)
     assert!(cache.get("k1").is_none());
@@ -61,22 +84,48 @@ fn cache_lru_eviction() {
 
 #[test]
 fn cache_key_includes_query() {
-    let k1 = volta_gateway::cache::ResponseCache::key("GET", "api.test.com", "/search", Some("q=foo"), false);
-    let k2 = volta_gateway::cache::ResponseCache::key("GET", "api.test.com", "/search", Some("q=bar"), false);
+    let k1 = volta_gateway::cache::ResponseCache::key(
+        "GET",
+        "api.test.com",
+        "/search",
+        Some("q=foo"),
+        false,
+    );
+    let k2 = volta_gateway::cache::ResponseCache::key(
+        "GET",
+        "api.test.com",
+        "/search",
+        Some("q=bar"),
+        false,
+    );
     assert_ne!(k1, k2);
 }
 
 #[test]
 fn cache_key_ignores_query_when_configured() {
-    let k1 = volta_gateway::cache::ResponseCache::key("GET", "api.test.com", "/search", Some("q=foo"), true);
-    let k2 = volta_gateway::cache::ResponseCache::key("GET", "api.test.com", "/search", Some("q=bar"), true);
+    let k1 = volta_gateway::cache::ResponseCache::key(
+        "GET",
+        "api.test.com",
+        "/search",
+        Some("q=foo"),
+        true,
+    );
+    let k2 = volta_gateway::cache::ResponseCache::key(
+        "GET",
+        "api.test.com",
+        "/search",
+        Some("q=bar"),
+        true,
+    );
     assert_eq!(k1, k2);
 }
 
 #[test]
 fn cache_control_no_store_not_cacheable() {
     assert!(!volta_gateway::cache::is_cacheable(Some("no-store")));
-    assert!(!volta_gateway::cache::is_cacheable(Some("private, no-store")));
+    assert!(!volta_gateway::cache::is_cacheable(Some(
+        "private, no-store"
+    )));
     assert!(volta_gateway::cache::is_cacheable(Some("max-age=3600")));
     assert!(volta_gateway::cache::is_cacheable(None));
 }
@@ -84,8 +133,20 @@ fn cache_control_no_store_not_cacheable() {
 #[test]
 fn cache_stats() {
     let cache = volta_gateway::cache::ResponseCache::new(100);
-    cache.put("k1".into(), 200, vec![], bytes::Bytes::new(), Duration::from_secs(300));
-    cache.put("k2".into(), 200, vec![], bytes::Bytes::new(), Duration::from_secs(300));
+    cache.put(
+        "k1".into(),
+        200,
+        vec![],
+        bytes::Bytes::new(),
+        Duration::from_secs(300),
+    );
+    cache.put(
+        "k2".into(),
+        200,
+        vec![],
+        bytes::Bytes::new(),
+        Duration::from_secs(300),
+    );
     let (total, fresh) = cache.stats();
     assert_eq!(total, 2);
     assert_eq!(fresh, 2);
@@ -95,7 +156,7 @@ fn cache_stats() {
 
 #[test]
 fn plugin_api_key_auth_accepts_valid() {
-    use volta_gateway::plugin::{Plugin, PluginContext, builtin::ApiKeyAuth};
+    use volta_gateway::plugin::{builtin::ApiKeyAuth, Plugin, PluginContext};
 
     let plugin = ApiKeyAuth {
         header: "x-api-key".into(),
@@ -103,14 +164,18 @@ fn plugin_api_key_auth_accepts_valid() {
     };
 
     let mut ctx = PluginContext {
-        method: "GET".into(), host: "api.test.com".into(), path: "/data".into(),
+        method: "GET".into(),
+        host: "api.test.com".into(),
+        path: "/data".into(),
         headers: {
             let mut h = HashMap::new();
             h.insert("x-api-key".into(), "secret123".into());
             h
         },
         client_ip: "1.2.3.4".into(),
-        reject: None, add_headers: HashMap::new(), remove_headers: vec![],
+        reject: None,
+        add_headers: HashMap::new(),
+        remove_headers: vec![],
     };
 
     plugin.on_request(&mut ctx).unwrap();
@@ -119,7 +184,7 @@ fn plugin_api_key_auth_accepts_valid() {
 
 #[test]
 fn plugin_api_key_auth_rejects_invalid() {
-    use volta_gateway::plugin::{Plugin, PluginContext, builtin::ApiKeyAuth};
+    use volta_gateway::plugin::{builtin::ApiKeyAuth, Plugin, PluginContext};
 
     let plugin = ApiKeyAuth {
         header: "x-api-key".into(),
@@ -127,14 +192,18 @@ fn plugin_api_key_auth_rejects_invalid() {
     };
 
     let mut ctx = PluginContext {
-        method: "GET".into(), host: "api.test.com".into(), path: "/data".into(),
+        method: "GET".into(),
+        host: "api.test.com".into(),
+        path: "/data".into(),
         headers: {
             let mut h = HashMap::new();
             h.insert("x-api-key".into(), "wrong".into());
             h
         },
         client_ip: "1.2.3.4".into(),
-        reject: None, add_headers: HashMap::new(), remove_headers: vec![],
+        reject: None,
+        add_headers: HashMap::new(),
+        remove_headers: vec![],
     };
 
     plugin.on_request(&mut ctx).unwrap();
@@ -144,7 +213,7 @@ fn plugin_api_key_auth_rejects_invalid() {
 
 #[test]
 fn plugin_api_key_auth_rejects_missing() {
-    use volta_gateway::plugin::{Plugin, PluginContext, builtin::ApiKeyAuth};
+    use volta_gateway::plugin::{builtin::ApiKeyAuth, Plugin, PluginContext};
 
     let plugin = ApiKeyAuth {
         header: "x-api-key".into(),
@@ -152,10 +221,14 @@ fn plugin_api_key_auth_rejects_missing() {
     };
 
     let mut ctx = PluginContext {
-        method: "GET".into(), host: "api.test.com".into(), path: "/data".into(),
+        method: "GET".into(),
+        host: "api.test.com".into(),
+        path: "/data".into(),
         headers: HashMap::new(),
         client_ip: "1.2.3.4".into(),
-        reject: None, add_headers: HashMap::new(), remove_headers: vec![],
+        reject: None,
+        add_headers: HashMap::new(),
+        remove_headers: vec![],
     };
 
     plugin.on_request(&mut ctx).unwrap();
@@ -164,7 +237,7 @@ fn plugin_api_key_auth_rejects_missing() {
 
 #[test]
 fn plugin_header_injector() {
-    use volta_gateway::plugin::{Plugin, PluginContext, builtin::HeaderInjector};
+    use volta_gateway::plugin::{builtin::HeaderInjector, Plugin, PluginContext};
 
     let plugin = HeaderInjector {
         request_headers: {
@@ -176,9 +249,14 @@ fn plugin_header_injector() {
     };
 
     let mut ctx = PluginContext {
-        method: "GET".into(), host: "test.com".into(), path: "/".into(),
-        headers: HashMap::new(), client_ip: "1.2.3.4".into(),
-        reject: None, add_headers: HashMap::new(), remove_headers: vec![],
+        method: "GET".into(),
+        host: "test.com".into(),
+        path: "/".into(),
+        headers: HashMap::new(),
+        client_ip: "1.2.3.4".into(),
+        reject: None,
+        add_headers: HashMap::new(),
+        remove_headers: vec![],
     };
 
     plugin.on_request(&mut ctx).unwrap();
@@ -189,20 +267,18 @@ fn plugin_header_injector() {
 fn plugin_manager_loads_from_config() {
     use volta_gateway::plugin::{PluginConfig, PluginManager};
 
-    let configs = vec![
-        PluginConfig {
-            name: "api-key-auth".into(),
-            plugin_type: "native".into(),
-            path: None,
-            config: {
-                let mut c = HashMap::new();
-                c.insert("header".into(), "x-api-key".into());
-                c.insert("keys".into(), "key1,key2".into());
-                c
-            },
-            phase: "request".into(),
+    let configs = vec![PluginConfig {
+        name: "api-key-auth".into(),
+        plugin_type: "native".into(),
+        path: None,
+        config: {
+            let mut c = HashMap::new();
+            c.insert("header".into(), "x-api-key".into());
+            c.insert("keys".into(), "key1,key2".into());
+            c
         },
-    ];
+        phase: "request".into(),
+    }];
 
     let mgr = PluginManager::load_from_config(&configs);
     let states = mgr.states();
@@ -215,20 +291,24 @@ fn plugin_manager_loads_from_config() {
 
 #[test]
 fn plugin_rate_limit_by_user_allows_under_limit() {
-    use volta_gateway::plugin::{Plugin, PluginContext, builtin::RateLimitByUser};
+    use volta_gateway::plugin::{builtin::RateLimitByUser, Plugin, PluginContext};
 
     let plugin = RateLimitByUser::new(5, 60, "x-volta-user-id".into());
 
     for _ in 0..5 {
         let mut ctx = PluginContext {
-            method: "GET".into(), host: "test.com".into(), path: "/".into(),
+            method: "GET".into(),
+            host: "test.com".into(),
+            path: "/".into(),
             headers: {
                 let mut h = HashMap::new();
                 h.insert("x-volta-user-id".into(), "user-1".into());
                 h
             },
             client_ip: "1.2.3.4".into(),
-            reject: None, add_headers: HashMap::new(), remove_headers: vec![],
+            reject: None,
+            add_headers: HashMap::new(),
+            remove_headers: vec![],
         };
         plugin.on_request(&mut ctx).unwrap();
         assert!(ctx.reject.is_none(), "should allow request #{}", 5);
@@ -237,20 +317,24 @@ fn plugin_rate_limit_by_user_allows_under_limit() {
 
 #[test]
 fn plugin_rate_limit_by_user_rejects_over_limit() {
-    use volta_gateway::plugin::{Plugin, PluginContext, builtin::RateLimitByUser};
+    use volta_gateway::plugin::{builtin::RateLimitByUser, Plugin, PluginContext};
 
     let plugin = RateLimitByUser::new(3, 60, "x-volta-user-id".into());
 
     for i in 0..5 {
         let mut ctx = PluginContext {
-            method: "GET".into(), host: "test.com".into(), path: "/".into(),
+            method: "GET".into(),
+            host: "test.com".into(),
+            path: "/".into(),
             headers: {
                 let mut h = HashMap::new();
                 h.insert("x-volta-user-id".into(), "user-1".into());
                 h
             },
             client_ip: "1.2.3.4".into(),
-            reject: None, add_headers: HashMap::new(), remove_headers: vec![],
+            reject: None,
+            add_headers: HashMap::new(),
+            remove_headers: vec![],
         };
         plugin.on_request(&mut ctx).unwrap();
         if i >= 3 {
@@ -262,28 +346,46 @@ fn plugin_rate_limit_by_user_rejects_over_limit() {
 
 #[test]
 fn plugin_rate_limit_by_user_independent_users() {
-    use volta_gateway::plugin::{Plugin, PluginContext, builtin::RateLimitByUser};
+    use volta_gateway::plugin::{builtin::RateLimitByUser, Plugin, PluginContext};
 
     let plugin = RateLimitByUser::new(2, 60, "x-volta-user-id".into());
 
     // User A: 3 requests (should hit limit at 3rd)
     for i in 0..3 {
         let mut ctx = PluginContext {
-            method: "GET".into(), host: "test.com".into(), path: "/".into(),
-            headers: { let mut h = HashMap::new(); h.insert("x-volta-user-id".into(), "user-a".into()); h },
+            method: "GET".into(),
+            host: "test.com".into(),
+            path: "/".into(),
+            headers: {
+                let mut h = HashMap::new();
+                h.insert("x-volta-user-id".into(), "user-a".into());
+                h
+            },
             client_ip: "1.2.3.4".into(),
-            reject: None, add_headers: HashMap::new(), remove_headers: vec![],
+            reject: None,
+            add_headers: HashMap::new(),
+            remove_headers: vec![],
         };
         plugin.on_request(&mut ctx).unwrap();
-        if i >= 2 { assert!(ctx.reject.is_some()); }
+        if i >= 2 {
+            assert!(ctx.reject.is_some());
+        }
     }
 
     // User B: should still have full quota
     let mut ctx = PluginContext {
-        method: "GET".into(), host: "test.com".into(), path: "/".into(),
-        headers: { let mut h = HashMap::new(); h.insert("x-volta-user-id".into(), "user-b".into()); h },
+        method: "GET".into(),
+        host: "test.com".into(),
+        path: "/".into(),
+        headers: {
+            let mut h = HashMap::new();
+            h.insert("x-volta-user-id".into(), "user-b".into());
+            h
+        },
         client_ip: "1.2.3.4".into(),
-        reject: None, add_headers: HashMap::new(), remove_headers: vec![],
+        reject: None,
+        add_headers: HashMap::new(),
+        remove_headers: vec![],
     };
     plugin.on_request(&mut ctx).unwrap();
     assert!(ctx.reject.is_none(), "user-b should not be rate limited");
@@ -291,17 +393,21 @@ fn plugin_rate_limit_by_user_independent_users() {
 
 #[test]
 fn plugin_rate_limit_skips_anonymous() {
-    use volta_gateway::plugin::{Plugin, PluginContext, builtin::RateLimitByUser};
+    use volta_gateway::plugin::{builtin::RateLimitByUser, Plugin, PluginContext};
 
     let plugin = RateLimitByUser::new(1, 60, "x-volta-user-id".into());
 
     // No user header = anonymous, should always pass
     for _ in 0..10 {
         let mut ctx = PluginContext {
-            method: "GET".into(), host: "test.com".into(), path: "/".into(),
+            method: "GET".into(),
+            host: "test.com".into(),
+            path: "/".into(),
             headers: HashMap::new(),
             client_ip: "1.2.3.4".into(),
-            reject: None, add_headers: HashMap::new(), remove_headers: vec![],
+            reject: None,
+            add_headers: HashMap::new(),
+            remove_headers: vec![],
         };
         plugin.on_request(&mut ctx).unwrap();
         assert!(ctx.reject.is_none());
@@ -331,7 +437,10 @@ routing:
     let table = config.routing_table();
     let route = table.get("api.example.com").unwrap();
     assert!(route.backend_tls.is_some());
-    assert_eq!(route.backend_tls.as_ref().unwrap().ca_cert, "/etc/volta/ca.pem");
+    assert_eq!(
+        route.backend_tls.as_ref().unwrap().ca_cert,
+        "/etc/volta/ca.pem"
+    );
 }
 
 #[test]

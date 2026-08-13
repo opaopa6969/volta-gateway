@@ -43,8 +43,12 @@ impl Default for PageRequest {
     }
 }
 
-fn default_page() -> u32 { 1 }
-fn default_size() -> u32 { DEFAULT_SIZE }
+fn default_page() -> u32 {
+    1
+}
+fn default_size() -> u32 {
+    DEFAULT_SIZE
+}
 
 impl PageRequest {
     /// Clamp page/size to sane bounds. Always returns a struct that's safe to
@@ -59,7 +63,9 @@ impl PageRequest {
         ((self.page.saturating_sub(1)) as i64) * (self.size as i64)
     }
 
-    pub fn limit(&self) -> i64 { self.size as i64 }
+    pub fn limit(&self) -> i64 {
+        self.size as i64
+    }
 
     /// Sanitize the `sort` parameter against a whitelist of column names.
     /// Returns a raw SQL fragment (`"col ASC"` / `"col DESC"`) or the provided
@@ -103,7 +109,13 @@ impl<T: Serialize> PageResponse<T> {
             let t = total.max(0) as u64;
             (t.div_ceil(req.size as u64)) as u32
         };
-        Self { items, total, page: req.page, size: req.size, pages }
+        Self {
+            items,
+            total,
+            page: req.page,
+            size: req.size,
+            pages,
+        }
     }
 }
 
@@ -113,39 +125,68 @@ mod tests {
 
     #[test]
     fn offset_for_first_page_is_zero() {
-        let r = PageRequest { page: 1, size: 50, ..Default::default() }.normalized();
+        let r = PageRequest {
+            page: 1,
+            size: 50,
+            ..Default::default()
+        }
+        .normalized();
         assert_eq!(r.offset(), 0);
     }
 
     #[test]
     fn offset_for_later_pages() {
-        let r = PageRequest { page: 3, size: 20, ..Default::default() }.normalized();
+        let r = PageRequest {
+            page: 3,
+            size: 20,
+            ..Default::default()
+        }
+        .normalized();
         assert_eq!(r.offset(), 40);
     }
 
     #[test]
     fn size_is_clamped() {
-        let r = PageRequest { page: 1, size: 99999, ..Default::default() }.normalized();
+        let r = PageRequest {
+            page: 1,
+            size: 99999,
+            ..Default::default()
+        }
+        .normalized();
         assert_eq!(r.size, MAX_SIZE);
     }
 
     #[test]
     fn pages_rounds_up() {
-        let r = PageRequest { page: 1, size: 10, ..Default::default() }.normalized();
+        let r = PageRequest {
+            page: 1,
+            size: 10,
+            ..Default::default()
+        }
+        .normalized();
         let resp = PageResponse::new(Vec::<u32>::new(), 25, &r);
         assert_eq!(resp.pages, 3);
     }
 
     #[test]
     fn pages_zero_when_no_results() {
-        let r = PageRequest { page: 1, size: 10, ..Default::default() }.normalized();
+        let r = PageRequest {
+            page: 1,
+            size: 10,
+            ..Default::default()
+        }
+        .normalized();
         let resp = PageResponse::new(Vec::<u32>::new(), 0, &r);
         assert_eq!(resp.pages, 0);
     }
 
     #[test]
     fn order_sql_whitelists_column() {
-        let sql = PageRequest::order_sql(Some("created_at"), &["created_at", "email"], "created_at DESC");
+        let sql = PageRequest::order_sql(
+            Some("created_at"),
+            &["created_at", "email"],
+            "created_at DESC",
+        );
         assert_eq!(sql, "created_at ASC");
     }
 

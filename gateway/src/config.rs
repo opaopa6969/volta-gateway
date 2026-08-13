@@ -1,5 +1,5 @@
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde::ser::SerializeStruct;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -16,7 +16,11 @@ impl<'de> Deserialize<'de> for WeightedBackend {
         #[serde(untagged)]
         enum BackendEntry {
             Simple(String),
-            Weighted { url: String, #[serde(default = "default_weight")] weight: u32 },
+            Weighted {
+                url: String,
+                #[serde(default = "default_weight")]
+                weight: u32,
+            },
         }
         match BackendEntry::deserialize(deserializer)? {
             BackendEntry::Simple(url) => Ok(WeightedBackend { url, weight: 1 }),
@@ -36,9 +40,13 @@ impl Serialize for WeightedBackend {
     }
 }
 
-fn default_weight() -> u32 { 1 }
+fn default_weight() -> u32 {
+    1
+}
 
-fn deserialize_backends<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<WeightedBackend>, D::Error> {
+fn deserialize_backends<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<WeightedBackend>, D::Error> {
     Vec::<WeightedBackend>::deserialize(deserializer)
 }
 
@@ -127,7 +135,9 @@ pub struct TlsConfig {
     pub dns_zone_id: Option<String>,
 }
 
-fn default_challenge() -> String { "http-01".into() }
+fn default_challenge() -> String {
+    "http-01".into()
+}
 
 /// #39: Access log configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -142,7 +152,9 @@ pub struct AccessLogConfig {
     pub format: String,
 }
 
-fn default_access_format() -> String { "json".into() }
+fn default_access_format() -> String {
+    "json".into()
+}
 
 // ─── #55: Config Schema v3 ─────────────────────────────────
 
@@ -162,10 +174,18 @@ pub struct TenancyConfig {
     #[serde(default)]
     pub routing: TenantRouting,
 }
-fn default_tenancy_mode() -> String { "single".into() }
-fn default_creation_policy() -> String { "disabled".into() }
-fn default_max_orgs() -> u32 { 1 }
-fn default_org_display() -> String { "Organization".into() }
+fn default_tenancy_mode() -> String {
+    "single".into()
+}
+fn default_creation_policy() -> String {
+    "disabled".into()
+}
+fn default_max_orgs() -> u32 {
+    1
+}
+fn default_org_display() -> String {
+    "Organization".into()
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[allow(dead_code)]
@@ -178,9 +198,15 @@ pub struct TenantRouting {
     #[serde(default = "default_cookie_scope")]
     pub cookie_scope: String,
 }
-fn default_routing_mode() -> String { "none".into() }
-fn default_slug_header() -> String { "X-Volta-Tenant-Slug".into() }
-fn default_cookie_scope() -> String { "shared".into() }
+fn default_routing_mode() -> String {
+    "none".into()
+}
+fn default_slug_header() -> String {
+    "X-Volta-Tenant-Slug".into()
+}
+fn default_cookie_scope() -> String {
+    "shared".into()
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[allow(dead_code)]
@@ -192,9 +218,16 @@ pub struct AccessConfig {
     #[serde(default = "default_actions")]
     pub available_actions: Vec<String>,
 }
-fn default_visibility() -> String { "all".into() }
+fn default_visibility() -> String {
+    "all".into()
+}
 fn default_actions() -> Vec<String> {
-    ["view","open","deploy","terminal","config","admin","delete"].iter().map(|s| s.to_string()).collect()
+    [
+        "view", "open", "deploy", "terminal", "config", "admin", "delete",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -209,8 +242,12 @@ pub struct BindingConfig {
     #[serde(default = "default_retention")]
     pub retention_days: u32,
 }
-fn default_on_delete() -> String { "archive".into() }
-fn default_retention() -> u32 { 90 }
+fn default_on_delete() -> String {
+    "archive".into()
+}
+fn default_retention() -> u32 {
+    90
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[allow(dead_code)]
@@ -403,7 +440,9 @@ impl RouteEntry {
     pub fn all_backends(&self) -> Vec<String> {
         let mut result: Vec<String> = self.backends.iter().map(|b| b.url.clone()).collect();
         if let Some(ref b) = self.backend {
-            if !result.contains(b) { result.insert(0, b.clone()); }
+            if !result.contains(b) {
+                result.insert(0, b.clone());
+            }
         }
         result
     }
@@ -519,7 +558,10 @@ impl GatewayConfig {
     pub fn validate_detailed(&self) -> Result<(), Vec<(u8, String)>> {
         let mut errors: Vec<(u8, String)> = vec![];
         if self.routing.is_empty() {
-            errors.push((Self::EXIT_SCHEMA, "routing is empty — no requests will be served".into()));
+            errors.push((
+                Self::EXIT_SCHEMA,
+                "routing is empty — no requests will be served".into(),
+            ));
         }
         if self.server.port == 0 {
             errors.push((Self::EXIT_SCHEMA, "server.port must be > 0".into()));
@@ -535,17 +577,26 @@ impl GatewayConfig {
         for r in &self.routing {
             for cidr in &r.ip_allowlist {
                 if cidr.parse::<ipnet::IpNet>().is_err() {
-                    errors.push((Self::EXIT_SCHEMA, format!("invalid CIDR in ip_allowlist for {}: {}", r.host, cidr)));
+                    errors.push((
+                        Self::EXIT_SCHEMA,
+                        format!("invalid CIDR in ip_allowlist for {}: {}", r.host, cidr),
+                    ));
                 }
             }
         }
         // Validate TLS config
         if let Some(ref tls) = self.tls {
             if tls.domains.is_empty() {
-                errors.push((Self::EXIT_SCHEMA, "tls.domains is empty — no certificates will be issued".into()));
+                errors.push((
+                    Self::EXIT_SCHEMA,
+                    "tls.domains is empty — no certificates will be issued".into(),
+                ));
             }
             if tls.contact_email.is_empty() {
-                errors.push((Self::EXIT_SCHEMA, "tls.contact_email is required for ACME".into()));
+                errors.push((
+                    Self::EXIT_SCHEMA,
+                    "tls.contact_email is required for ACME".into(),
+                ));
             }
             if tls.port == 0 {
                 errors.push((Self::EXIT_SCHEMA, "tls.port must be > 0".into()));
@@ -553,24 +604,42 @@ impl GatewayConfig {
         }
         // Validate force_https requires TLS
         if self.server.force_https && self.tls.is_none() {
-            errors.push((Self::EXIT_SCHEMA, "server.force_https requires tls config".into()));
+            errors.push((
+                Self::EXIT_SCHEMA,
+                "server.force_https requires tls config".into(),
+            ));
         }
         // Validate L4 proxy entries
         for (i, entry) in self.l4_proxy.iter().enumerate() {
             if entry.listen_port == 0 {
-                errors.push((Self::EXIT_SCHEMA, format!("l4_proxy[{}].listen_port must be > 0", i)));
+                errors.push((
+                    Self::EXIT_SCHEMA,
+                    format!("l4_proxy[{}].listen_port must be > 0", i),
+                ));
             }
             if entry.backend.is_empty() {
-                errors.push((Self::EXIT_SCHEMA, format!("l4_proxy[{}].backend is empty", i)));
+                errors.push((
+                    Self::EXIT_SCHEMA,
+                    format!("l4_proxy[{}].backend is empty", i),
+                ));
             }
             if entry.protocol != "tcp" && entry.protocol != "udp" {
-                errors.push((Self::EXIT_SCHEMA, format!("l4_proxy[{}].protocol must be 'tcp' or 'udp', got '{}'", i, entry.protocol)));
+                errors.push((
+                    Self::EXIT_SCHEMA,
+                    format!(
+                        "l4_proxy[{}].protocol must be 'tcp' or 'udp', got '{}'",
+                        i, entry.protocol
+                    ),
+                ));
             }
         }
         // Validate no backend configured
         for r in &self.routing {
             if r.all_backends().is_empty() {
-                errors.push((Self::EXIT_SCHEMA, format!("routing host '{}' has no backends", r.host)));
+                errors.push((
+                    Self::EXIT_SCHEMA,
+                    format!("routing host '{}' has no backends", r.host),
+                ));
             }
         }
         // ── #95: SPEC §11.8 の 3 / 4 / 5 に相当する検査（今まで無かった） ──
@@ -580,13 +649,23 @@ impl GatewayConfig {
         for r in &self.routing {
             for b in r.all_backends() {
                 if b.parse::<hyper::Uri>().is_err() {
-                    errors.push((Self::EXIT_BACKEND_URL,
-                        format!("routing host '{}': backend URL is unparsable: {}", r.host, b)));
+                    errors.push((
+                        Self::EXIT_BACKEND_URL,
+                        format!(
+                            "routing host '{}': backend URL is unparsable: {}",
+                            r.host, b
+                        ),
+                    ));
                     continue;
                 }
                 if !b.starts_with("http://") && !b.starts_with("https://") {
-                    errors.push((Self::EXIT_BACKEND_URL,
-                        format!("routing host '{}': backend must start with http:// or https://: {}", r.host, b)));
+                    errors.push((
+                        Self::EXIT_BACKEND_URL,
+                        format!(
+                            "routing host '{}': backend must start with http:// or https://: {}",
+                            r.host, b
+                        ),
+                    ));
                 }
             }
         }
@@ -595,10 +674,16 @@ impl GatewayConfig {
         //    typo に気付けなかった（設定したつもりの plugin が動いていない）。
         for pl in &self.plugins {
             if pl.plugin_type == "native"
-                && !crate::plugin::PluginManager::BUILTIN_PLUGINS.contains(&pl.name.as_str()) {
-                errors.push((Self::EXIT_UNKNOWN_PLUGIN, format!(
-                    "unknown plugin '{}' (built-in: {})",
-                    pl.name, crate::plugin::PluginManager::BUILTIN_PLUGINS.join(", "))));
+                && !crate::plugin::PluginManager::BUILTIN_PLUGINS.contains(&pl.name.as_str())
+            {
+                errors.push((
+                    Self::EXIT_UNKNOWN_PLUGIN,
+                    format!(
+                        "unknown plugin '{}' (built-in: {})",
+                        pl.name,
+                        crate::plugin::PluginManager::BUILTIN_PLUGINS.join(", ")
+                    ),
+                ));
             }
         }
 
@@ -607,8 +692,10 @@ impl GatewayConfig {
         if let Some(ref tls) = self.tls {
             if tls.challenge == "dns-01" {
                 if tls.dns_provider.is_none() {
-                    errors.push((Self::EXIT_TLS_CREDENTIALS,
-                        "tls.challenge is dns-01 but tls.dns_provider is not set".into()));
+                    errors.push((
+                        Self::EXIT_TLS_CREDENTIALS,
+                        "tls.challenge is dns-01 but tls.dns_provider is not set".into(),
+                    ));
                 }
                 if tls.dns_api_token.is_none() && std::env::var("CF_DNS_API_TOKEN").is_err() {
                     errors.push((Self::EXIT_TLS_CREDENTIALS,
@@ -617,7 +704,11 @@ impl GatewayConfig {
             }
         }
 
-        if errors.is_empty() { Ok(()) } else { Err(errors) }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
     }
 
     /// Build routing table: host → RouteInfo
@@ -625,31 +716,37 @@ impl GatewayConfig {
     pub fn routing_table(&self) -> HashMap<String, crate::proxy::RouteInfo> {
         self.routing
             .iter()
-            .map(|r| (r.host.to_lowercase(), crate::proxy::RouteInfo {
-                backends: r.all_backends(),
-                weights: r.all_weights(),
-                app_id: r.app_id.clone(),
-                public: r.public,
-                bypass_paths: r.auth_bypass_paths.clone(),
-                mirror: r.mirror.clone(),
-                path_prefix: r.path_prefix.clone(),
-                strip_prefix: r.strip_prefix.clone(),
-                add_prefix: r.add_prefix.clone(),
-                request_headers: r.request_headers.clone(),
-                response_headers: r.response_headers.clone(),
-                geo_allowlist: r.geo_allowlist.clone(),
-                geo_denylist: r.geo_denylist.clone(),
-                timeout_secs: r.timeout_secs,
-                cache: r.cache.clone(),
-                backend_tls: r.backend_tls.clone(),
-            }))
+            .map(|r| {
+                (
+                    r.host.to_lowercase(),
+                    crate::proxy::RouteInfo {
+                        backends: r.all_backends(),
+                        weights: r.all_weights(),
+                        app_id: r.app_id.clone(),
+                        public: r.public,
+                        bypass_paths: r.auth_bypass_paths.clone(),
+                        mirror: r.mirror.clone(),
+                        path_prefix: r.path_prefix.clone(),
+                        strip_prefix: r.strip_prefix.clone(),
+                        add_prefix: r.add_prefix.clone(),
+                        request_headers: r.request_headers.clone(),
+                        response_headers: r.response_headers.clone(),
+                        geo_allowlist: r.geo_allowlist.clone(),
+                        geo_denylist: r.geo_denylist.clone(),
+                        timeout_secs: r.timeout_secs,
+                        cache: r.cache.clone(),
+                        backend_tls: r.backend_tls.clone(),
+                    },
+                )
+            })
             .collect()
     }
 
     /// Build CORS origins table: host → allowed origins
     /// GW-44: empty cors_origins = no CORS headers (not wildcard)
     pub fn cors_table(&self) -> HashMap<String, Vec<String>> {
-        self.routing.iter()
+        self.routing
+            .iter()
             .filter(|r| !r.cors_origins.is_empty())
             .map(|r| (r.host.to_lowercase(), r.cors_origins.clone()))
             .collect()
@@ -657,12 +754,18 @@ impl GatewayConfig {
 
     /// Build IP allowlist: host → Vec<IpNet>
     pub fn ip_allowlist_table(&self) -> HashMap<String, Vec<ipnet::IpNet>> {
-        self.routing.iter()
+        self.routing
+            .iter()
             .filter(|r| !r.ip_allowlist.is_empty())
-            .map(|r| (
-                r.host.to_lowercase(),
-                r.ip_allowlist.iter().filter_map(|c| c.parse().ok()).collect(),
-            ))
+            .map(|r| {
+                (
+                    r.host.to_lowercase(),
+                    r.ip_allowlist
+                        .iter()
+                        .filter_map(|c| c.parse().ok())
+                        .collect(),
+                )
+            })
             .collect()
     }
 }
@@ -754,8 +857,14 @@ routing:
         let route = make_weighted_route(
             "example.com",
             vec![
-                WeightedBackend { url: "http://a:3000".into(), weight: 90 },
-                WeightedBackend { url: "http://b:3000".into(), weight: 10 },
+                WeightedBackend {
+                    url: "http://a:3000".into(),
+                    weight: 90,
+                },
+                WeightedBackend {
+                    url: "http://b:3000".into(),
+                    weight: 10,
+                },
             ],
         );
         assert_eq!(route.all_backends(), vec!["http://a:3000", "http://b:3000"]);
@@ -767,7 +876,10 @@ routing:
         let route = RouteEntry {
             host: "example.com".into(),
             backend: Some("http://a:3000".into()),
-            backends: vec![WeightedBackend { url: "http://a:3000".into(), weight: 90 }],
+            backends: vec![WeightedBackend {
+                url: "http://a:3000".into(),
+                weight: 90,
+            }],
             app_id: None,
             ip_allowlist: vec![],
             cors_origins: vec![],
@@ -828,8 +940,14 @@ routing:
         let route = make_weighted_route(
             "example.com",
             vec![
-                WeightedBackend { url: "http://a:3000".into(), weight: 70 },
-                WeightedBackend { url: "http://b:3000".into(), weight: 30 },
+                WeightedBackend {
+                    url: "http://a:3000".into(),
+                    weight: 70,
+                },
+                WeightedBackend {
+                    url: "http://b:3000".into(),
+                    weight: 30,
+                },
             ],
         );
         assert_eq!(route.all_weights(), vec![70u32, 30u32]);
@@ -859,9 +977,15 @@ routing:
   - host: example.com
     backend: "backend:3000"
 "#;
-        let errs = parse_config(yaml).validate_detailed().expect_err("should fail");
-        assert!(errs.iter().any(|(c, _)| *c == GatewayConfig::EXIT_BACKEND_URL),
-                "expected EXIT_BACKEND_URL, got {:?}", errs);
+        let errs = parse_config(yaml)
+            .validate_detailed()
+            .expect_err("should fail");
+        assert!(
+            errs.iter()
+                .any(|(c, _)| *c == GatewayConfig::EXIT_BACKEND_URL),
+            "expected EXIT_BACKEND_URL, got {:?}",
+            errs
+        );
     }
 
     #[test]
@@ -877,9 +1001,15 @@ routing:
 plugins:
   - name: no-such-plugin
 "#;
-        let errs = parse_config(yaml).validate_detailed().expect_err("should fail");
-        assert!(errs.iter().any(|(c, _)| *c == GatewayConfig::EXIT_UNKNOWN_PLUGIN),
-                "expected EXIT_UNKNOWN_PLUGIN, got {:?}", errs);
+        let errs = parse_config(yaml)
+            .validate_detailed()
+            .expect_err("should fail");
+        assert!(
+            errs.iter()
+                .any(|(c, _)| *c == GatewayConfig::EXIT_UNKNOWN_PLUGIN),
+            "expected EXIT_UNKNOWN_PLUGIN, got {:?}",
+            errs
+        );
     }
 
     #[test]
@@ -896,7 +1026,11 @@ plugins:
   - name: api-key-auth
 "#;
         let cfg = parse_config(yaml);
-        assert!(cfg.validate_detailed().is_ok(), "{:?}", cfg.validate_detailed());
+        assert!(
+            cfg.validate_detailed().is_ok(),
+            "{:?}",
+            cfg.validate_detailed()
+        );
     }
 
     #[test]
@@ -917,10 +1051,18 @@ tls:
   challenge: dns-01
 "#;
         // CF_DNS_API_TOKEN が環境にあると通ってしまうので、その場合はスキップ
-        if std::env::var("CF_DNS_API_TOKEN").is_ok() { return; }
-        let errs = parse_config(yaml).validate_detailed().expect_err("should fail");
-        assert!(errs.iter().any(|(c, _)| *c == GatewayConfig::EXIT_TLS_CREDENTIALS),
-                "expected EXIT_TLS_CREDENTIALS, got {:?}", errs);
+        if std::env::var("CF_DNS_API_TOKEN").is_ok() {
+            return;
+        }
+        let errs = parse_config(yaml)
+            .validate_detailed()
+            .expect_err("should fail");
+        assert!(
+            errs.iter()
+                .any(|(c, _)| *c == GatewayConfig::EXIT_TLS_CREDENTIALS),
+            "expected EXIT_TLS_CREDENTIALS, got {:?}",
+            errs
+        );
     }
 
     #[test]
@@ -1038,7 +1180,9 @@ l4_proxy:
 "#;
         let cfg: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
         let errs = cfg.validate().unwrap_err();
-        assert!(errs.iter().any(|e| e.contains("protocol must be 'tcp' or 'udp'")));
+        assert!(errs
+            .iter()
+            .any(|e| e.contains("protocol must be 'tcp' or 'udp'")));
     }
 
     // ── cors_table / ip_allowlist_table ──────────────────────────
@@ -1216,37 +1360,99 @@ routing:
     }
 }
 
-fn default_port() -> u16 { 8080 }
-fn default_read_timeout() -> u64 { 10 }
-fn default_request_timeout() -> u64 { 30 }
-fn default_drain_timeout() -> u64 { 30 }
-fn default_volta_url() -> String { "http://localhost:7070".into() }
-fn default_verify_path() -> String { "/auth/verify".into() }
-fn default_auth_timeout() -> u64 { 500 }
-fn default_pool_max_idle() -> usize { 32 }
-fn default_cookie_name() -> Option<String> { Some("__volta_session".into()) }
-fn default_rps() -> u32 { 1000 }
-fn default_per_ip_rps() -> u32 { 100 }
-fn default_pool_idle() -> usize { 64 }
-fn default_idle_timeout() -> u64 { 90 }
-fn default_hc_interval() -> u64 { 30 }
-fn default_hc_path() -> String { "/healthz".into() }
-fn default_log_level() -> String { "info".into() }
-fn default_log_format() -> String { "json".into() }
-fn default_tls_port() -> u16 { 443 }
-fn default_acme_cache() -> String { "./acme-cache".into() }
-fn default_l4_proto() -> String { "tcp".into() }
-fn default_sample_rate() -> f64 { 1.0 }
+fn default_port() -> u16 {
+    8080
+}
+fn default_read_timeout() -> u64 {
+    10
+}
+fn default_request_timeout() -> u64 {
+    30
+}
+fn default_drain_timeout() -> u64 {
+    30
+}
+fn default_volta_url() -> String {
+    "http://localhost:7070".into()
+}
+fn default_verify_path() -> String {
+    "/auth/verify".into()
+}
+fn default_auth_timeout() -> u64 {
+    500
+}
+fn default_pool_max_idle() -> usize {
+    32
+}
+fn default_cookie_name() -> Option<String> {
+    Some("__volta_session".into())
+}
+fn default_rps() -> u32 {
+    1000
+}
+fn default_per_ip_rps() -> u32 {
+    100
+}
+fn default_pool_idle() -> usize {
+    64
+}
+fn default_idle_timeout() -> u64 {
+    90
+}
+fn default_hc_interval() -> u64 {
+    30
+}
+fn default_hc_path() -> String {
+    "/healthz".into()
+}
+fn default_log_level() -> String {
+    "info".into()
+}
+fn default_log_format() -> String {
+    "json".into()
+}
+fn default_tls_port() -> u16 {
+    443
+}
+fn default_acme_cache() -> String {
+    "./acme-cache".into()
+}
+fn default_l4_proto() -> String {
+    "tcp".into()
+}
+fn default_sample_rate() -> f64 {
+    1.0
+}
 
 impl Default for RateLimitConfig {
-    fn default() -> Self { Self { requests_per_second: default_rps(), per_ip_rps: default_per_ip_rps() } }
+    fn default() -> Self {
+        Self {
+            requests_per_second: default_rps(),
+            per_ip_rps: default_per_ip_rps(),
+        }
+    }
 }
 impl Default for BackendPoolConfig {
-    fn default() -> Self { Self { max_idle_per_host: default_pool_idle(), idle_timeout_secs: default_idle_timeout() } }
+    fn default() -> Self {
+        Self {
+            max_idle_per_host: default_pool_idle(),
+            idle_timeout_secs: default_idle_timeout(),
+        }
+    }
 }
 impl Default for HealthCheckConfig {
-    fn default() -> Self { Self { interval_secs: default_hc_interval(), path: default_hc_path() } }
+    fn default() -> Self {
+        Self {
+            interval_secs: default_hc_interval(),
+            path: default_hc_path(),
+        }
+    }
 }
 impl Default for LoggingConfig {
-    fn default() -> Self { Self { level: default_log_level(), format: default_log_format() } }
+    fn default() -> Self {
+        Self {
+            level: default_log_level(),
+            format: default_log_format(),
+        }
+    }
 }

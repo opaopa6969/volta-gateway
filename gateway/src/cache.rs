@@ -26,9 +26,15 @@ pub struct CacheConfig {
     pub ignore_query: bool,
 }
 
-fn default_ttl() -> u64 { 300 }
-fn default_cache_methods() -> Vec<String> { vec!["GET".into(), "HEAD".into()] }
-fn default_max_body() -> usize { 10_485_760 } // 10MB
+fn default_ttl() -> u64 {
+    300
+}
+fn default_cache_methods() -> Vec<String> {
+    vec!["GET".into(), "HEAD".into()]
+}
+fn default_max_body() -> usize {
+    10_485_760
+} // 10MB
 
 /// Cached response entry.
 #[derive(Clone)]
@@ -76,7 +82,13 @@ impl ResponseCache {
     }
 
     /// Build cache key from request.
-    pub fn key(method: &str, host: &str, path: &str, query: Option<&str>, ignore_query: bool) -> String {
+    pub fn key(
+        method: &str,
+        host: &str,
+        path: &str,
+        query: Option<&str>,
+        ignore_query: bool,
+    ) -> String {
         if ignore_query {
             format!("{}:{}:{}", method, host, path)
         } else {
@@ -99,16 +111,28 @@ impl ResponseCache {
     }
 
     /// Store a response in cache.
-    pub fn put(&self, key: String, status: u16, headers: Vec<(String, String)>, body: Bytes, ttl: Duration) {
+    pub fn put(
+        &self,
+        key: String,
+        status: u16,
+        headers: Vec<(String, String)>,
+        body: Bytes,
+        ttl: Duration,
+    ) {
         let mut entries = self.entries.lock().unwrap();
 
         // LRU eviction: remove oldest stale entries if at capacity
         if entries.len() >= self.max_entries {
             // Find and remove stale entries first
-            let stale_keys: Vec<String> = entries.iter_mut()
+            let stale_keys: Vec<String> = entries
+                .iter_mut()
                 .filter_map(|(k, v)| {
                     v.transition_if_stale();
-                    if v.state == CacheEntryState::Stale { Some(k.clone()) } else { None }
+                    if v.state == CacheEntryState::Stale {
+                        Some(k.clone())
+                    } else {
+                        None
+                    }
                 })
                 .collect();
             for k in stale_keys {
@@ -117,7 +141,8 @@ impl ResponseCache {
 
             // If still at capacity, remove oldest entry
             if entries.len() >= self.max_entries {
-                if let Some(oldest_key) = entries.iter()
+                if let Some(oldest_key) = entries
+                    .iter()
                     .min_by_key(|(_, v)| v.created)
                     .map(|(k, _)| k.clone())
                 {
@@ -126,14 +151,17 @@ impl ResponseCache {
             }
         }
 
-        entries.insert(key, CacheEntry {
-            status,
-            headers,
-            body,
-            created: Instant::now(),
-            ttl,
-            state: CacheEntryState::Fresh,
-        });
+        entries.insert(
+            key,
+            CacheEntry {
+                status,
+                headers,
+                body,
+                created: Instant::now(),
+                ttl,
+                state: CacheEntryState::Fresh,
+            },
+        );
     }
 
     /// Get cache stats.

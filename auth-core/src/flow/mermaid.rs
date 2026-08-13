@@ -18,11 +18,7 @@ pub struct Edge {
 /// - `initial` gets an `[*] --> <initial>` entry arrow.
 /// - every state in `terminals` gets a `<terminal> --> [*]` exit arrow.
 /// - every edge becomes `from --> to : label`.
-pub fn render(
-    initial: &str,
-    terminals: &[&str],
-    edges: &[Edge],
-) -> String {
+pub fn render(initial: &str, terminals: &[&str], edges: &[Edge]) -> String {
     let mut out = String::with_capacity(256);
     out.push_str("stateDiagram-v2\n");
     out.push_str(&format!("    [*] --> {}\n", initial));
@@ -45,7 +41,11 @@ mod tests {
 
     #[test]
     fn minimal_flow_renders() {
-        let edges = [Edge { from: "A", to: "B", label: "auto" }];
+        let edges = [Edge {
+            from: "A",
+            to: "B",
+            label: "auto",
+        }];
         let out = render("A", &["B"], &edges);
         assert!(out.starts_with("stateDiagram-v2\n"));
         assert!(out.contains("[*] --> A"));
@@ -55,7 +55,11 @@ mod tests {
 
     #[test]
     fn empty_label_renders_without_separator() {
-        let edges = [Edge { from: "X", to: "Y", label: "" }];
+        let edges = [Edge {
+            from: "X",
+            to: "Y",
+            label: "",
+        }];
         let out = render("X", &["Y"], &edges);
         assert!(out.contains("X --> Y\n"));
         assert!(!out.contains("X --> Y : \n"));
@@ -72,8 +76,16 @@ mod tests {
     #[test]
     fn duplicate_edges_preserved() {
         let edges = [
-            Edge { from: "A", to: "B", label: "on-success" },
-            Edge { from: "A", to: "B", label: "on-retry" },
+            Edge {
+                from: "A",
+                to: "B",
+                label: "on-success",
+            },
+            Edge {
+                from: "A",
+                to: "B",
+                label: "on-retry",
+            },
         ];
         let out = render("A", &["B"], &edges);
         assert!(out.contains("A --> B : on-success"));

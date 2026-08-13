@@ -143,13 +143,29 @@ where
         .update_state(flow_id, "Completed", flow.version + 1)
         .await?;
     store
-        .record_transition(flow_id, Some(&flow.current_state), "EmailVerified", "RegVerifyEmailGuard", None)
+        .record_transition(
+            flow_id,
+            Some(&flow.current_state),
+            "EmailVerified",
+            "RegVerifyEmailGuard",
+            None,
+        )
         .await?;
     store
-        .record_transition(flow_id, Some("EmailVerified"), "Completed", "branch(skip)", None)
+        .record_transition(
+            flow_id,
+            Some("EmailVerified"),
+            "Completed",
+            "branch(skip)",
+            None,
+        )
         .await?;
     store
-        .complete(flow_id, "Completed", Some(serde_json::json!({ "email": rec.email })))
+        .complete(
+            flow_id,
+            "Completed",
+            Some(serde_json::json!({ "email": rec.email })),
+        )
         .await?;
 
     Ok(RegistrationOutcome {
@@ -176,9 +192,17 @@ where
     }
     store.invalidate_pending(email).await?;
     let raw = random_token_hex(32);
-    store.issue(email, &sha256_hex(&raw), TOKEN_TTL_MINUTES, None).await?;
     store
-        .enqueue(channel, email, VERIFICATION_TEMPLATE, serde_json::json!({ "token": raw }), None)
+        .issue(email, &sha256_hex(&raw), TOKEN_TTL_MINUTES, None)
+        .await?;
+    store
+        .enqueue(
+            channel,
+            email,
+            VERIFICATION_TEMPLATE,
+            serde_json::json!({ "token": raw }),
+            None,
+        )
         .await?;
     Ok(true)
 }
@@ -211,13 +235,29 @@ where
 {
     let code = random_numeric_code(OTP_DIGITS);
     let id = store
-        .issue(user_id, kind, &sha256_hex(&code), destination, OTP_TTL_MINUTES, OTP_MAX_ATTEMPTS)
+        .issue(
+            user_id,
+            kind,
+            &sha256_hex(&code),
+            destination,
+            OTP_TTL_MINUTES,
+            OTP_MAX_ATTEMPTS,
+        )
         .await?;
     let corr = format!("login-otp:{}", id);
     store
-        .enqueue(channel, destination, MFA_CODE_TEMPLATE, serde_json::json!({ "code": code }), Some(&corr))
+        .enqueue(
+            channel,
+            destination,
+            MFA_CODE_TEMPLATE,
+            serde_json::json!({ "code": code }),
+            Some(&corr),
+        )
         .await?;
-    Ok(LoginOtpStart { challenge_id: id, dev_code: Some(code) })
+    Ok(LoginOtpStart {
+        challenge_id: id,
+        dev_code: Some(code),
+    })
 }
 
 /// Verify a submitted OTP for the user's active login challenge. The caller maps
@@ -274,7 +314,13 @@ where
     let secret = crate::totp::generate_secret();
     store.upsert_pending(user_id, "totp", &secret).await?;
     store
-        .record_transition(flow_id, Some("SetupStarted"), "SecretIssued", "MfaIssueSecret", None)
+        .record_transition(
+            flow_id,
+            Some("SetupStarted"),
+            "SecretIssued",
+            "MfaIssueSecret",
+            None,
+        )
         .await?;
     Ok(MfaSetupStart { flow_id, secret })
 }
@@ -319,14 +365,28 @@ where
 
     let flow = FlowPersistence::find(store, flow_id).await?;
     if let Some(f) = flow {
-        store.update_state(flow_id, "RecoveryCodesIssued", f.version + 1).await?;
         store
-            .record_transition(flow_id, Some("ConfirmationPending"), "Enabled", "MfaConfirmCodeGuard", None)
+            .update_state(flow_id, "RecoveryCodesIssued", f.version + 1)
             .await?;
         store
-            .complete(flow_id, "RecoveryCodesIssued", Some(serde_json::json!({ "user_id": user_id })))
+            .record_transition(
+                flow_id,
+                Some("ConfirmationPending"),
+                "Enabled",
+                "MfaConfirmCodeGuard",
+                None,
+            )
+            .await?;
+        store
+            .complete(
+                flow_id,
+                "RecoveryCodesIssued",
+                Some(serde_json::json!({ "user_id": user_id })),
+            )
             .await?;
     }
 
-    Ok(MfaSetupConfirmed { recovery_codes: raw })
+    Ok(MfaSetupConfirmed {
+        recovery_codes: raw,
+    })
 }

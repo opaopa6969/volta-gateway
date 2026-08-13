@@ -38,7 +38,10 @@ impl std::fmt::Display for SigStructureError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::MultipleSignatures => {
-                write!(f, "multiple <Signature> elements — possible wrapping attack")
+                write!(
+                    f,
+                    "multiple <Signature> elements — possible wrapping attack"
+                )
             }
             Self::ExternalReference => {
                 write!(f, "external reference URI rejected (local #id only)")
@@ -84,7 +87,10 @@ fn count_signatures(xml: &str) -> usize {
             let after = rest.as_bytes().get(pos + prefix.len()).copied();
             // Match only when the next char terminates the element name
             // (prevents <SignatureMethod> / <SignedInfo> false positives).
-            if matches!(after, Some(b'>') | Some(b' ') | Some(b'\t') | Some(b'\r') | Some(b'\n')) {
+            if matches!(
+                after,
+                Some(b'>') | Some(b' ') | Some(b'\t') | Some(b'\r') | Some(b'\n')
+            ) {
                 n += 1;
             }
             rest = &rest[pos + prefix.len()..];
@@ -144,7 +150,10 @@ mod tests {
     #[test]
     fn no_signature_rejected() {
         let xml = "<Response></Response>";
-        assert_eq!(check_structure(xml), Err(SigStructureError::SignatureMissing));
+        assert_eq!(
+            check_structure(xml),
+            Err(SigStructureError::SignatureMissing)
+        );
     }
 
     #[test]
@@ -159,7 +168,10 @@ mod tests {
                 </SignedInfo></Signature>
             </Assertion>
         </Response>"##;
-        assert_eq!(check_structure(xml), Err(SigStructureError::MultipleSignatures));
+        assert_eq!(
+            check_structure(xml),
+            Err(SigStructureError::MultipleSignatures)
+        );
     }
 
     #[test]
@@ -168,7 +180,10 @@ mod tests {
             <Reference URI="http://evil/attack"/>
             <SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/>
         </SignedInfo></Signature></Response>"##;
-        assert_eq!(check_structure(xml), Err(SigStructureError::ExternalReference));
+        assert_eq!(
+            check_structure(xml),
+            Err(SigStructureError::ExternalReference)
+        );
     }
 
     #[test]

@@ -21,10 +21,20 @@ pub enum EmailVerificationState {
 }
 
 impl FlowState for EmailVerificationState {
-    fn is_terminal(&self) -> bool { matches!(self, Self::Verified | Self::Cancelled) }
-    fn is_initial(&self) -> bool { matches!(self, Self::TokenIssued) }
+    fn is_terminal(&self) -> bool {
+        matches!(self, Self::Verified | Self::Cancelled)
+    }
+    fn is_initial(&self) -> bool {
+        matches!(self, Self::TokenIssued)
+    }
     fn all_states() -> &'static [Self] {
-        &[Self::TokenIssued, Self::SendRequested, Self::Sent, Self::Verified, Self::Cancelled]
+        &[
+            Self::TokenIssued,
+            Self::SendRequested,
+            Self::Sent,
+            Self::Verified,
+            Self::Cancelled,
+        ]
     }
 }
 
@@ -50,22 +60,36 @@ pub struct VerificationProof {
 
 struct RequestSendProcessor;
 impl StateProcessor<EmailVerificationState> for RequestSendProcessor {
-    fn name(&self) -> &str { "EvRequestSend" }
-    fn requires(&self) -> Vec<TypeId> { requires!(EmailVerificationInit) }
-    fn produces(&self) -> Vec<TypeId> { data_types!(SendRequest) }
+    fn name(&self) -> &str {
+        "EvRequestSend"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        requires!(EmailVerificationInit)
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        data_types!(SendRequest)
+    }
     fn process(&self, ctx: &mut FlowContext) -> Result<(), FlowError> {
         let init = ctx.get::<EmailVerificationInit>()?;
         // Phase 2: enqueue an EMAIL notification job (outbox).
-        ctx.put(SendRequest { to: init.to.clone() });
+        ctx.put(SendRequest {
+            to: init.to.clone(),
+        });
         Ok(())
     }
 }
 
 struct MarkSentGuard;
 impl TransitionGuard<EmailVerificationState> for MarkSentGuard {
-    fn name(&self) -> &str { "EvMarkSentGuard" }
-    fn requires(&self) -> Vec<TypeId> { vec![] }
-    fn produces(&self) -> Vec<TypeId> { data_types!(SendOutcome) }
+    fn name(&self) -> &str {
+        "EvMarkSentGuard"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        vec![]
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        data_types!(SendOutcome)
+    }
     fn validate(&self, ctx: &FlowContext) -> GuardOutput {
         match ctx.find::<SendOutcome>() {
             Some(o) if o.sent => GuardOutput::accept_with(o.clone()),
@@ -77,9 +101,15 @@ impl TransitionGuard<EmailVerificationState> for MarkSentGuard {
 
 struct VerifyTokenGuard;
 impl TransitionGuard<EmailVerificationState> for VerifyTokenGuard {
-    fn name(&self) -> &str { "EvVerifyTokenGuard" }
-    fn requires(&self) -> Vec<TypeId> { vec![] }
-    fn produces(&self) -> Vec<TypeId> { data_types!(VerificationProof) }
+    fn name(&self) -> &str {
+        "EvVerifyTokenGuard"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        vec![]
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        data_types!(VerificationProof)
+    }
     fn validate(&self, ctx: &FlowContext) -> GuardOutput {
         match ctx.find::<VerificationProof>() {
             Some(p) if p.verified => GuardOutput::accept_with(p.clone()),

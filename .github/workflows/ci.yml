@@ -41,13 +41,16 @@ jobs:
       # 以前は build + test だけで、SPEC が要求する5項目が1つも無かった。
       # うち3項目をここで入れる。残る2項目は前提作業が要るので別途:
       #
-      #   - `cargo fmt --check`: 現状 118 ファイル / 1758 箇所に差分がある。
-      #     整形だけの巨大な diff になるので、単独の PR に分けてから有効化する。
       #   - `cargo clippy -D warnings`: 現状 85 件の警告がある。潰してから
       #     `-D warnings` に上げる。下の clippy ステップは**可視化のため**に
       #     置いてあり、警告では落とさない。
       #
       # `--ignored` の Postgres 統合テストは DB サービスの用意が要るので別途。
+
+      # fmt は 2026-08-13 に workspace 全体を整形して揃えた（#83）。
+      # 以降の差分はここで止める。
+      - name: Format check
+        run: cargo fmt --check
 
       - name: Clippy (visibility only — not gating yet, see #83)
         continue-on-error: true

@@ -2,34 +2,34 @@ use arc_swap::ArcSwap;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
-use hyper_util::server::conn::auto;
 use hyper::service::service_fn;
 use hyper::Request;
 use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::server::conn::auto;
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
 mod admin_auth;
-mod lifecycle;
+mod auth;
+mod cache;
 mod config;
 mod config_overlay;
-mod state;
-mod auth;
-mod proxy;
-mod flow;
-mod cache;
 mod config_source;
+mod dns01;
+mod flow;
 mod l4_proxy;
-mod middleware_ext;
+mod lifecycle;
 mod metrics;
+mod middleware_ext;
 mod mtls;
 mod plugin;
+mod proxy;
+mod state;
 mod tls;
-mod dns01;
 mod websocket;
 
 use auth::VoltaAuthClient;
@@ -42,9 +42,15 @@ async fn main() {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| "volta_gateway=info".into());
     if log_format == "pretty" {
-        tracing_subscriber::fmt().with_env_filter(filter).pretty().init();
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .pretty()
+            .init();
     } else {
-        tracing_subscriber::fmt().with_env_filter(filter).json().init();
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .json()
+            .init();
     }
 
     // #39: Access log file output (spawned after config load, uses _guard to keep writer alive)
@@ -53,7 +59,8 @@ async fn main() {
     // #36: --validate dry-run mode
     let args: Vec<String> = std::env::args().collect();
     let validate_only = args.iter().any(|a| a == "--validate");
-    let config_path = args.iter()
+    let config_path = args
+        .iter()
         .filter(|a| !a.starts_with('-'))
         .nth(1)
         .cloned()
@@ -61,7 +68,8 @@ async fn main() {
 
     // API-driven config changes are persisted to an overlay file alongside the
     // base YAML (override with --overlay <path> or VOLTA_CONFIG_OVERLAY).
-    let overlay_path = args.iter()
+    let overlay_path = args
+        .iter()
         .position(|a| a == "--overlay")
         .and_then(|i| args.get(i + 1))
         .cloned()
@@ -69,11 +77,13 @@ async fn main() {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| config_overlay::default_overlay_path(&config_path));
 
-    let (config_store, config) = config_overlay::ConfigStore::load(Path::new(&config_path), overlay_path)
-        .unwrap_or_else(|e| {
-            error!("Failed to load config {}: {}", config_path, e);
-            std::process::exit(1);
-        });
+    let (config_store, config) =
+        config_overlay::ConfigStore::load(Path::new(&config_path), overlay_path).unwrap_or_else(
+            |e| {
+                error!("Failed to load config {}: {}", config_path, e);
+                std::process::exit(1);
+            },
+        );
     let config_store = Arc::new(config_store);
 
     // PH2-4: Config validation
@@ -82,9 +92,15 @@ async fn main() {
     // 終了コードで区別できるようにするのが目的。以前は 0/1 だけだった。
     // 複数種類のエラーがある場合は**小さいコード（より根本的な問題）**を返す。
     if let Err(errors) = config.validate_detailed() {
-        for (code, e) in &errors { error!("config error (exit {code}): {e}"); }
+        for (code, e) in &errors {
+            error!("config error (exit {code}): {e}");
+        }
         let code = errors.iter().map(|(c, _)| *c).min().unwrap_or(1);
-        error!("config validation failed ({} errors) — exiting with {}", errors.len(), code);
+        error!(
+            "config validation failed ({} errors) — exiting with {}",
+            errors.len(),
+            code
+        );
         std::process::exit(code as i32);
     }
 
@@ -101,7 +117,10 @@ async fn main() {
             error!("proxy flow build failed (tramli invariant violation)");
             std::process::exit(config::GatewayConfig::EXIT_FLOW_BUILD as i32);
         }
-        info!(routes = config.routing.len(), "config valid: {}", config_path);
+        info!(
+            routes = config.routing.len(),
+            "config valid: {}", config_path
+        );
         std::process::exit(0);
     }
 
@@ -109,29 +128,46 @@ async fn main() {
     _access_log_guard = if let Some(ref al) = config.access_log {
         if al.enabled {
             if let Some(ref path) = al.path {
-                let dir = std::path::Path::new(path).parent().unwrap_or(std::path::Path::new("."));
-                let filename = std::path::Path::new(path).file_name()
-                    .and_then(|f| f.to_str()).unwrap_or("access.log");
+                let dir = std::path::Path::new(path)
+                    .parent()
+                    .unwrap_or(std::path::Path::new("."));
+                let filename = std::path::Path::new(path)
+                    .file_name()
+                    .and_then(|f| f.to_str())
+                    .unwrap_or("access.log");
                 let appender = tracing_appender::rolling::daily(dir, filename);
                 let (writer, guard) = tracing_appender::non_blocking(appender);
                 // Spawn a task that writes ACCESS log lines to the file
                 let _writer = writer; // kept alive via guard
                 info!(path = path, "access log file enabled");
                 Some(guard)
-            } else { None }
-        } else { None }
-    } else { None };
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.server.port));
     let routing = Arc::new(config.routing_table());
     let ip_allowlists = config.ip_allowlist_table();
     let cors = config.cors_table();
-    let trusted_proxies: Vec<ipnet::IpNet> = config.server.trusted_proxies.iter()
+    let trusted_proxies: Vec<ipnet::IpNet> = config
+        .server
+        .trusted_proxies
+        .iter()
         .filter_map(|s| s.parse().ok())
         .collect();
-    let hot = Arc::new(ArcSwap::from_pointee(
-        HotState::new_full(routing, ip_allowlists, config.error_pages_dir.as_deref(), cors, trusted_proxies),
-    ));
+    let hot = Arc::new(ArcSwap::from_pointee(HotState::new_full(
+        routing,
+        ip_allowlists,
+        config.error_pages_dir.as_deref(),
+        cors,
+        trusted_proxies,
+    )));
     let volta = VoltaAuthClient::new(&config.auth);
     // DD-005: start the JWKS background refresher (no-op unless auth.jwks_url set).
     volta.spawn_jwks_refresher();
@@ -174,9 +210,9 @@ async fn main() {
     tokio::spawn(async move {
         #[cfg(unix)]
         {
-            let mut sigterm = tokio::signal::unix::signal(
-                tokio::signal::unix::SignalKind::terminate()
-            ).expect("failed to register SIGTERM");
+            let mut sigterm =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    .expect("failed to register SIGTERM");
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => info!("Ctrl+C received — draining connections..."),
                 _ = sigterm.recv() => info!("SIGTERM received — draining connections..."),
@@ -199,9 +235,8 @@ async fn main() {
         let store_reload = config_store.clone();
         let dynamic_reload = dynamic_routes.clone();
         tokio::spawn(async move {
-            let mut sighup = tokio::signal::unix::signal(
-                tokio::signal::unix::SignalKind::hangup()
-            ).expect("failed to register SIGHUP");
+            let mut sighup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+                .expect("failed to register SIGHUP");
             loop {
                 sighup.recv().await;
                 match store_reload.reload() {
@@ -209,13 +244,21 @@ async fn main() {
                         let routes = new_config.routing.len();
                         // Root-cause fix: re-merge config-source (services.json)
                         // routes so SIGHUP doesn't transiently drop them.
-                        config_overlay::rebuild_hot_with_dynamic(&new_config, &hot_reload, &dynamic_reload);
-                        info!(routes = routes,
+                        config_overlay::rebuild_hot_with_dynamic(
+                            &new_config,
+                            &hot_reload,
+                            &dynamic_reload,
+                        );
+                        info!(
+                            routes = routes,
                             "config reloaded from {} (+overlay) — routing updated (zero-downtime)",
-                            config_path_clone);
+                            config_path_clone
+                        );
                     }
                     Err(errors) => {
-                        for e in &errors { warn!("reload config error: {e}"); }
+                        for e in &errors {
+                            warn!("reload config error: {e}");
+                        }
                         warn!("config reload aborted — keeping current config");
                     }
                 }
@@ -258,7 +301,14 @@ async fn main() {
         let tls_in_flight = in_flight.clone();
         let tls_config = tls_config.clone();
         tokio::spawn(async move {
-            tls::serve_tls(&tls_config, tls_proxy, tls_volta, tls_metrics, tls_in_flight).await;
+            tls::serve_tls(
+                &tls_config,
+                tls_proxy,
+                tls_volta,
+                tls_metrics,
+                tls_in_flight,
+            )
+            .await;
         });
     }
 
@@ -284,26 +334,30 @@ async fn main() {
             // already returning 503 (see the `shutdown` check in the handler) so
             // the upstream LB/CF drains new traffic away from this instance.
             let deadline = *drain_deadline.get_or_insert(
-                tokio::time::Instant::now() + std::time::Duration::from_secs(drain_timeout_secs));
+                tokio::time::Instant::now() + std::time::Duration::from_secs(drain_timeout_secs),
+            );
             let remaining = in_flight.load(Ordering::SeqCst);
             if remaining == 0 {
                 info!("all connections drained — shutting down");
                 break;
             }
             if tokio::time::Instant::now() >= deadline {
-                warn!(remaining = remaining, drain_timeout_secs,
-                    "drain timeout — forcing shutdown");
+                warn!(
+                    remaining = remaining,
+                    drain_timeout_secs, "drain timeout — forcing shutdown"
+                );
                 break;
             }
-            info!(remaining = remaining, "waiting for in-flight connections...");
+            info!(
+                remaining = remaining,
+                "waiting for in-flight connections..."
+            );
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             continue;
         }
 
-        let accept = tokio::time::timeout(
-            std::time::Duration::from_millis(250),
-            listener.accept(),
-        ).await;
+        let accept =
+            tokio::time::timeout(std::time::Duration::from_millis(250), listener.accept()).await;
 
         let (stream, remote_addr) = match accept {
             Ok(Ok(s)) => s,
@@ -336,7 +390,9 @@ async fn main() {
         let dynamic_admin = dynamic_routes.clone();
 
         in_flight.fetch_add(1, Ordering::SeqCst);
-        metrics.active_connections.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        metrics
+            .active_connections
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         tokio::spawn(async move {
             let _permit = permit; // #34: hold semaphore permit until connection ends
@@ -364,18 +420,23 @@ async fn main() {
                             || path == "/metrics"
                             || path.starts_with("/.well-known/");
                         if !skip_redirect {
-                            let host = req.headers().get("host")
+                            let host = req
+                                .headers()
+                                .get("host")
                                 .and_then(|v| v.to_str().ok())
                                 .unwrap_or("localhost");
                             // IPv6-aware host parsing
                             let host_no_port = if host.starts_with('[') {
-                                host.split(']').next()
+                                host.split(']')
+                                    .next()
                                     .map(|s| format!("{}]", s))
                                     .unwrap_or_else(|| host.to_string())
                             } else {
                                 host.split(':').next().unwrap_or(host).to_string()
                             };
-                            let pq = req.uri().path_and_query()
+                            let pq = req
+                                .uri()
+                                .path_and_query()
                                 .map(|pq| pq.as_str())
                                 .unwrap_or("/");
                             let location = if tls_port == 443 {
@@ -386,7 +447,11 @@ async fn main() {
                             let resp = hyper::Response::builder()
                                 .status(301)
                                 .header("location", location)
-                                .body(Full::new(Bytes::from("Moved Permanently")).map_err(|e| match e {}).boxed())
+                                .body(
+                                    Full::new(Bytes::from("Moved Permanently"))
+                                        .map_err(|e| match e {})
+                                        .boxed(),
+                                )
                                 .unwrap();
                             return Ok::<_, hyper::Error>(resp);
                         }
@@ -424,7 +489,11 @@ async fn main() {
                         // liveness is only what an unrouted Host asks for (LB, direct
                         // IP, docker healthcheck).
                         let draining = shutdown_admin.load(Ordering::SeqCst);
-                        let volta_ok = if draining { false } else { volta_health.health().await };
+                        let volta_ok = if draining {
+                            false
+                        } else {
+                            volta_health.health().await
+                        };
                         let status = lifecycle::healthz_status(draining, volta_ok);
                         return Ok::<_, hyper::Error>(lifecycle::healthz_response(status));
                     }
@@ -435,25 +504,35 @@ async fn main() {
                     // 落とす。gateway 自身の管理 API は未ルート Host(localhost/生IP)
                     // のみが対象で、従来どおり loopback 限定。
                     let admin_for_gateway = req.uri().path().starts_with("/admin/") && {
-                        let host = req.headers()
+                        let host = req
+                            .headers()
                             .get(hyper::header::HOST)
                             .and_then(|v| v.to_str().ok())
                             .map(proxy::normalize_host)
                             .unwrap_or_default();
                         let hot = hot_admin.load();
                         let host_routed = hot.routing.contains_key(&host)
-                            || host.splitn(2, '.').nth(1)
+                            || host
+                                .splitn(2, '.')
+                                .nth(1)
                                 .map(|d| hot.routing.contains_key(&format!("*.{d}")))
                                 .unwrap_or(false);
                         lifecycle::admin_is_gateway_admin(host_routed)
                     };
                     if admin_for_gateway {
                         if !lifecycle::admin_loopback_allowed(addr.ip().is_loopback()) {
-                            return Ok::<_, hyper::Error>(lifecycle::admin_loopback_denied_response());
+                            return Ok::<_, hyper::Error>(
+                                lifecycle::admin_loopback_denied_response(),
+                            );
                         }
 
                         // Helper for JSON admin responses.
-                        fn json_resp(status: u16, body: String) -> hyper::Response<http_body_util::combinators::BoxBody<Bytes, hyper::Error>> {
+                        fn json_resp(
+                            status: u16,
+                            body: String,
+                        ) -> hyper::Response<
+                            http_body_util::combinators::BoxBody<Bytes, hyper::Error>,
+                        > {
                             hyper::Response::builder()
                                 .status(status)
                                 .header("content-type", "application/json")
@@ -486,10 +565,15 @@ async fn main() {
 
                         // BT-SEC-7: Authenticate /admin/* requests.
                         let is_mutating = req.method() != hyper::Method::GET;
-                        let auth_header = req.headers()
+                        let auth_header = req
+                            .headers()
                             .get(hyper::header::AUTHORIZATION)
                             .and_then(|v| v.to_str().ok());
-                        match admin_auth::decide(admin_token.as_ref().as_deref(), auth_header, is_mutating) {
+                        match admin_auth::decide(
+                            admin_token.as_ref().as_deref(),
+                            auth_header,
+                            is_mutating,
+                        ) {
                             admin_auth::AdminAuth::Allow => {}
                             admin_auth::AdminAuth::Unauthorized => {
                                 warn!(path = %req.uri().path(), "admin API: unauthorized (bad/missing Bearer token)");
@@ -497,7 +581,11 @@ async fn main() {
                                     .status(401)
                                     .header("content-type", "application/json")
                                     .header("www-authenticate", "Bearer")
-                                    .body(Full::new(Bytes::from(r#"{"error":"unauthorized"}"#)).map_err(|e| match e {}).boxed())
+                                    .body(
+                                        Full::new(Bytes::from(r#"{"error":"unauthorized"}"#))
+                                            .map_err(|e| match e {})
+                                            .boxed(),
+                                    )
                                     .unwrap();
                                 return Ok(resp);
                             }
@@ -535,18 +623,28 @@ async fn main() {
                         match admin_path.as_str() {
                             "/admin/routes" => {
                                 let hot = hot_admin.load();
-                                let routes: Vec<serde_json::Value> = hot.routing.iter()
-                                    .map(|(host, info)| serde_json::json!({
-                                        "host": host,
-                                        "backends": info.backends,
-                                        "app_id": info.app_id,
-                                        "public": info.public,
-                                    })).collect();
-                                let body = serde_json::to_string(&routes).unwrap_or_else(|_| "[]".into());
+                                let routes: Vec<serde_json::Value> = hot
+                                    .routing
+                                    .iter()
+                                    .map(|(host, info)| {
+                                        serde_json::json!({
+                                            "host": host,
+                                            "backends": info.backends,
+                                            "app_id": info.app_id,
+                                            "public": info.public,
+                                        })
+                                    })
+                                    .collect();
+                                let body =
+                                    serde_json::to_string(&routes).unwrap_or_else(|_| "[]".into());
                                 let resp = hyper::Response::builder()
                                     .status(200)
                                     .header("content-type", "application/json")
-                                    .body(Full::new(Bytes::from(body)).map_err(|e| match e {}).boxed())
+                                    .body(
+                                        Full::new(Bytes::from(body))
+                                            .map_err(|e| match e {})
+                                            .boxed(),
+                                    )
                                     .unwrap();
                                 return Ok(resp);
                             }
@@ -555,29 +653,43 @@ async fn main() {
                                 // each backend's circuit-breaker state and failure count.
                                 let health = proxy.backend_selector.health_status();
                                 let cb = proxy.circuit_breaker.status();
-                                let cb_by_url: std::collections::HashMap<&str, &proxy::CircuitStatus> =
-                                    cb.iter().map(|c| (c.backend.as_str(), c)).collect();
+                                let cb_by_url: std::collections::HashMap<
+                                    &str,
+                                    &proxy::CircuitStatus,
+                                > = cb.iter().map(|c| (c.backend.as_str(), c)).collect();
                                 // Union of all known backend URLs (health-tracked ∪ CB-tracked).
-                                let mut urls: std::collections::BTreeSet<String> = health.keys().cloned().collect();
-                                for c in &cb { urls.insert(c.backend.clone()); }
-                                let entries: Vec<serde_json::Value> = urls.iter().map(|url| {
-                                    let alive = *health.get(url).unwrap_or(&true);
-                                    let (cb_state, failures) = match cb_by_url.get(url.as_str()) {
-                                        Some(c) => (c.state.as_str(), c.failures),
-                                        None => ("closed", 0),
-                                    };
-                                    serde_json::json!({
-                                        "url": url,
-                                        "alive": alive,
-                                        "circuit_state": cb_state,
-                                        "circuit_failures": failures,
+                                let mut urls: std::collections::BTreeSet<String> =
+                                    health.keys().cloned().collect();
+                                for c in &cb {
+                                    urls.insert(c.backend.clone());
+                                }
+                                let entries: Vec<serde_json::Value> = urls
+                                    .iter()
+                                    .map(|url| {
+                                        let alive = *health.get(url).unwrap_or(&true);
+                                        let (cb_state, failures) = match cb_by_url.get(url.as_str())
+                                        {
+                                            Some(c) => (c.state.as_str(), c.failures),
+                                            None => ("closed", 0),
+                                        };
+                                        serde_json::json!({
+                                            "url": url,
+                                            "alive": alive,
+                                            "circuit_state": cb_state,
+                                            "circuit_failures": failures,
+                                        })
                                     })
-                                }).collect();
-                                let body = serde_json::to_string(&entries).unwrap_or_else(|_| "[]".into());
+                                    .collect();
+                                let body =
+                                    serde_json::to_string(&entries).unwrap_or_else(|_| "[]".into());
                                 let resp = hyper::Response::builder()
                                     .status(200)
                                     .header("content-type", "application/json")
-                                    .body(Full::new(Bytes::from(body)).map_err(|e| match e {}).boxed())
+                                    .body(
+                                        Full::new(Bytes::from(body))
+                                            .map_err(|e| match e {})
+                                            .boxed(),
+                                    )
                                     .unwrap();
                                 return Ok(resp);
                             }
@@ -586,9 +698,19 @@ async fn main() {
                                 match store_admin.reload() {
                                     Ok(new_config) => {
                                         let routes = new_config.routing.len();
-                                        config_overlay::rebuild_hot_with_dynamic(&new_config, &hot_admin, &dynamic_admin);
+                                        config_overlay::rebuild_hot_with_dynamic(
+                                            &new_config,
+                                            &hot_admin,
+                                            &dynamic_admin,
+                                        );
                                         info!(routes = routes, "config reloaded via admin API");
-                                        return Ok(json_resp(200, format!(r#"{{"status":"reloaded","routes":{}}}"#, routes)));
+                                        return Ok(json_resp(
+                                            200,
+                                            format!(
+                                                r#"{{"status":"reloaded","routes":{}}}"#,
+                                                routes
+                                            ),
+                                        ));
                                     }
                                     Err(errors) => {
                                         let body = serde_json::json!({"error": "validation failed", "details": errors});
@@ -599,7 +721,13 @@ async fn main() {
                             // GET the current effective config (base ⊕ overlay).
                             "/admin/config" if req.method() == hyper::Method::GET => {
                                 match store_admin.effective_config() {
-                                    Ok(cfg) => return Ok(json_resp(200, serde_json::to_string_pretty(&cfg).unwrap_or_else(|_| "{}".into()))),
+                                    Ok(cfg) => {
+                                        return Ok(json_resp(
+                                            200,
+                                            serde_json::to_string_pretty(&cfg)
+                                                .unwrap_or_else(|_| "{}".into()),
+                                        ))
+                                    }
                                     Err(e) => {
                                         let body = serde_json::json!({"error": e});
                                         return Ok(json_resp(500, body.to_string()));
@@ -607,12 +735,21 @@ async fn main() {
                                 }
                             }
                             // PATCH/POST a JSON merge patch: persist it and hot-apply applicable fields.
-                            "/admin/config" if req.method() == hyper::Method::PATCH || req.method() == hyper::Method::POST => {
+                            "/admin/config"
+                                if req.method() == hyper::Method::PATCH
+                                    || req.method() == hyper::Method::POST =>
+                            {
                                 let bytes = match req.into_body().collect().await {
                                     Ok(b) => b.to_bytes(),
-                                    Err(_) => return Ok(json_resp(400, r#"{"error":"failed to read request body"}"#.into())),
+                                    Err(_) => {
+                                        return Ok(json_resp(
+                                            400,
+                                            r#"{"error":"failed to read request body"}"#.into(),
+                                        ))
+                                    }
                                 };
-                                let patch: serde_json::Value = match serde_json::from_slice(&bytes) {
+                                let patch: serde_json::Value = match serde_json::from_slice(&bytes)
+                                {
                                     Ok(v) => v,
                                     Err(e) => {
                                         let body = serde_json::json!({"error": format!("invalid JSON: {}", e)});
@@ -621,7 +758,11 @@ async fn main() {
                                 };
                                 match store_admin.apply_patch(patch) {
                                     Ok((effective, result)) => {
-                                        config_overlay::rebuild_hot_with_dynamic(&effective, &hot_admin, &dynamic_admin);
+                                        config_overlay::rebuild_hot_with_dynamic(
+                                            &effective,
+                                            &hot_admin,
+                                            &dynamic_admin,
+                                        );
                                         info!(
                                             hot = ?result.hot_applied,
                                             restart = ?result.requires_restart,
@@ -644,9 +785,16 @@ async fn main() {
                             "/admin/config/overlay" if req.method() == hyper::Method::DELETE => {
                                 match store_admin.clear_overlay() {
                                     Ok(effective) => {
-                                        config_overlay::rebuild_hot_with_dynamic(&effective, &hot_admin, &dynamic_admin);
+                                        config_overlay::rebuild_hot_with_dynamic(
+                                            &effective,
+                                            &hot_admin,
+                                            &dynamic_admin,
+                                        );
                                         info!("config overlay cleared via admin API");
-                                        return Ok(json_resp(200, r#"{"status":"overlay cleared"}"#.into()));
+                                        return Ok(json_resp(
+                                            200,
+                                            r#"{"status":"overlay cleared"}"#.into(),
+                                        ));
                                     }
                                     Err(errors) => {
                                         let body = serde_json::json!({"error": "validation failed", "details": errors});
@@ -680,7 +828,11 @@ async fn main() {
                                 let resp = hyper::Response::builder()
                                     .status(200)
                                     .header("content-type", "application/json")
-                                    .body(Full::new(Bytes::from(body)).map_err(|e| match e {}).boxed())
+                                    .body(
+                                        Full::new(Bytes::from(body))
+                                            .map_err(|e| match e {})
+                                            .boxed(),
+                                    )
                                     .unwrap();
                                 return Ok(resp);
                             }
@@ -690,14 +842,24 @@ async fn main() {
                                 let resp = hyper::Response::builder()
                                     .status(200)
                                     .header("content-type", "application/json")
-                                    .body(Full::new(Bytes::from(r#"{"status":"draining"}"#)).map_err(|e| match e {}).boxed())
+                                    .body(
+                                        Full::new(Bytes::from(r#"{"status":"draining"}"#))
+                                            .map_err(|e| match e {})
+                                            .boxed(),
+                                    )
                                     .unwrap();
                                 return Ok(resp);
                             }
                             _ => {
                                 let resp = hyper::Response::builder()
                                     .status(404)
-                                    .body(Full::new(Bytes::from(r#"{"error":"unknown admin endpoint"}"#)).map_err(|e| match e {}).boxed())
+                                    .body(
+                                        Full::new(Bytes::from(
+                                            r#"{"error":"unknown admin endpoint"}"#,
+                                        ))
+                                        .map_err(|e| match e {})
+                                        .boxed(),
+                                    )
                                     .unwrap();
                                 return Ok(resp);
                             }
@@ -725,7 +887,9 @@ async fn main() {
             }
 
             in_flight.fetch_sub(1, Ordering::SeqCst);
-            metrics.active_connections.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            metrics
+                .active_connections
+                .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         });
     }
 }

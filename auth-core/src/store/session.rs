@@ -1,9 +1,9 @@
 //! Session store trait + in-memory implementation.
 //! Mirrors Java SessionStore interface.
 
-use async_trait::async_trait;
 use crate::error::AuthError;
 use crate::record::SessionRecord;
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -28,12 +28,16 @@ pub struct InMemorySessionStore {
 
 impl InMemorySessionStore {
     pub fn new() -> Self {
-        Self { sessions: Mutex::new(HashMap::new()) }
+        Self {
+            sessions: Mutex::new(HashMap::new()),
+        }
     }
 }
 
 impl Default for InMemorySessionStore {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 fn now_epoch() -> u64 {
@@ -53,7 +57,10 @@ impl SessionStore for InMemorySessionStore {
 
     async fn find(&self, session_id: &str) -> Result<Option<SessionRecord>, AuthError> {
         let map = self.sessions.lock().unwrap();
-        Ok(map.get(session_id).filter(|r| r.is_valid_at(now_epoch())).cloned())
+        Ok(map
+            .get(session_id)
+            .filter(|r| r.is_valid_at(now_epoch()))
+            .cloned())
     }
 
     async fn touch(&self, session_id: &str, new_expires_at: u64) -> Result<(), AuthError> {
@@ -96,7 +103,8 @@ impl SessionStore for InMemorySessionStore {
 
     async fn list_by_user(&self, user_id: &str) -> Result<Vec<SessionRecord>, AuthError> {
         let map = self.sessions.lock().unwrap();
-        Ok(map.values()
+        Ok(map
+            .values()
             .filter(|r| r.user_id == user_id)
             .cloned()
             .collect())
@@ -105,7 +113,8 @@ impl SessionStore for InMemorySessionStore {
     async fn count_active(&self, user_id: &str) -> Result<usize, AuthError> {
         let map = self.sessions.lock().unwrap();
         let now = now_epoch();
-        Ok(map.values()
+        Ok(map
+            .values()
             .filter(|r| r.user_id == user_id && r.is_valid_at(now))
             .count())
     }

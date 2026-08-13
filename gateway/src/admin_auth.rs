@@ -105,15 +105,9 @@ mod tests {
 
     #[test]
     fn missing_auth_header_is_unauthorized() {
-        assert_eq!(
-            decide(Some(TOKEN), None, false),
-            AdminAuth::Unauthorized,
-        );
+        assert_eq!(decide(Some(TOKEN), None, false), AdminAuth::Unauthorized,);
         // also for mutating requests
-        assert_eq!(
-            decide(Some(TOKEN), None, true),
-            AdminAuth::Unauthorized,
-        );
+        assert_eq!(decide(Some(TOKEN), None, true), AdminAuth::Unauthorized,);
     }
 
     #[test]

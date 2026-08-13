@@ -8,24 +8,34 @@ use axum_extra::extract::CookieJar;
 use crate::error::ApiError;
 use crate::helpers::extract_session_id;
 use crate::state::AppState;
-use volta_auth_core::store::{SessionStore, UserStore, TenantStore, MembershipStore};
+use volta_auth_core::store::{MembershipStore, SessionStore, TenantStore, UserStore};
 
 /// GET /api/v1/users/me — authenticated user profile.
-pub async fn me(
-    State(state): State<AppState>,
-    jar: CookieJar,
-) -> Result<Response, ApiError> {
-    let session_id = extract_session_id(&jar)
-        .ok_or_else(|| ApiError::unauthorized("SESSION_EXPIRED", "セッションの有効期限が切れました。再ログインしてください。"))?;
+pub async fn me(State(state): State<AppState>, jar: CookieJar) -> Result<Response, ApiError> {
+    let session_id = extract_session_id(&jar).ok_or_else(|| {
+        ApiError::unauthorized(
+            "SESSION_EXPIRED",
+            "セッションの有効期限が切れました。再ログインしてください。",
+        )
+    })?;
 
-    let session = SessionStore::find(&state.db, &session_id).await
+    let session = SessionStore::find(&state.db, &session_id)
+        .await
         .map_err(|e| ApiError::internal(&e.to_string()))?
-        .ok_or_else(|| ApiError::unauthorized("SESSION_EXPIRED", "セッションの有効期限が切れました。再ログインしてください。"))?;
+        .ok_or_else(|| {
+            ApiError::unauthorized(
+                "SESSION_EXPIRED",
+                "セッションの有効期限が切れました。再ログインしてください。",
+            )
+        })?;
 
-    let user_id: uuid::Uuid = session.user_id.parse()
+    let user_id: uuid::Uuid = session
+        .user_id
+        .parse()
         .map_err(|_| ApiError::internal("invalid user_id"))?;
 
-    let user = UserStore::find_by_id(&state.db, user_id).await
+    let user = UserStore::find_by_id(&state.db, user_id)
+        .await
         .map_err(|e| ApiError::internal(&e.to_string()))?
         .ok_or_else(|| ApiError::internal("user not found"))?;
 
@@ -35,7 +45,8 @@ pub async fn me(
         "display_name": user.display_name,
         "locale": user.locale,
         "created_at": user.created_at.to_rfc3339(),
-    })).into_response())
+    }))
+    .into_response())
 }
 
 /// GET /api/v1/users/me/tenants — user's tenants with roles.
@@ -43,24 +54,40 @@ pub async fn me_tenants(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> Result<Response, ApiError> {
-    let session_id = extract_session_id(&jar)
-        .ok_or_else(|| ApiError::unauthorized("SESSION_EXPIRED", "セッションの有効期限が切れました。再ログインしてください。"))?;
+    let session_id = extract_session_id(&jar).ok_or_else(|| {
+        ApiError::unauthorized(
+            "SESSION_EXPIRED",
+            "セッションの有効期限が切れました。再ログインしてください。",
+        )
+    })?;
 
-    let session = SessionStore::find(&state.db, &session_id).await
+    let session = SessionStore::find(&state.db, &session_id)
+        .await
         .map_err(|e| ApiError::internal(&e.to_string()))?
-        .ok_or_else(|| ApiError::unauthorized("SESSION_EXPIRED", "セッションの有効期限が切れました。再ログインしてください。"))?;
+        .ok_or_else(|| {
+            ApiError::unauthorized(
+                "SESSION_EXPIRED",
+                "セッションの有効期限が切れました。再ログインしてください。",
+            )
+        })?;
 
-    let user_id: uuid::Uuid = session.user_id.parse()
+    let user_id: uuid::Uuid = session
+        .user_id
+        .parse()
         .map_err(|_| ApiError::internal("invalid user_id"))?;
 
-    let tenants = TenantStore::find_by_user(&state.db, user_id).await
+    let tenants = TenantStore::find_by_user(&state.db, user_id)
+        .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
 
     let mut items = Vec::new();
     for t in &tenants {
-        let membership = MembershipStore::find(&state.db, user_id, t.id).await
+        let membership = MembershipStore::find(&state.db, user_id, t.id)
+            .await
             .map_err(|e| ApiError::internal(&e.to_string()))?;
-        let role = membership.map(|m| m.role).unwrap_or_else(|| "MEMBER".into());
+        let role = membership
+            .map(|m| m.role)
+            .unwrap_or_else(|| "MEMBER".into());
         items.push(serde_json::json!({
             "id": t.id,
             "name": t.name,

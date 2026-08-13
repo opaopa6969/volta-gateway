@@ -29,7 +29,11 @@ async fn serve_tcp(listen_port: u16, backend: &str) {
         }
     };
 
-    info!(port = listen_port, backend = backend, "L4/TCP proxy listening");
+    info!(
+        port = listen_port,
+        backend = backend,
+        "L4/TCP proxy listening"
+    );
 
     let backend_addr: String = backend.to_string();
     loop {
@@ -90,7 +94,11 @@ async fn serve_udp(listen_port: u16, backend: &str) {
         }
     };
 
-    info!(port = listen_port, backend = backend, "L4/UDP proxy listening");
+    info!(
+        port = listen_port,
+        backend = backend,
+        "L4/UDP proxy listening"
+    );
 
     let backend_addr: SocketAddr = match backend.parse() {
         Ok(a) => a,
@@ -120,7 +128,9 @@ async fn serve_udp(listen_port: u16, backend: &str) {
         match tokio::time::timeout(
             std::time::Duration::from_secs(5),
             socket.recv_from(&mut buf),
-        ).await {
+        )
+        .await
+        {
             Ok(Ok((resp_len, _))) => {
                 if let Err(e) = socket.send_to(&buf[..resp_len], src).await {
                     warn!(port = listen_port, "L4/UDP send to client failed: {e}");

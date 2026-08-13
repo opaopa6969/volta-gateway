@@ -31,7 +31,9 @@ pub fn build_mtls_config(config: &BackendTlsConfig) -> Result<Arc<rustls::Client
 
     let mut root_store = rustls::RootCertStore::empty();
     for cert in ca_certs {
-        root_store.add(cert).map_err(|e| format!("invalid CA cert: {}", e))?;
+        root_store
+            .add(cert)
+            .map_err(|e| format!("invalid CA cert: {}", e))?;
     }
 
     // Load client cert chain

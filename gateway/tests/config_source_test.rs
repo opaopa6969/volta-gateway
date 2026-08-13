@@ -19,7 +19,10 @@ fn services_json_parses_basic() {
 
     // console
     assert_eq!(routes[0].host, "console.unlaxer.org");
-    assert_eq!(routes[0].backend.as_ref().unwrap(), "http://192.168.1.50:3789");
+    assert_eq!(
+        routes[0].backend.as_ref().unwrap(),
+        "http://192.168.1.50:3789"
+    );
     assert!(!routes[0].public);
 
     // auth
@@ -89,12 +92,19 @@ fn console_format_converts_seed_entries() {
     // intellij-xpra cloudflare.enabled=false) → 3 routes.
     assert_eq!(routes.len(), 3, "disabled services must be skipped");
 
-    let by_host = |h: &str| routes.iter().find(|r| r.host == h)
-        .unwrap_or_else(|| panic!("missing route {h}"));
+    let by_host = |h: &str| {
+        routes
+            .iter()
+            .find(|r| r.host == h)
+            .unwrap_or_else(|| panic!("missing route {h}"))
+    };
 
     // netmahg: public via top-level public + access.visibility=public.
     let mahjong = by_host("mahjong.unlaxer.org");
-    assert_eq!(mahjong.backend.as_ref().unwrap(), "http://192.168.1.50:7074");
+    assert_eq!(
+        mahjong.backend.as_ref().unwrap(),
+        "http://192.168.1.50:7074"
+    );
     assert!(mahjong.public);
     assert!(mahjong.app_id.is_none(), "public service gets no app_id");
 
@@ -169,7 +179,10 @@ fn legacy_array_format_still_works() {
     let routes = source.parse_services(json).unwrap();
     assert_eq!(routes.len(), 1);
     assert_eq!(routes[0].host, "console.unlaxer.org");
-    assert_eq!(routes[0].backend.as_ref().unwrap(), "http://192.168.1.50:3789");
+    assert_eq!(
+        routes[0].backend.as_ref().unwrap(),
+        "http://192.168.1.50:3789"
+    );
 }
 
 // ─── services.json watch / hot-reload (#16) ────────────
@@ -187,11 +200,14 @@ async fn services_json_watch_initial_load_and_reload() {
         let mut f = std::fs::File::create(&path).unwrap();
         f.write_all(body.as_bytes()).unwrap();
     };
-    write(r#"{"a": {"environments": {"prod": {"port": 1000}},
-        "cloudflare": {"enabled": true, "hostname": "a.unlaxer.org"}}}"#);
+    write(
+        r#"{"a": {"environments": {"prod": {"port": 1000}},
+        "cloudflare": {"enabled": true, "hostname": "a.unlaxer.org"}}}"#,
+    );
 
-    let source = volta_gateway::config_source::ServicesJsonSource::new(
-        path.to_str().unwrap(), "127.0.0.1").with_watch(true);
+    let source =
+        volta_gateway::config_source::ServicesJsonSource::new(path.to_str().unwrap(), "127.0.0.1")
+            .with_watch(true);
 
     let (tx, mut rx) = mpsc::channel(4);
     let handle = tokio::spawn(async move {
@@ -201,22 +217,28 @@ async fn services_json_watch_initial_load_and_reload() {
 
     // Initial load arrives immediately.
     let first = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
-        .await.expect("initial load timed out").unwrap();
+        .await
+        .expect("initial load timed out")
+        .unwrap();
     assert_eq!(first.len(), 1);
     assert_eq!(first[0].host, "a.unlaxer.org");
 
     // Modify the file → poll-based watch picks it up.
     // Sleep past the mtime granularity / poll interval before rewriting.
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
-    write(r#"{
+    write(
+        r#"{
         "a": {"environments": {"prod": {"port": 1000}},
             "cloudflare": {"enabled": true, "hostname": "a.unlaxer.org"}},
         "b": {"environments": {"prod": {"port": 2000}},
             "cloudflare": {"enabled": true, "hostname": "b.unlaxer.org"}}
-    }"#);
+    }"#,
+    );
 
     let second = tokio::time::timeout(std::time::Duration::from_secs(8), rx.recv())
-        .await.expect("reload timed out").unwrap();
+        .await
+        .expect("reload timed out")
+        .unwrap();
     assert_eq!(second.len(), 2, "watch should pick up the added service");
 
     handle.abort();
@@ -237,8 +259,8 @@ async fn services_json_no_watch_loads_once_then_stops() {
     }
 
     // Default (watch=false): one push, then the watch task returns.
-    let source = volta_gateway::config_source::ServicesJsonSource::new(
-        path.to_str().unwrap(), "127.0.0.1");
+    let source =
+        volta_gateway::config_source::ServicesJsonSource::new(path.to_str().unwrap(), "127.0.0.1");
 
     let (tx, mut rx) = mpsc::channel(4);
     {
@@ -262,7 +284,8 @@ fn docker_labels_basic() {
     labels.insert("volta.host".into(), "app.unlaxer.org".into());
     labels.insert("volta.port".into(), "3000".into());
 
-    let route = volta_gateway::config_source::DockerLabelsSource::parse_labels(&labels, "172.17.0.2");
+    let route =
+        volta_gateway::config_source::DockerLabelsSource::parse_labels(&labels, "172.17.0.2");
     assert!(route.is_some());
     let route = route.unwrap();
     assert_eq!(route.host, "app.unlaxer.org");
@@ -275,9 +298,14 @@ fn docker_labels_public_and_bypass() {
     labels.insert("volta.host".into(), "auth.unlaxer.org".into());
     labels.insert("volta.port".into(), "7070".into());
     labels.insert("volta.public".into(), "true".into());
-    labels.insert("volta.auth_bypass".into(), "/api/webhook/,/api/slack/".into());
+    labels.insert(
+        "volta.auth_bypass".into(),
+        "/api/webhook/,/api/slack/".into(),
+    );
 
-    let route = volta_gateway::config_source::DockerLabelsSource::parse_labels(&labels, "172.17.0.3").unwrap();
+    let route =
+        volta_gateway::config_source::DockerLabelsSource::parse_labels(&labels, "172.17.0.3")
+            .unwrap();
     assert!(route.public);
     assert_eq!(route.auth_bypass_paths.len(), 2);
     assert_eq!(route.auth_bypass_paths[0].prefix, "/api/webhook/");
@@ -288,11 +316,16 @@ fn docker_labels_public_and_bypass() {
 fn docker_labels_with_cors_and_strip() {
     let mut labels = HashMap::new();
     labels.insert("volta.host".into(), "api.unlaxer.org".into());
-    labels.insert("volta.cors_origins".into(), "https://app.unlaxer.org, https://admin.unlaxer.org".into());
+    labels.insert(
+        "volta.cors_origins".into(),
+        "https://app.unlaxer.org, https://admin.unlaxer.org".into(),
+    );
     labels.insert("volta.strip_prefix".into(), "/api/v1".into());
     labels.insert("volta.app_id".into(), "myapp".into());
 
-    let route = volta_gateway::config_source::DockerLabelsSource::parse_labels(&labels, "172.17.0.4").unwrap();
+    let route =
+        volta_gateway::config_source::DockerLabelsSource::parse_labels(&labels, "172.17.0.4")
+            .unwrap();
     assert_eq!(route.cors_origins.len(), 2);
     assert_eq!(route.cors_origins[0], "https://app.unlaxer.org");
     assert_eq!(route.strip_prefix.as_ref().unwrap(), "/api/v1");
@@ -302,7 +335,8 @@ fn docker_labels_with_cors_and_strip() {
 #[test]
 fn docker_labels_missing_host_returns_none() {
     let labels = HashMap::new(); // no volta.host
-    let route = volta_gateway::config_source::DockerLabelsSource::parse_labels(&labels, "172.17.0.2");
+    let route =
+        volta_gateway::config_source::DockerLabelsSource::parse_labels(&labels, "172.17.0.2");
     assert!(route.is_none());
 }
 
@@ -312,7 +346,9 @@ fn docker_labels_default_port() {
     labels.insert("volta.host".into(), "app.unlaxer.org".into());
     // no volta.port → default 3000
 
-    let route = volta_gateway::config_source::DockerLabelsSource::parse_labels(&labels, "172.17.0.2").unwrap();
+    let route =
+        volta_gateway::config_source::DockerLabelsSource::parse_labels(&labels, "172.17.0.2")
+            .unwrap();
     assert_eq!(route.backend.as_ref().unwrap(), "http://172.17.0.2:3000");
 }
 
@@ -320,14 +356,27 @@ fn docker_labels_default_port() {
 
 #[tokio::test]
 async fn middleware_jwt_rejects_missing_auth() {
-    use volta_gateway::middleware_ext::{MiddlewareExtension, ExtensionContext, builtin::JwtValidator};
+    use volta_gateway::middleware_ext::{
+        builtin::JwtValidator, ExtensionContext, MiddlewareExtension,
+    };
 
-    let ext = JwtValidator { secret: "test".into(), issuer: None };
+    let ext = JwtValidator {
+        secret: "test".into(),
+        issuer: None,
+    };
     let mut ctx = ExtensionContext {
-        method: "GET".into(), host: "api.test.com".into(), path: "/data".into(),
-        query: None, headers: HashMap::new(), client_ip: "1.2.3.4".into(),
-        user_id: None, tenant_id: None, reject: None,
-        add_headers: HashMap::new(), remove_headers: vec![], metadata: HashMap::new(),
+        method: "GET".into(),
+        host: "api.test.com".into(),
+        path: "/data".into(),
+        query: None,
+        headers: HashMap::new(),
+        client_ip: "1.2.3.4".into(),
+        user_id: None,
+        tenant_id: None,
+        reject: None,
+        add_headers: HashMap::new(),
+        remove_headers: vec![],
+        metadata: HashMap::new(),
     };
 
     let result = ext.on_request(&mut ctx).await;
@@ -337,16 +386,31 @@ async fn middleware_jwt_rejects_missing_auth() {
 
 #[tokio::test]
 async fn middleware_jwt_rejects_non_bearer() {
-    use volta_gateway::middleware_ext::{MiddlewareExtension, ExtensionContext, builtin::JwtValidator};
+    use volta_gateway::middleware_ext::{
+        builtin::JwtValidator, ExtensionContext, MiddlewareExtension,
+    };
 
-    let ext = JwtValidator { secret: "test".into(), issuer: None };
+    let ext = JwtValidator {
+        secret: "test".into(),
+        issuer: None,
+    };
     let mut ctx = ExtensionContext {
-        method: "GET".into(), host: "api.test.com".into(), path: "/data".into(),
+        method: "GET".into(),
+        host: "api.test.com".into(),
+        path: "/data".into(),
         query: None,
-        headers: { let mut h = HashMap::new(); h.insert("authorization".into(), "Basic abc".into()); h },
+        headers: {
+            let mut h = HashMap::new();
+            h.insert("authorization".into(), "Basic abc".into());
+            h
+        },
         client_ip: "1.2.3.4".into(),
-        user_id: None, tenant_id: None, reject: None,
-        add_headers: HashMap::new(), remove_headers: vec![], metadata: HashMap::new(),
+        user_id: None,
+        tenant_id: None,
+        reject: None,
+        add_headers: HashMap::new(),
+        remove_headers: vec![],
+        metadata: HashMap::new(),
     };
 
     let result = ext.on_request(&mut ctx).await;
@@ -355,16 +419,31 @@ async fn middleware_jwt_rejects_non_bearer() {
 
 #[tokio::test]
 async fn middleware_jwt_accepts_bearer_token() {
-    use volta_gateway::middleware_ext::{MiddlewareExtension, ExtensionContext, builtin::JwtValidator};
+    use volta_gateway::middleware_ext::{
+        builtin::JwtValidator, ExtensionContext, MiddlewareExtension,
+    };
 
-    let ext = JwtValidator { secret: "test".into(), issuer: None };
+    let ext = JwtValidator {
+        secret: "test".into(),
+        issuer: None,
+    };
     let mut ctx = ExtensionContext {
-        method: "GET".into(), host: "api.test.com".into(), path: "/data".into(),
+        method: "GET".into(),
+        host: "api.test.com".into(),
+        path: "/data".into(),
         query: None,
-        headers: { let mut h = HashMap::new(); h.insert("authorization".into(), "Bearer eyJhbGciOi...".into()); h },
+        headers: {
+            let mut h = HashMap::new();
+            h.insert("authorization".into(), "Bearer eyJhbGciOi...".into());
+            h
+        },
         client_ip: "1.2.3.4".into(),
-        user_id: None, tenant_id: None, reject: None,
-        add_headers: HashMap::new(), remove_headers: vec![], metadata: HashMap::new(),
+        user_id: None,
+        tenant_id: None,
+        reject: None,
+        add_headers: HashMap::new(),
+        remove_headers: vec![],
+        metadata: HashMap::new(),
     };
 
     let result = ext.on_request(&mut ctx).await;
@@ -373,14 +452,24 @@ async fn middleware_jwt_accepts_bearer_token() {
 
 #[tokio::test]
 async fn middleware_request_id_adds_if_missing() {
-    use volta_gateway::middleware_ext::{MiddlewareExtension, ExtensionContext, builtin::RequestIdPropagation};
+    use volta_gateway::middleware_ext::{
+        builtin::RequestIdPropagation, ExtensionContext, MiddlewareExtension,
+    };
 
     let ext = RequestIdPropagation;
     let mut ctx = ExtensionContext {
-        method: "GET".into(), host: "test.com".into(), path: "/".into(),
-        query: None, headers: HashMap::new(), client_ip: "1.2.3.4".into(),
-        user_id: None, tenant_id: None, reject: None,
-        add_headers: HashMap::new(), remove_headers: vec![], metadata: HashMap::new(),
+        method: "GET".into(),
+        host: "test.com".into(),
+        path: "/".into(),
+        query: None,
+        headers: HashMap::new(),
+        client_ip: "1.2.3.4".into(),
+        user_id: None,
+        tenant_id: None,
+        reject: None,
+        add_headers: HashMap::new(),
+        remove_headers: vec![],
+        metadata: HashMap::new(),
     };
 
     ext.on_request(&mut ctx).await.unwrap();
@@ -389,16 +478,28 @@ async fn middleware_request_id_adds_if_missing() {
 
 #[tokio::test]
 async fn middleware_request_id_preserves_existing() {
-    use volta_gateway::middleware_ext::{MiddlewareExtension, ExtensionContext, builtin::RequestIdPropagation};
+    use volta_gateway::middleware_ext::{
+        builtin::RequestIdPropagation, ExtensionContext, MiddlewareExtension,
+    };
 
     let ext = RequestIdPropagation;
     let mut ctx = ExtensionContext {
-        method: "GET".into(), host: "test.com".into(), path: "/".into(),
+        method: "GET".into(),
+        host: "test.com".into(),
+        path: "/".into(),
         query: None,
-        headers: { let mut h = HashMap::new(); h.insert("x-request-id".into(), "existing-id".into()); h },
+        headers: {
+            let mut h = HashMap::new();
+            h.insert("x-request-id".into(), "existing-id".into());
+            h
+        },
         client_ip: "1.2.3.4".into(),
-        user_id: None, tenant_id: None, reject: None,
-        add_headers: HashMap::new(), remove_headers: vec![], metadata: HashMap::new(),
+        user_id: None,
+        tenant_id: None,
+        reject: None,
+        add_headers: HashMap::new(),
+        remove_headers: vec![],
+        metadata: HashMap::new(),
     };
 
     ext.on_request(&mut ctx).await.unwrap();
@@ -443,20 +544,25 @@ config_sources:
 
 #[tokio::test]
 async fn sighup_rebuild_keeps_services_json_routes() {
-    use std::sync::Arc;
     use arc_swap::ArcSwap;
+    use std::sync::Arc;
     use volta_gateway::config::GatewayConfig;
-    use volta_gateway::config_source::{create_sources, spawn_watchers};
     use volta_gateway::config_overlay::{new_dynamic_routes, rebuild_hot_with_dynamic};
+    use volta_gateway::config_source::{create_sources, spawn_watchers};
     use volta_gateway::proxy::HotState;
 
     // Static YAML route + a services.json config source.
     let dir = std::env::temp_dir().join(format!("volta_sighup_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let svc_path = dir.join("services.json");
-    std::fs::write(&svc_path, r#"[{"name": "console", "host": "console.example.com", "port": 3789}]"#).unwrap();
+    std::fs::write(
+        &svc_path,
+        r#"[{"name": "console", "host": "console.example.com", "port": 3789}]"#,
+    )
+    .unwrap();
 
-    let yaml = format!(r#"
+    let yaml = format!(
+        r#"
 server:
   port: 8080
 auth:
@@ -468,14 +574,16 @@ config_sources:
   - type: services-json
     path: "{}"
     prod_host: "192.168.1.50"
-"#, svc_path.display());
+"#,
+        svc_path.display()
+    );
     let config: GatewayConfig = serde_yaml::from_str(&yaml).unwrap();
 
     // Build the initial HotState (static only), then start watchers which publish
     // the services.json route into both HotState and the shared dynamic snapshot.
-    let hot: Arc<ArcSwap<HotState>> = Arc::new(ArcSwap::from_pointee(
-        HotState::new(Arc::new(config.routing_table())),
-    ));
+    let hot: Arc<ArcSwap<HotState>> = Arc::new(ArcSwap::from_pointee(HotState::new(Arc::new(
+        config.routing_table(),
+    ))));
     let dynamic = new_dynamic_routes();
     let sources = create_sources(&config.config_sources);
     spawn_watchers(sources, hot.clone(), &config, dynamic.clone());
@@ -489,7 +597,10 @@ config_sources:
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    assert!(merged_ok, "services.json route should appear in HotState after watcher start");
+    assert!(
+        merged_ok,
+        "services.json route should appear in HotState after watcher start"
+    );
     assert!(hot.load().routing.contains_key("static.example.com"));
 
     // Simulate a SIGHUP: rebuild HotState from the (reloaded) static config while
@@ -497,8 +608,12 @@ config_sources:
     rebuild_hot_with_dynamic(&config, &hot, &dynamic);
 
     let snap = hot.load();
-    assert!(snap.routing.contains_key("static.example.com"),
-        "static route survives SIGHUP rebuild");
-    assert!(snap.routing.contains_key("console.example.com"),
-        "services.json route survives SIGHUP rebuild (root-cause fix — was the bug)");
+    assert!(
+        snap.routing.contains_key("static.example.com"),
+        "static route survives SIGHUP rebuild"
+    );
+    assert!(
+        snap.routing.contains_key("console.example.com"),
+        "services.json route survives SIGHUP rebuild (root-cause fix — was the bug)"
+    );
 }

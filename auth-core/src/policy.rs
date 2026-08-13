@@ -15,49 +15,80 @@ pub enum PolicyResult {
 /// Role-based policy engine with hierarchy and permissions.
 #[derive(Clone)]
 pub struct PolicyEngine {
-    hierarchy: Vec<String>,  // highest first: [OWNER, ADMIN, MEMBER, VIEWER]
+    hierarchy: Vec<String>, // highest first: [OWNER, ADMIN, MEMBER, VIEWER]
     effective_permissions: HashMap<String, HashSet<String>>,
 }
 
 impl PolicyEngine {
     /// Create with default volta policy (OWNER > ADMIN > MEMBER > VIEWER).
     pub fn default_policy() -> Self {
-        let hierarchy = vec!["OWNER".into(), "ADMIN".into(), "MEMBER".into(), "VIEWER".into()];
+        let hierarchy = vec![
+            "OWNER".into(),
+            "ADMIN".into(),
+            "MEMBER".into(),
+            "VIEWER".into(),
+        ];
         let mut perms: HashMap<String, HashSet<String>> = HashMap::new();
 
         // VIEWER
-        perms.insert("VIEWER".into(), ["read_only"].iter().map(|s| s.to_string()).collect());
+        perms.insert(
+            "VIEWER".into(),
+            ["read_only"].iter().map(|s| s.to_string()).collect(),
+        );
 
         // MEMBER inherits VIEWER
         let mut member: HashSet<String> = perms["VIEWER"].clone();
-        for p in &["use_apps", "view_own_profile", "update_own_profile", "manage_own_sessions",
-                   "view_tenant_members", "switch_tenant", "accept_invitation"] {
+        for p in &[
+            "use_apps",
+            "view_own_profile",
+            "update_own_profile",
+            "manage_own_sessions",
+            "view_tenant_members",
+            "switch_tenant",
+            "accept_invitation",
+        ] {
             member.insert(p.to_string());
         }
         perms.insert("MEMBER".into(), member);
 
         // ADMIN inherits MEMBER
         let mut admin: HashSet<String> = perms["MEMBER"].clone();
-        for p in &["invite_members", "remove_members", "change_member_role",
-                   "view_invitations", "create_invitations", "cancel_invitations",
-                   "change_tenant_name", "view_audit_logs"] {
+        for p in &[
+            "invite_members",
+            "remove_members",
+            "change_member_role",
+            "view_invitations",
+            "create_invitations",
+            "cancel_invitations",
+            "change_tenant_name",
+            "view_audit_logs",
+        ] {
             admin.insert(p.to_string());
         }
         perms.insert("ADMIN".into(), admin);
 
         // OWNER inherits ADMIN
         let mut owner: HashSet<String> = perms["ADMIN"].clone();
-        for p in &["delete_tenant", "transfer_ownership", "manage_signing_keys", "change_tenant_slug"] {
+        for p in &[
+            "delete_tenant",
+            "transfer_ownership",
+            "manage_signing_keys",
+            "change_tenant_slug",
+        ] {
             owner.insert(p.to_string());
         }
         perms.insert("OWNER".into(), owner);
 
-        Self { hierarchy, effective_permissions: perms }
+        Self {
+            hierarchy,
+            effective_permissions: perms,
+        }
     }
 
     /// Check if a role has a permission (including inherited).
     pub fn can(&self, role: &str, permission: &str) -> bool {
-        self.effective_permissions.get(role)
+        self.effective_permissions
+            .get(role)
             .map(|perms| perms.contains(permission))
             .unwrap_or(false)
     }
@@ -69,7 +100,10 @@ impl PolicyEngine {
 
     /// Get rank of a role (0 = highest). Returns usize::MAX if unknown.
     pub fn rank(&self, role: &str) -> usize {
-        self.hierarchy.iter().position(|r| r == role).unwrap_or(usize::MAX)
+        self.hierarchy
+            .iter()
+            .position(|r| r == role)
+            .unwrap_or(usize::MAX)
     }
 
     /// Check if role_a is at least as high as role_b.
@@ -102,7 +136,10 @@ impl PolicyEngine {
 
     /// Get all permissions for a role.
     pub fn permissions(&self, role: &str) -> HashSet<String> {
-        self.effective_permissions.get(role).cloned().unwrap_or_default()
+        self.effective_permissions
+            .get(role)
+            .cloned()
+            .unwrap_or_default()
     }
 }
 
@@ -213,21 +250,24 @@ mod tests {
         for perm in policy.permissions("VIEWER") {
             assert!(
                 policy.can("OWNER", &perm),
-                "OWNER should inherit VIEWER permission '{}'", perm
+                "OWNER should inherit VIEWER permission '{}'",
+                perm
             );
         }
         // OWNER must have every permission that MEMBER has.
         for perm in policy.permissions("MEMBER") {
             assert!(
                 policy.can("OWNER", &perm),
-                "OWNER should inherit MEMBER permission '{}'", perm
+                "OWNER should inherit MEMBER permission '{}'",
+                perm
             );
         }
         // OWNER must have every permission that ADMIN has.
         for perm in policy.permissions("ADMIN") {
             assert!(
                 policy.can("OWNER", &perm),
-                "OWNER should inherit ADMIN permission '{}'", perm
+                "OWNER should inherit ADMIN permission '{}'",
+                perm
             );
         }
     }

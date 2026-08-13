@@ -27,14 +27,17 @@ impl PkcePair {
         let verifier = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
         let digest = Sha256::digest(verifier.as_bytes());
         let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest);
-        Self { verifier, challenge }
+        Self {
+            verifier,
+            challenge,
+        }
     }
 }
 
 /// IdP provider configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct IdpConfig {
-    pub provider: String,          // google, github, microsoft, linkedin, apple
+    pub provider: String, // google, github, microsoft, linkedin, apple
     pub client_id: String,
     pub client_secret: String,
     pub issuer_url: Option<String>, // OIDC discovery URL
@@ -112,16 +115,20 @@ impl IdpClient {
         code_challenge: Option<&str>,
         prompt: Option<&str>,
     ) -> String {
-        let auth_url = self.config.auth_url.clone().unwrap_or_else(|| {
-            match self.config.provider.as_str() {
-                "google" => "https://accounts.google.com/o/oauth2/v2/auth".into(),
-                "github" => "https://github.com/login/oauth/authorize".into(),
-                "microsoft" => "https://login.microsoftonline.com/common/oauth2/v2.0/authorize".into(),
-                "linkedin" => "https://www.linkedin.com/oauth/v2/authorization".into(),
-                "apple" => "https://appleid.apple.com/auth/authorize".into(),
-                _ => "".into(),
-            }
-        });
+        let auth_url =
+            self.config
+                .auth_url
+                .clone()
+                .unwrap_or_else(|| match self.config.provider.as_str() {
+                    "google" => "https://accounts.google.com/o/oauth2/v2/auth".into(),
+                    "github" => "https://github.com/login/oauth/authorize".into(),
+                    "microsoft" => {
+                        "https://login.microsoftonline.com/common/oauth2/v2.0/authorize".into()
+                    }
+                    "linkedin" => "https://www.linkedin.com/oauth/v2/authorization".into(),
+                    "apple" => "https://appleid.apple.com/auth/authorize".into(),
+                    _ => "".into(),
+                });
 
         let scopes = if self.config.scopes.is_empty() {
             match self.config.provider.as_str() {
@@ -134,7 +141,8 @@ impl IdpClient {
             self.config.scopes.join(" ")
         };
 
-        let mut url = Url::parse(&auth_url).unwrap_or_else(|_| Url::parse("https://example.com").unwrap());
+        let mut url =
+            Url::parse(&auth_url).unwrap_or_else(|_| Url::parse("https://example.com").unwrap());
         {
             let mut pairs = url.query_pairs_mut();
             pairs
@@ -161,7 +169,11 @@ impl IdpClient {
     /// Back-compat shim — does not attach `code_verifier`. New callers should
     /// use [`IdpClient::exchange_code_pkce`] so the token exchange proves the
     /// original PKCE proof-of-possession.
-    pub async fn exchange_code(&self, code: &str, redirect_uri: &str) -> Result<TokenResponse, String> {
+    pub async fn exchange_code(
+        &self,
+        code: &str,
+        redirect_uri: &str,
+    ) -> Result<TokenResponse, String> {
         self.exchange_code_pkce(code, redirect_uri, None).await
     }
 
@@ -173,16 +185,20 @@ impl IdpClient {
         redirect_uri: &str,
         code_verifier: Option<&str>,
     ) -> Result<TokenResponse, String> {
-        let token_url = self.config.token_url.clone().unwrap_or_else(|| {
-            match self.config.provider.as_str() {
-                "google" => "https://oauth2.googleapis.com/token".into(),
-                "github" => "https://github.com/login/oauth/access_token".into(),
-                "microsoft" => "https://login.microsoftonline.com/common/oauth2/v2.0/token".into(),
-                "linkedin" => "https://www.linkedin.com/oauth/v2/accessToken".into(),
-                "apple" => "https://appleid.apple.com/auth/token".into(),
-                _ => "".into(),
-            }
-        });
+        let token_url =
+            self.config
+                .token_url
+                .clone()
+                .unwrap_or_else(|| match self.config.provider.as_str() {
+                    "google" => "https://oauth2.googleapis.com/token".into(),
+                    "github" => "https://github.com/login/oauth/access_token".into(),
+                    "microsoft" => {
+                        "https://login.microsoftonline.com/common/oauth2/v2.0/token".into()
+                    }
+                    "linkedin" => "https://www.linkedin.com/oauth/v2/accessToken".into(),
+                    "apple" => "https://appleid.apple.com/auth/token".into(),
+                    _ => "".into(),
+                });
 
         let mut params = HashMap::new();
         params.insert("grant_type", "authorization_code");
@@ -194,19 +210,23 @@ impl IdpClient {
             params.insert("code_verifier", v);
         }
 
-        let resp = self.http.post(&token_url)
+        let resp = self
+            .http
+            .post(&token_url)
             .form(&params)
             .header("Accept", "application/json")
             .send()
             .await
             .map_err(|e| format!("token exchange failed: {}", e))?;
 
-        let status = resp.status(); if !status.is_success() {
+        let status = resp.status();
+        if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
             return Err(format!("token exchange error {}: {}", status, body));
         }
 
-        resp.json::<TokenResponse>().await
+        resp.json::<TokenResponse>()
+            .await
             .map_err(|e| format!("token parse error: {}", e))
     }
 
@@ -221,20 +241,25 @@ impl IdpClient {
             }
         });
 
-        let resp = self.http.get(&userinfo_url)
+        let resp = self
+            .http
+            .get(&userinfo_url)
             .bearer_auth(access_token)
             .header("Accept", "application/json")
             .send()
             .await
             .map_err(|e| format!("userinfo failed: {}", e))?;
 
-        let status = resp.status(); if !status.is_success() {
+        let status = resp.status();
+        if !status.is_success() {
             return Err(format!("userinfo error: {}", resp.status()));
         }
 
         // GitHub has different field names
         if self.config.provider == "github" {
-            let gh: GitHubUser = resp.json().await
+            let gh: GitHubUser = resp
+                .json()
+                .await
                 .map_err(|e| format!("github user parse: {}", e))?;
             return Ok(IdpUserInfo {
                 sub: gh.id.to_string(),
@@ -245,12 +270,17 @@ impl IdpClient {
             });
         }
 
-        resp.json::<IdpUserInfo>().await
+        resp.json::<IdpUserInfo>()
+            .await
             .map_err(|e| format!("userinfo parse: {}", e))
     }
 
-    pub fn provider(&self) -> &str { &self.config.provider }
-    pub fn config(&self) -> &IdpConfig { &self.config }
+    pub fn provider(&self) -> &str {
+        &self.config.provider
+    }
+    pub fn config(&self) -> &IdpConfig {
+        &self.config
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -280,7 +310,10 @@ mod tests {
         let p = PkcePair::generate();
         // 32 random bytes → 43 base64-url chars, no padding.
         assert_eq!(p.verifier.len(), 43);
-        assert!(p.verifier.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+        assert!(p
+            .verifier
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
         // SHA-256 → 32 bytes → 43 base64-url chars, no padding.
         assert_eq!(p.challenge.len(), 43);
     }
@@ -323,9 +356,16 @@ mod tests {
     fn authorization_url_prompt_sets_select_account() {
         // Multi-account "add account" forces the upstream chooser.
         let url = test_client().authorization_url_pkce_prompt(
-            "https://app/cb", "s", "n", Some("CHAL"), Some("select_account"),
+            "https://app/cb",
+            "s",
+            "n",
+            Some("CHAL"),
+            Some("select_account"),
         );
-        assert!(url.contains("prompt=select_account"), "missing prompt: {url}");
+        assert!(
+            url.contains("prompt=select_account"),
+            "missing prompt: {url}"
+        );
         // No prompt requested → parameter absent.
         let none = test_client().authorization_url_pkce("https://app/cb", "s", "n", Some("CHAL"));
         assert!(!none.contains("prompt="), "unexpected prompt: {none}");

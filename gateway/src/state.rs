@@ -45,10 +45,17 @@ impl FlowState for ProxyState {
 
     fn all_states() -> &'static [Self] {
         &[
-            Self::Received, Self::Validated, Self::Routed,
-            Self::AuthChecked, Self::Forwarded, Self::Completed,
-            Self::BadRequest, Self::Redirect, Self::Denied,
-            Self::BadGateway, Self::GatewayTimeout,
+            Self::Received,
+            Self::Validated,
+            Self::Routed,
+            Self::AuthChecked,
+            Self::Forwarded,
+            Self::Completed,
+            Self::BadRequest,
+            Self::Redirect,
+            Self::Denied,
+            Self::BadGateway,
+            Self::GatewayTimeout,
         ]
     }
 }

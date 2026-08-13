@@ -2,35 +2,57 @@ use std::any::TypeId;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tramli::{FlowEngine, InMemoryFlowStore, CloneAny};
+use tramli::{CloneAny, FlowEngine, InMemoryFlowStore};
 
-use volta_gateway::flow::{self, RequestData, RouteTarget, AuthData, BackendResponse};
+use volta_gateway::flow::{self, AuthData, BackendResponse, RequestData, RouteTarget};
 use volta_gateway::proxy::RoutingTable;
 use volta_gateway::state::ProxyState;
 
 fn test_routing() -> Arc<RoutingTable> {
     use volta_gateway::proxy::RouteInfo;
     let mut rt = RoutingTable::new();
-    rt.insert("app.example.com".into(), RouteInfo {
-        weights: vec![], backends: vec!["http://localhost:3000".into()],
-        app_id: Some("app-wiki".into()),
-        public: false,
-        bypass_paths: vec![], mirror: None,
-        path_prefix: None, strip_prefix: None, add_prefix: None,
-        request_headers: None, response_headers: None,
-        geo_allowlist: vec![], geo_denylist: vec![],
-        timeout_secs: None, cache: None, backend_tls: None,
-    });
-    rt.insert("*.example.com".into(), RouteInfo {
-        weights: vec![], backends: vec!["http://localhost:3001".into()],
-        app_id: None,
-        public: false,
-        bypass_paths: vec![], mirror: None,
-        path_prefix: None, strip_prefix: None, add_prefix: None,
-        request_headers: None, response_headers: None,
-        geo_allowlist: vec![], geo_denylist: vec![],
-        timeout_secs: None, cache: None, backend_tls: None,
-    });
+    rt.insert(
+        "app.example.com".into(),
+        RouteInfo {
+            weights: vec![],
+            backends: vec!["http://localhost:3000".into()],
+            app_id: Some("app-wiki".into()),
+            public: false,
+            bypass_paths: vec![],
+            mirror: None,
+            path_prefix: None,
+            strip_prefix: None,
+            add_prefix: None,
+            request_headers: None,
+            response_headers: None,
+            geo_allowlist: vec![],
+            geo_denylist: vec![],
+            timeout_secs: None,
+            cache: None,
+            backend_tls: None,
+        },
+    );
+    rt.insert(
+        "*.example.com".into(),
+        RouteInfo {
+            weights: vec![],
+            backends: vec!["http://localhost:3001".into()],
+            app_id: None,
+            public: false,
+            bypass_paths: vec![],
+            mirror: None,
+            path_prefix: None,
+            strip_prefix: None,
+            add_prefix: None,
+            request_headers: None,
+            response_headers: None,
+            geo_allowlist: vec![],
+            geo_denylist: vec![],
+            timeout_secs: None,
+            cache: None,
+            backend_tls: None,
+        },
+    );
     Arc::new(rt)
 }
 
@@ -47,16 +69,17 @@ fn happy_path_auto_chains_to_routed() {
     let def = flow::build_proxy_flow(routing);
 
     let mut engine = FlowEngine::new(InMemoryFlowStore::new());
-    let initial: Vec<(TypeId, Box<dyn CloneAny>)> = vec![
-        (TypeId::of::<RequestData>(), Box::new(RequestData {
+    let initial: Vec<(TypeId, Box<dyn CloneAny>)> = vec![(
+        TypeId::of::<RequestData>(),
+        Box::new(RequestData {
             host: "app.example.com".into(),
             path: "/api/v1/users".into(),
             method: "GET".into(),
             header_size: 200,
             content_length: None,
             client_ip: None,
-        })),
-    ];
+        }),
+    )];
 
     let flow_id = engine.start_flow(def, "test-session", initial).unwrap();
 
@@ -77,16 +100,17 @@ fn wildcard_routing_works() {
     let def = flow::build_proxy_flow(routing);
     let mut engine = FlowEngine::new(InMemoryFlowStore::new());
 
-    let initial: Vec<(TypeId, Box<dyn CloneAny>)> = vec![
-        (TypeId::of::<RequestData>(), Box::new(RequestData {
+    let initial: Vec<(TypeId, Box<dyn CloneAny>)> = vec![(
+        TypeId::of::<RequestData>(),
+        Box::new(RequestData {
             host: "other.example.com".into(),
             path: "/".into(),
             method: "GET".into(),
             header_size: 100,
             content_length: None,
             client_ip: None,
-        })),
-    ];
+        }),
+    )];
 
     let flow_id = engine.start_flow(def, "s1", initial).unwrap();
     let flow = engine.store.get(&flow_id).unwrap();
@@ -102,16 +126,17 @@ fn unknown_host_goes_to_error() {
     let def = flow::build_proxy_flow(routing);
     let mut engine = FlowEngine::new(InMemoryFlowStore::new());
 
-    let initial: Vec<(TypeId, Box<dyn CloneAny>)> = vec![
-        (TypeId::of::<RequestData>(), Box::new(RequestData {
+    let initial: Vec<(TypeId, Box<dyn CloneAny>)> = vec![(
+        TypeId::of::<RequestData>(),
+        Box::new(RequestData {
             host: "evil.attacker.com".into(),
             path: "/".into(),
             method: "GET".into(),
             header_size: 100,
             content_length: None,
             client_ip: None,
-        })),
-    ];
+        }),
+    )];
 
     let flow_id = engine.start_flow(def, "s1", initial).unwrap();
     let flow = engine.store.get(&flow_id).unwrap();
@@ -125,16 +150,17 @@ fn path_traversal_rejected() {
     let def = flow::build_proxy_flow(routing);
     let mut engine = FlowEngine::new(InMemoryFlowStore::new());
 
-    let initial: Vec<(TypeId, Box<dyn CloneAny>)> = vec![
-        (TypeId::of::<RequestData>(), Box::new(RequestData {
+    let initial: Vec<(TypeId, Box<dyn CloneAny>)> = vec![(
+        TypeId::of::<RequestData>(),
+        Box::new(RequestData {
             host: "app.example.com".into(),
             path: "/../../etc/passwd".into(),
             method: "GET".into(),
             header_size: 100,
             content_length: None,
             client_ip: None,
-        })),
-    ];
+        }),
+    )];
 
     let flow_id = engine.start_flow(def, "s1", initial).unwrap();
     let flow = engine.store.get(&flow_id).unwrap();
@@ -147,16 +173,17 @@ fn oversized_headers_rejected() {
     let def = flow::build_proxy_flow(routing);
     let mut engine = FlowEngine::new(InMemoryFlowStore::new());
 
-    let initial: Vec<(TypeId, Box<dyn CloneAny>)> = vec![
-        (TypeId::of::<RequestData>(), Box::new(RequestData {
+    let initial: Vec<(TypeId, Box<dyn CloneAny>)> = vec![(
+        TypeId::of::<RequestData>(),
+        Box::new(RequestData {
             host: "app.example.com".into(),
             path: "/".into(),
             method: "GET".into(),
             header_size: 10000, // > 8192
             content_length: None,
             client_ip: None,
-        })),
-    ];
+        }),
+    )];
 
     let flow_id = engine.start_flow(def, "s1", initial).unwrap();
     let flow = engine.store.get(&flow_id).unwrap();
@@ -169,35 +196,42 @@ fn full_lifecycle_with_resume() {
     let def = flow::build_proxy_flow(routing);
     let mut engine = FlowEngine::new(InMemoryFlowStore::new());
 
-    let initial: Vec<(TypeId, Box<dyn CloneAny>)> = vec![
-        (TypeId::of::<RequestData>(), Box::new(RequestData {
+    let initial: Vec<(TypeId, Box<dyn CloneAny>)> = vec![(
+        TypeId::of::<RequestData>(),
+        Box::new(RequestData {
             host: "app.example.com".into(),
             path: "/api/v1/users".into(),
             method: "GET".into(),
             header_size: 200,
             content_length: None,
             client_ip: None,
-        })),
-    ];
+        }),
+    )];
 
     let flow_id = engine.start_flow(def, "s1", initial).unwrap();
-    assert_eq!(engine.store.get(&flow_id).unwrap().current_state(), ProxyState::Routed);
+    assert_eq!(
+        engine.store.get(&flow_id).unwrap().current_state(),
+        ProxyState::Routed
+    );
 
     // Resume with auth data
-    let auth_data: Vec<(TypeId, Box<dyn CloneAny>)> = vec![
-        (TypeId::of::<AuthData>(), Box::new(AuthData {
-            volta_headers: HashMap::from([
-                ("x-volta-user-id".into(), "user-123".into()),
-            ]),
-        })),
-    ];
+    let auth_data: Vec<(TypeId, Box<dyn CloneAny>)> = vec![(
+        TypeId::of::<AuthData>(),
+        Box::new(AuthData {
+            volta_headers: HashMap::from([("x-volta-user-id".into(), "user-123".into())]),
+        }),
+    )];
     engine.resume_and_execute(&flow_id, auth_data).unwrap();
-    assert_eq!(engine.store.get(&flow_id).unwrap().current_state(), ProxyState::AuthChecked);
+    assert_eq!(
+        engine.store.get(&flow_id).unwrap().current_state(),
+        ProxyState::AuthChecked
+    );
 
     // Resume with backend response
-    let resp_data: Vec<(TypeId, Box<dyn CloneAny>)> = vec![
-        (TypeId::of::<BackendResponse>(), Box::new(BackendResponse { status: 200 })),
-    ];
+    let resp_data: Vec<(TypeId, Box<dyn CloneAny>)> = vec![(
+        TypeId::of::<BackendResponse>(),
+        Box::new(BackendResponse { status: 200 }),
+    )];
     engine.resume_and_execute(&flow_id, resp_data).unwrap();
 
     let flow = engine.store.get(&flow_id).unwrap();
@@ -215,16 +249,17 @@ fn transition_log_records_all_steps() {
     let def = flow::build_proxy_flow(routing);
     let mut engine = FlowEngine::new(InMemoryFlowStore::new());
 
-    let initial: Vec<(TypeId, Box<dyn CloneAny>)> = vec![
-        (TypeId::of::<RequestData>(), Box::new(RequestData {
+    let initial: Vec<(TypeId, Box<dyn CloneAny>)> = vec![(
+        TypeId::of::<RequestData>(),
+        Box::new(RequestData {
             host: "app.example.com".into(),
             path: "/".into(),
             method: "GET".into(),
             header_size: 100,
             content_length: None,
             client_ip: None,
-        })),
-    ];
+        }),
+    )];
 
     engine.start_flow(def, "s1", initial).unwrap();
 
@@ -252,8 +287,9 @@ fn ip_not_in_allowlist_transitions_to_denied_403() {
     let def = flow::build_proxy_flow_with_allowlist(routing, allowlists);
 
     let mut engine = FlowEngine::new(InMemoryFlowStore::new());
-    let initial: Vec<(TypeId, Box<dyn CloneAny>)> = vec![
-        (TypeId::of::<RequestData>(), Box::new(RequestData {
+    let initial: Vec<(TypeId, Box<dyn CloneAny>)> = vec![(
+        TypeId::of::<RequestData>(),
+        Box::new(RequestData {
             host: "app.example.com".into(),
             path: "/api/v1/users".into(),
             method: "GET".into(),
@@ -261,8 +297,8 @@ fn ip_not_in_allowlist_transitions_to_denied_403() {
             content_length: None,
             // 203.0.113.7 is NOT in 10.0.0.0/8 → must be denied.
             client_ip: Some("203.0.113.7".parse().unwrap()),
-        })),
-    ];
+        }),
+    )];
 
     let flow_id = engine.start_flow(def, "denied-session", initial).unwrap();
     let flow = engine.store.get(&flow_id).unwrap();
@@ -285,17 +321,21 @@ fn ip_in_allowlist_is_allowed() {
     let def = flow::build_proxy_flow_with_allowlist(routing, allowlists);
 
     let mut engine = FlowEngine::new(InMemoryFlowStore::new());
-    let initial: Vec<(TypeId, Box<dyn CloneAny>)> = vec![
-        (TypeId::of::<RequestData>(), Box::new(RequestData {
+    let initial: Vec<(TypeId, Box<dyn CloneAny>)> = vec![(
+        TypeId::of::<RequestData>(),
+        Box::new(RequestData {
             host: "app.example.com".into(),
             path: "/api/v1/users".into(),
             method: "GET".into(),
             header_size: 200,
             content_length: None,
             client_ip: Some("10.1.2.3".parse().unwrap()),
-        })),
-    ];
+        }),
+    )];
 
     let flow_id = engine.start_flow(def, "allowed-session", initial).unwrap();
-    assert_eq!(engine.store.get(&flow_id).unwrap().current_state(), ProxyState::Routed);
+    assert_eq!(
+        engine.store.get(&flow_id).unwrap().current_state(),
+        ProxyState::Routed
+    );
 }

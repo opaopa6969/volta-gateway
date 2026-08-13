@@ -6,7 +6,7 @@
 #![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
 use crate::config::TlsConfig;
 
@@ -27,10 +27,14 @@ pub fn create_provider(tls: &TlsConfig) -> Option<Box<dyn DnsProvider>> {
 
     match provider {
         "cloudflare" => {
-            let api_token = tls.dns_api_token.clone()
+            let api_token = tls
+                .dns_api_token
+                .clone()
                 .or_else(|| std::env::var("CF_DNS_API_TOKEN").ok())
                 .unwrap_or_default();
-            let zone_id = tls.dns_zone_id.clone()
+            let zone_id = tls
+                .dns_zone_id
+                .clone()
                 .or_else(|| std::env::var("CF_ZONE_ID").ok())
                 .unwrap_or_default();
 
@@ -67,7 +71,10 @@ impl CloudflareDns {
     }
 
     fn api_url(&self, path: &str) -> String {
-        format!("https://api.cloudflare.com/client/v4/zones/{}{}", self.zone_id, path)
+        format!(
+            "https://api.cloudflare.com/client/v4/zones/{}{}",
+            self.zone_id, path
+        )
     }
 }
 
@@ -110,7 +117,9 @@ impl DnsProvider for CloudflareDns {
             ttl: 120,
         };
 
-        let resp = self.http.post(&self.api_url("/dns_records"))
+        let resp = self
+            .http
+            .post(&self.api_url("/dns_records"))
             .bearer_auth(&self.api_token)
             .json(&body)
             .send()
@@ -118,17 +127,21 @@ impl DnsProvider for CloudflareDns {
             .map_err(|e| format!("cloudflare API: {}", e))?;
 
         let status = resp.status();
-        let cf: CfResponse = resp.json().await
+        let cf: CfResponse = resp
+            .json()
+            .await
             .map_err(|e| format!("cloudflare parse: {}", e))?;
 
         if !cf.success {
             let errors: Vec<String> = cf.errors.iter().map(|e| e.message.clone()).collect();
-            return Err(format!("cloudflare error ({}): {}", status, errors.join(", ")));
+            return Err(format!(
+                "cloudflare error ({}): {}",
+                status,
+                errors.join(", ")
+            ));
         }
 
-        let record_id = cf.result
-            .ok_or("cloudflare: no result in response")?
-            .id;
+        let record_id = cf.result.ok_or("cloudflare: no result in response")?.id;
 
         info!(record_id = %record_id, "DNS-01 TXT record created");
         Ok(record_id)
@@ -137,7 +150,9 @@ impl DnsProvider for CloudflareDns {
     async fn delete_txt_record(&self, record_id: &str) -> Result<(), String> {
         info!(record_id = %record_id, "deleting DNS-01 TXT record");
 
-        let resp = self.http.delete(&self.api_url(&format!("/dns_records/{}", record_id)))
+        let resp = self
+            .http
+            .delete(&self.api_url(&format!("/dns_records/{}", record_id)))
             .bearer_auth(&self.api_token)
             .send()
             .await
@@ -169,9 +184,7 @@ pub async fn obtain_certificate_dns01(
     tls_config: &TlsConfig,
     provider: &dyn DnsProvider,
 ) -> Result<AcmeCertificate, String> {
-    use instant_acme::{
-        Account, NewAccount, NewOrder, ChallengeType, RetryPolicy,
-    };
+    use instant_acme::{Account, ChallengeType, NewAccount, NewOrder, RetryPolicy};
 
     let directory_url = if tls_config.staging {
         "https://acme-staging-v02.api.letsencrypt.org/directory"
@@ -200,7 +213,9 @@ pub async fn obtain_certificate_dns01(
     info!("ACME account created");
 
     // 2. Create order
-    let identifiers: Vec<instant_acme::Identifier> = tls_config.domains.iter()
+    let identifiers: Vec<instant_acme::Identifier> = tls_config
+        .domains
+        .iter()
         .map(|d| instant_acme::Identifier::Dns(d.clone()))
         .collect();
 
@@ -218,7 +233,8 @@ pub async fn obtain_certificate_dns01(
     while let Some(auth_result) = authorizations.next().await {
         let mut auth = auth_result.map_err(|e| format!("ACME auth: {}", e))?;
 
-        let mut challenge = auth.challenge(ChallengeType::Dns01)
+        let mut challenge = auth
+            .challenge(ChallengeType::Dns01)
             .ok_or_else(|| "no DNS-01 challenge offered".to_string())?;
 
         let key_auth = challenge.key_authorization();
@@ -234,7 +250,9 @@ pub async fn obtain_certificate_dns01(
         tokio::time::sleep(std::time::Duration::from_secs(10)).await;
 
         // 4. Tell ACME server the challenge is ready
-        challenge.set_ready().await
+        challenge
+            .set_ready()
+            .await
             .map_err(|e| format!("ACME set_ready: {}", e))?;
 
         info!(domain = %domain, "DNS-01 challenge submitted");
@@ -243,25 +261,28 @@ pub async fn obtain_certificate_dns01(
 
     // 5. Poll until order is ready
     let retry = RetryPolicy::default();
-    order.poll_ready(&retry).await
-        .map_err(|e| {
-            // Fire-and-forget cleanup
-            let records = dns_records.clone();
-            tokio::spawn(async move {
-                // Can't use provider here (not Send), but log for manual cleanup
-                warn!(records = ?records, "ACME failed — DNS records may need manual cleanup");
-            });
-            format!("ACME poll_ready: {}", e)
-        })?;
+    order.poll_ready(&retry).await.map_err(|e| {
+        // Fire-and-forget cleanup
+        let records = dns_records.clone();
+        tokio::spawn(async move {
+            // Can't use provider here (not Send), but log for manual cleanup
+            warn!(records = ?records, "ACME failed — DNS records may need manual cleanup");
+        });
+        format!("ACME poll_ready: {}", e)
+    })?;
 
     info!("ACME order ready — finalizing");
 
     // 6. Finalize (generates CSR internally via rcgen)
-    let private_key_pem = order.finalize().await
+    let private_key_pem = order
+        .finalize()
+        .await
         .map_err(|e| format!("ACME finalize: {}", e))?;
 
     // 7. Download certificate
-    let cert_chain_pem = order.poll_certificate(&retry).await
+    let cert_chain_pem = order
+        .poll_certificate(&retry)
+        .await
         .map_err(|e| format!("ACME certificate: {}", e))?;
 
     // 8. Cleanup DNS records

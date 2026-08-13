@@ -62,14 +62,16 @@ pub fn jwk_thumbprint(jwk: &Jwk) -> Result<String, DpopError> {
     let canonical = match &jwk.algorithm {
         AlgorithmParameters::EllipticCurve(p) => format!(
             "{{\"crv\":\"{}\",\"kty\":\"EC\",\"x\":\"{}\",\"y\":\"{}\"}}",
-            serde_json::to_value(&p.curve).ok().and_then(|v| v.as_str().map(String::from))
+            serde_json::to_value(&p.curve)
+                .ok()
+                .and_then(|v| v.as_str().map(String::from))
                 .ok_or_else(|| DpopError::Malformed("bad curve".into()))?,
-            p.x, p.y,
+            p.x,
+            p.y,
         ),
-        AlgorithmParameters::RSA(p) => format!(
-            "{{\"e\":\"{}\",\"kty\":\"RSA\",\"n\":\"{}\"}}",
-            p.e, p.n,
-        ),
+        AlgorithmParameters::RSA(p) => {
+            format!("{{\"e\":\"{}\",\"kty\":\"RSA\",\"n\":\"{}\"}}", p.e, p.n,)
+        }
         _ => return Err(DpopError::Malformed("unsupported JWK key type".into())),
     };
     use sha2::{Digest, Sha256};
@@ -96,8 +98,8 @@ pub fn verify_proof(
     access_token: Option<&str>,
     now: u64,
 ) -> Result<VerifiedProof, DpopError> {
-    let header = jsonwebtoken::decode_header(proof)
-        .map_err(|e| DpopError::Malformed(e.to_string()))?;
+    let header =
+        jsonwebtoken::decode_header(proof).map_err(|e| DpopError::Malformed(e.to_string()))?;
 
     if header.typ.as_deref() != Some("dpop+jwt") {
         return Err(DpopError::Malformed("typ must be dpop+jwt".into()));
@@ -105,11 +107,13 @@ pub fn verify_proof(
     if !matches!(header.alg, Algorithm::ES256 | Algorithm::RS256) {
         return Err(DpopError::Malformed("alg must be ES256 or RS256".into()));
     }
-    let jwk = header.jwk.as_ref()
+    let jwk = header
+        .jwk
+        .as_ref()
         .ok_or_else(|| DpopError::Malformed("missing jwk header".into()))?;
 
-    let key = DecodingKey::from_jwk(jwk)
-        .map_err(|e| DpopError::Malformed(format!("bad jwk: {e}")))?;
+    let key =
+        DecodingKey::from_jwk(jwk).map_err(|e| DpopError::Malformed(format!("bad jwk: {e}")))?;
     let mut validation = Validation::new(header.alg);
     validation.validate_exp = false; // freshness comes from iat, below
     validation.required_spec_claims.clear();
@@ -118,29 +122,42 @@ pub fn verify_proof(
     let c = data.claims;
 
     if !c.htm.eq_ignore_ascii_case(htm) {
-        return Err(DpopError::ClaimMismatch(format!("htm {} != {}", c.htm, htm)));
+        return Err(DpopError::ClaimMismatch(format!(
+            "htm {} != {}",
+            c.htm, htm
+        )));
     }
     // Compare htu ignoring query/fragment on the presented value (RFC 9449 §4.3-8).
     let presented = c.htu.split(['?', '#']).next().unwrap_or("");
     if presented != htu {
-        return Err(DpopError::ClaimMismatch(format!("htu {} != {}", presented, htu)));
+        return Err(DpopError::ClaimMismatch(format!(
+            "htu {} != {}",
+            presented, htu
+        )));
     }
     if c.iat > now + IAT_WINDOW_SECS || c.iat + IAT_WINDOW_SECS < now {
-        return Err(DpopError::ClaimMismatch("iat outside acceptance window".into()));
+        return Err(DpopError::ClaimMismatch(
+            "iat outside acceptance window".into(),
+        ));
     }
     match (access_token, &c.ath) {
         (Some(tok), Some(ath)) => {
             use subtle::ConstantTimeEq;
             let expect = access_token_hash(tok);
             if expect.as_bytes().ct_eq(ath.as_bytes()).unwrap_u8() != 1 {
-                return Err(DpopError::ClaimMismatch("ath does not match access token".into()));
+                return Err(DpopError::ClaimMismatch(
+                    "ath does not match access token".into(),
+                ));
             }
         }
         (Some(_), None) => return Err(DpopError::ClaimMismatch("ath required at resource".into())),
         (None, _) => {}
     }
 
-    Ok(VerifiedProof { jkt: jwk_thumbprint(jwk)?, jti: c.jti })
+    Ok(VerifiedProof {
+        jkt: jwk_thumbprint(jwk)?,
+        jti: c.jti,
+    })
 }
 
 #[cfg(test)]
@@ -153,39 +170,67 @@ mod tests {
     fn es256_key() -> (EncodingKey, Jwk) {
         let rng = ring::rand::SystemRandom::new();
         let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng).unwrap();
-        let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &rng).unwrap();
+        let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &rng)
+            .unwrap();
         // uncompressed point: 0x04 || x(32) || y(32)
         let pubkey = pair.public_key().as_ref();
         let b64 = |b: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b);
         let jwk: Jwk = serde_json::from_value(serde_json::json!({
             "kty": "EC", "crv": "P-256",
             "x": b64(&pubkey[1..33]), "y": b64(&pubkey[33..65]),
-        })).unwrap();
+        }))
+        .unwrap();
         (EncodingKey::from_ec_der(pkcs8.as_ref()), jwk)
     }
 
     fn now() -> u64 {
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
     }
 
-    fn proof(key: &EncodingKey, jwk: &Jwk, htm: &str, htu: &str, iat: u64, ath: Option<String>) -> String {
+    fn proof(
+        key: &EncodingKey,
+        jwk: &Jwk,
+        htm: &str,
+        htu: &str,
+        iat: u64,
+        ath: Option<String>,
+    ) -> String {
         let mut header = Header::new(Algorithm::ES256);
         header.typ = Some("dpop+jwt".into());
         header.jwk = Some(jwk.clone());
         let mut claims = serde_json::json!({
             "jti": uuid::Uuid::new_v4().to_string(), "htm": htm, "htu": htu, "iat": iat,
         });
-        if let Some(a) = ath { claims["ath"] = serde_json::json!(a); }
+        if let Some(a) = ath {
+            claims["ath"] = serde_json::json!(a);
+        }
         encode(&header, &claims, key).unwrap()
     }
 
     #[test]
     fn valid_proof_verifies_and_thumbprint_is_stable() {
         let (key, jwk) = es256_key();
-        let p = proof(&key, &jwk, "POST", "https://as.example/oauth/token", now(), None);
+        let p = proof(
+            &key,
+            &jwk,
+            "POST",
+            "https://as.example/oauth/token",
+            now(),
+            None,
+        );
         let v1 = verify_proof(&p, "POST", "https://as.example/oauth/token", None, now()).unwrap();
         // Same key → same jkt on a second proof.
-        let p2 = proof(&key, &jwk, "POST", "https://as.example/oauth/token", now(), None);
+        let p2 = proof(
+            &key,
+            &jwk,
+            "POST",
+            "https://as.example/oauth/token",
+            now(),
+            None,
+        );
         let v2 = verify_proof(&p2, "POST", "https://as.example/oauth/token", None, now()).unwrap();
         assert_eq!(v1.jkt, v2.jkt);
         assert_ne!(v1.jti, v2.jti);
@@ -195,14 +240,44 @@ mod tests {
     fn htm_htu_iat_mismatches_rejected() {
         let (key, jwk) = es256_key();
         let t = now();
-        let p = proof(&key, &jwk, "POST", "https://as.example/oauth/token", t, None);
-        assert!(matches!(verify_proof(&p, "GET", "https://as.example/oauth/token", None, t), Err(DpopError::ClaimMismatch(_))));
-        assert!(matches!(verify_proof(&p, "POST", "https://as.example/other", None, t), Err(DpopError::ClaimMismatch(_))));
+        let p = proof(
+            &key,
+            &jwk,
+            "POST",
+            "https://as.example/oauth/token",
+            t,
+            None,
+        );
+        assert!(matches!(
+            verify_proof(&p, "GET", "https://as.example/oauth/token", None, t),
+            Err(DpopError::ClaimMismatch(_))
+        ));
+        assert!(matches!(
+            verify_proof(&p, "POST", "https://as.example/other", None, t),
+            Err(DpopError::ClaimMismatch(_))
+        ));
         // stale iat
-        let old = proof(&key, &jwk, "POST", "https://as.example/oauth/token", t - 4000, None);
-        assert!(matches!(verify_proof(&old, "POST", "https://as.example/oauth/token", None, t), Err(DpopError::ClaimMismatch(_))));
+        let old = proof(
+            &key,
+            &jwk,
+            "POST",
+            "https://as.example/oauth/token",
+            t - 4000,
+            None,
+        );
+        assert!(matches!(
+            verify_proof(&old, "POST", "https://as.example/oauth/token", None, t),
+            Err(DpopError::ClaimMismatch(_))
+        ));
         // htu query is ignored on the presented value
-        let q = proof(&key, &jwk, "POST", "https://as.example/oauth/token?x=1", t, None);
+        let q = proof(
+            &key,
+            &jwk,
+            "POST",
+            "https://as.example/oauth/token?x=1",
+            t,
+            None,
+        );
         assert!(verify_proof(&q, "POST", "https://as.example/oauth/token", None, t).is_ok());
     }
 
@@ -212,14 +287,34 @@ mod tests {
         let t = now();
         let token = "the.access.token";
         // correct ath
-        let good = proof(&key, &jwk, "GET", "https://as.example/userinfo", t, Some(access_token_hash(token)));
+        let good = proof(
+            &key,
+            &jwk,
+            "GET",
+            "https://as.example/userinfo",
+            t,
+            Some(access_token_hash(token)),
+        );
         assert!(verify_proof(&good, "GET", "https://as.example/userinfo", Some(token), t).is_ok());
         // wrong ath
-        let bad = proof(&key, &jwk, "GET", "https://as.example/userinfo", t, Some(access_token_hash("other")));
-        assert!(matches!(verify_proof(&bad, "GET", "https://as.example/userinfo", Some(token), t), Err(DpopError::ClaimMismatch(_))));
+        let bad = proof(
+            &key,
+            &jwk,
+            "GET",
+            "https://as.example/userinfo",
+            t,
+            Some(access_token_hash("other")),
+        );
+        assert!(matches!(
+            verify_proof(&bad, "GET", "https://as.example/userinfo", Some(token), t),
+            Err(DpopError::ClaimMismatch(_))
+        ));
         // missing ath at a resource
         let none = proof(&key, &jwk, "GET", "https://as.example/userinfo", t, None);
-        assert!(matches!(verify_proof(&none, "GET", "https://as.example/userinfo", Some(token), t), Err(DpopError::ClaimMismatch(_))));
+        assert!(matches!(
+            verify_proof(&none, "GET", "https://as.example/userinfo", Some(token), t),
+            Err(DpopError::ClaimMismatch(_))
+        ));
     }
 
     #[test]
@@ -227,9 +322,23 @@ mod tests {
         let (key_a, _jwk_a) = es256_key();
         let (_key_b, jwk_b) = es256_key();
         // signed with A but advertising B's jwk → BadSignature
-        let forged = proof(&key_a, &jwk_b, "POST", "https://as.example/oauth/token", now(), None);
+        let forged = proof(
+            &key_a,
+            &jwk_b,
+            "POST",
+            "https://as.example/oauth/token",
+            now(),
+            None,
+        );
         assert_eq!(
-            verify_proof(&forged, "POST", "https://as.example/oauth/token", None, now()).unwrap_err(),
+            verify_proof(
+                &forged,
+                "POST",
+                "https://as.example/oauth/token",
+                None,
+                now()
+            )
+            .unwrap_err(),
             DpopError::BadSignature
         );
     }
@@ -242,6 +351,9 @@ mod tests {
         header.jwk = Some(jwk.clone());
         let claims = serde_json::json!({"jti":"x","htm":"POST","htu":"https://a/t","iat": now()});
         let no_typ = encode(&header, &claims, &key).unwrap();
-        assert!(matches!(verify_proof(&no_typ, "POST", "https://a/t", None, now()), Err(DpopError::Malformed(_))));
+        assert!(matches!(
+            verify_proof(&no_typ, "POST", "https://a/t", None, now()),
+            Err(DpopError::Malformed(_))
+        ));
     }
 }

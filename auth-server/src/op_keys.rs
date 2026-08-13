@@ -59,7 +59,10 @@ pub async fn bootstrap_op_issuer(db: &PgStore, ttl_secs: u64) -> Option<JwtIssue
     // Reuse an existing RSA key if present & parseable; otherwise mint one.
     let active = match SigningKeyStore::load_active(db).await {
         Ok(a) => a,
-        Err(e) => { warn!("signing key load failed: {e}"); None }
+        Err(e) => {
+            warn!("signing key load failed: {e}");
+            None
+        }
     };
     let usable = active.filter(|k| RsaPublicKey::from_public_key_pem(&k.public_key).is_ok());
 
@@ -68,7 +71,10 @@ pub async fn bootstrap_op_issuer(db: &PgStore, ttl_secs: u64) -> Option<JwtIssue
     } else {
         let (public_pem, private_pem) = match generate_rsa_pem() {
             Ok(pair) => pair,
-            Err(e) => { warn!("OP RSA keygen failed: {e}"); return None; }
+            Err(e) => {
+                warn!("OP RSA keygen failed: {e}");
+                return None;
+            }
         };
         let kid = uuid::Uuid::new_v4().to_string();
         if let Err(e) = SigningKeyStore::save(db, &kid, &public_pem, &private_pem).await {
@@ -80,8 +86,14 @@ pub async fn bootstrap_op_issuer(db: &PgStore, ttl_secs: u64) -> Option<JwtIssue
     };
 
     match JwtIssuer::new_rsa_with_kid(private_pem.as_bytes(), ttl_secs, Some(kid.clone())) {
-        Ok(issuer) => { info!(%kid, "OP RS256 issuer ready"); Some(issuer) }
-        Err(e) => { warn!("OP issuer build failed: {e}"); None }
+        Ok(issuer) => {
+            info!(%kid, "OP RS256 issuer ready");
+            Some(issuer)
+        }
+        Err(e) => {
+            warn!("OP issuer build failed: {e}");
+            None
+        }
     }
 }
 
@@ -91,18 +103,30 @@ mod tests {
     use volta_auth_core::jwt::{JwtVerifier, VoltaClaims};
 
     fn claims(sub: &str) -> VoltaClaims {
-        VoltaClaims { sub: sub.into(), email: None, tenant_id: None, tenant_slug: None,
-            roles: None, name: None, app_id: None, iat: None, exp: None }
+        VoltaClaims {
+            sub: sub.into(),
+            email: None,
+            tenant_id: None,
+            tenant_slug: None,
+            roles: None,
+            name: None,
+            app_id: None,
+            iat: None,
+            exp: None,
+        }
     }
 
     #[test]
     fn generated_rsa_signs_and_verifies_rs256() {
         let (public_pem, private_pem) = generate_rsa_pem().unwrap();
-        let issuer = JwtIssuer::new_rsa_with_kid(private_pem.as_bytes(), 3600, Some("k1".into())).unwrap();
+        let issuer =
+            JwtIssuer::new_rsa_with_kid(private_pem.as_bytes(), 3600, Some("k1".into())).unwrap();
         let token = issuer.issue(&claims("user-1")).unwrap();
         // kid present in the JWT header (decode the first base64url segment)
         let header_b64 = token.split('.').next().unwrap();
-        let header_json = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(header_b64).unwrap();
+        let header_json = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(header_b64)
+            .unwrap();
         let header: serde_json::Value = serde_json::from_slice(&header_json).unwrap();
         assert_eq!(header["kid"], "k1");
         assert_eq!(header["alg"], "RS256");

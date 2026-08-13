@@ -35,7 +35,9 @@ struct Inner {
 impl RateLimiter {
     pub fn new(name: &'static str, limit: u32, window: Duration) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(Inner { buckets: HashMap::new() })),
+            inner: Arc::new(Mutex::new(Inner {
+                buckets: HashMap::new(),
+            })),
             limit,
             window,
             name,
@@ -131,7 +133,8 @@ impl RateLimiter {
     pub fn gc(&self) {
         let mut g = self.inner.lock().expect("rate limiter poisoned");
         let now = Instant::now();
-        g.buckets.retain(|_, (start, _)| now.duration_since(*start) < self.window * 2);
+        g.buckets
+            .retain(|_, (start, _)| now.duration_since(*start) < self.window * 2);
     }
 }
 

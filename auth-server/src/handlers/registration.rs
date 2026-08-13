@@ -58,7 +58,9 @@ pub async fn register_verify_email(
     let outcome = runtime::verify_email(&s.db, &req.token)
         .await
         // Generic error — do not reveal whether the token/flow existed.
-        .map_err(|_| ApiError::bad_request("INVALID_TOKEN", "invalid or expired verification token"))?;
+        .map_err(|_| {
+            ApiError::bad_request("INVALID_TOKEN", "invalid or expired verification token")
+        })?;
     Ok(Json(serde_json::json!({
         "flowId": outcome.flow_id,
         "state": outcome.state,

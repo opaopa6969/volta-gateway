@@ -37,17 +37,26 @@ const AT_TTL_SECS: u64 = 3600;
 const RT_TTL_DAYS: i64 = 30;
 
 fn now_unix() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 /// Percent-encode a query value (chars outside the unreserved set).
 fn pct(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
             _ => out.push_str(&format!("%{:02X}", b)),
         }
     }
@@ -64,14 +73,23 @@ fn scope_has(scope: &str, want: &str) -> bool {
 ///   Ok(Some(jkt))   — valid proof → key thumbprint to bind / match
 ///   Err(response)   — a proof was supplied but is invalid (400 invalid_dpop_proof)
 /// `access_token` is `Some` at resource endpoints (enforces the `ath` binding).
-fn verify_dpop(headers: &HeaderMap, htm: &str, htu: &str, access_token: Option<&str>) -> Result<Option<String>, Response> {
+fn verify_dpop(
+    headers: &HeaderMap,
+    htm: &str,
+    htu: &str,
+    access_token: Option<&str>,
+) -> Result<Option<String>, Response> {
     let proof = match headers.get("dpop").and_then(|v| v.to_str().ok()) {
         Some(p) if !p.is_empty() => p,
         _ => return Ok(None),
     };
     match volta_auth_core::dpop::verify_proof(proof, htm, htu, access_token, now_unix()) {
         Ok(v) => Ok(Some(v.jkt)),
-        Err(e) => Err(oauth_err(StatusCode::BAD_REQUEST, "invalid_dpop_proof", &e.to_string())),
+        Err(e) => Err(oauth_err(
+            StatusCode::BAD_REQUEST,
+            "invalid_dpop_proof",
+            &e.to_string(),
+        )),
     }
 }
 
@@ -79,7 +97,11 @@ fn verify_dpop(headers: &HeaderMap, htm: &str, htu: &str, access_token: Option<&
 
 /// OAuth token-endpoint error (JSON, per RFC 6749 §5.2).
 fn oauth_err(status: StatusCode, error: &str, desc: &str) -> Response {
-    let mut resp = (status, Json(json!({ "error": error, "error_description": desc }))).into_response();
+    let mut resp = (
+        status,
+        Json(json!({ "error": error, "error_description": desc })),
+    )
+        .into_response();
     no_cache_headers(&mut resp);
     resp
 }
@@ -164,27 +186,66 @@ pub async fn authorize(
     // Validate client + redirect_uri BEFORE trusting them for redirects.
     let client_id = match q.client_id.as_deref() {
         Some(c) if !c.is_empty() => c.to_string(),
-        _ => return page_err(StatusCode::BAD_REQUEST, "invalid_request", "client_id is required"),
+        _ => {
+            return page_err(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "client_id is required",
+            )
+        }
     };
     let client = match OAuthClientStore::find_client(&s.db, &client_id).await {
         Ok(Some(c)) => c,
-        Ok(None) => return page_err(StatusCode::BAD_REQUEST, "invalid_client", "unknown client_id"),
-        Err(e) => return page_err(StatusCode::INTERNAL_SERVER_ERROR, "server_error", &e.to_string()),
+        Ok(None) => {
+            return page_err(
+                StatusCode::BAD_REQUEST,
+                "invalid_client",
+                "unknown client_id",
+            )
+        }
+        Err(e) => {
+            return page_err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "server_error",
+                &e.to_string(),
+            )
+        }
     };
     let redirect_uri = match q.redirect_uri.as_deref() {
         Some(r) if client.allows_redirect(r) => r.to_string(),
-        _ => return page_err(StatusCode::BAD_REQUEST, "invalid_request", "redirect_uri is not registered for this client"),
+        _ => {
+            return page_err(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "redirect_uri is not registered for this client",
+            )
+        }
     };
     let state = q.state.as_deref().unwrap_or("");
 
     // From here errors go back to the (validated) redirect_uri.
     if q.response_type.as_deref() != Some("code") {
-        return redirect_with(&redirect_uri, &[("error", "unsupported_response_type"), ("state", state)]);
+        return redirect_with(
+            &redirect_uri,
+            &[("error", "unsupported_response_type"), ("state", state)],
+        );
     }
-    let (code_challenge, ccm) = match (q.code_challenge.as_deref(), q.code_challenge_method.as_deref()) {
+    let (code_challenge, ccm) = match (
+        q.code_challenge.as_deref(),
+        q.code_challenge_method.as_deref(),
+    ) {
         (Some(c), Some("S256")) if !c.is_empty() => (c.to_string(), "S256".to_string()),
         // PKCE S256 is mandatory (public & confidential alike).
-        _ => return redirect_with(&redirect_uri, &[("error", "invalid_request"), ("error_description", "PKCE S256 required"), ("state", state)]),
+        _ => {
+            return redirect_with(
+                &redirect_uri,
+                &[
+                    ("error", "invalid_request"),
+                    ("error_description", "PKCE S256 required"),
+                    ("state", state),
+                ],
+            )
+        }
     };
     let prompt = q.prompt.as_deref().unwrap_or("");
     let scope = q.scope.clone().unwrap_or_else(|| "openid".into());
@@ -194,42 +255,98 @@ pub async fn authorize(
         Ok(sess) => sess,
         Err(_) => {
             if prompt == "none" {
-                return redirect_with(&redirect_uri, &[("error", "login_required"), ("state", state)]);
+                return redirect_with(
+                    &redirect_uri,
+                    &[("error", "login_required"), ("state", state)],
+                );
             }
             let here = format!("{}/authorize?{}", s.base_url, raw.unwrap_or_default());
-            let mut resp = Redirect::to(&format!("{}/login?return_to={}", s.base_url, pct(&here))).into_response();
+            let mut resp = Redirect::to(&format!("{}/login?return_to={}", s.base_url, pct(&here)))
+                .into_response();
             no_cache_headers(&mut resp);
             return resp;
         }
     };
-    let user_id: Uuid = match session.user_id.parse() { Ok(u) => u, Err(_) => return redirect_with(&redirect_uri, &[("error", "server_error"), ("state", state)]) };
+    let user_id: Uuid = match session.user_id.parse() {
+        Ok(u) => u,
+        Err(_) => {
+            return redirect_with(
+                &redirect_uri,
+                &[("error", "server_error"), ("state", state)],
+            )
+        }
+    };
     let tenant_id: Uuid = session.tenant_id.parse().unwrap_or_default();
 
     // Consent (remembered, unless prompt=consent forces it).
-    let consented = OAuthConsentStore::has_consent(&s.db, user_id, &client_id, &scope).await.unwrap_or(false);
+    let consented = OAuthConsentStore::has_consent(&s.db, user_id, &client_id, &scope)
+        .await
+        .unwrap_or(false);
     if prompt == "consent" || !consented {
         if prompt == "none" {
-            return redirect_with(&redirect_uri, &[("error", "consent_required"), ("state", state)]);
+            return redirect_with(
+                &redirect_uri,
+                &[("error", "consent_required"), ("state", state)],
+            );
         }
         return consent_screen(&client, &scope, &redirect_uri, &q, &code_challenge, &ccm);
     }
 
-    issue_code(&s, &client_id, user_id, tenant_id, &redirect_uri, &scope, q.nonce.as_deref(), &code_challenge, &ccm, state).await
+    issue_code(
+        &s,
+        &client_id,
+        user_id,
+        tenant_id,
+        &redirect_uri,
+        &scope,
+        q.nonce.as_deref(),
+        &code_challenge,
+        &ccm,
+        state,
+    )
+    .await
 }
 
-fn consent_screen(client: &OAuthClientRecord, scope: &str, redirect_uri: &str, q: &AuthorizeQuery, code_challenge: &str, ccm: &str) -> Response {
-    let hidden = |k: &str, v: &str| format!("<input type=\"hidden\" name=\"{}\" value=\"{}\">", k, html_escape(v));
-    let scope_items: String = scope.split_whitespace().map(|sc| {
-        let label = match sc { "openid" => "サインイン", "email" => "メールアドレス", "profile" => "プロフィール(名前)", "offline_access" => "オフラインアクセス(継続ログイン)", other => other };
-        format!("<li>{}</li>", html_escape(label))
-    }).collect();
-    let fields = format!("{}{}{}{}{}{}",
+fn consent_screen(
+    client: &OAuthClientRecord,
+    scope: &str,
+    redirect_uri: &str,
+    q: &AuthorizeQuery,
+    code_challenge: &str,
+    ccm: &str,
+) -> Response {
+    let hidden = |k: &str, v: &str| {
+        format!(
+            "<input type=\"hidden\" name=\"{}\" value=\"{}\">",
+            k,
+            html_escape(v)
+        )
+    };
+    let scope_items: String = scope
+        .split_whitespace()
+        .map(|sc| {
+            let label = match sc {
+                "openid" => "サインイン",
+                "email" => "メールアドレス",
+                "profile" => "プロフィール(名前)",
+                "offline_access" => "オフラインアクセス(継続ログイン)",
+                other => other,
+            };
+            format!("<li>{}</li>", html_escape(label))
+        })
+        .collect();
+    let fields = format!(
+        "{}{}{}{}{}{}",
         hidden("client_id", &client.client_id),
         hidden("redirect_uri", redirect_uri),
         hidden("scope", scope),
         hidden("state", q.state.as_deref().unwrap_or("")),
         hidden("nonce", q.nonce.as_deref().unwrap_or("")),
-        format!("{}{}", hidden("code_challenge", code_challenge), hidden("code_challenge_method", ccm)),
+        format!(
+            "{}{}",
+            hidden("code_challenge", code_challenge),
+            hidden("code_challenge_method", ccm)
+        ),
     );
     let html = CONSENT_HTML
         .replace("__CLIENT__", &html_escape(&client.name))
@@ -252,7 +369,11 @@ pub struct ConsentForm {
     pub decision: String, // "allow" | "deny"
 }
 
-pub async fn authorize_consent(State(s): State<AppState>, jar: CookieJar, Form(f): Form<ConsentForm>) -> Response {
+pub async fn authorize_consent(
+    State(s): State<AppState>,
+    jar: CookieJar,
+    Form(f): Form<ConsentForm>,
+) -> Response {
     let session = match require_session(&s, &jar).await {
         Ok(sess) => sess,
         Err(_) => {
@@ -263,26 +384,67 @@ pub async fn authorize_consent(State(s): State<AppState>, jar: CookieJar, Form(f
     };
     let client = match OAuthClientStore::find_client(&s.db, &f.client_id).await {
         Ok(Some(c)) if c.allows_redirect(&f.redirect_uri) => c,
-        _ => return page_err(StatusCode::BAD_REQUEST, "invalid_request", "invalid client/redirect"),
+        _ => {
+            return page_err(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "invalid client/redirect",
+            )
+        }
     };
     let _ = client;
     let state = f.state.as_deref().unwrap_or("");
     if f.decision != "allow" {
-        return redirect_with(&f.redirect_uri, &[("error", "access_denied"), ("state", state)]);
+        return redirect_with(
+            &f.redirect_uri,
+            &[("error", "access_denied"), ("state", state)],
+        );
     }
-    let user_id: Uuid = match session.user_id.parse() { Ok(u) => u, Err(_) => return redirect_with(&f.redirect_uri, &[("error", "server_error"), ("state", state)]) };
+    let user_id: Uuid = match session.user_id.parse() {
+        Ok(u) => u,
+        Err(_) => {
+            return redirect_with(
+                &f.redirect_uri,
+                &[("error", "server_error"), ("state", state)],
+            )
+        }
+    };
     let tenant_id: Uuid = session.tenant_id.parse().unwrap_or_default();
     let _ = OAuthConsentStore::grant_consent(&s.db, user_id, &f.client_id, &f.scope).await;
-    issue_code(&s, &f.client_id, user_id, tenant_id, &f.redirect_uri, &f.scope, f.nonce.as_deref().filter(|n| !n.is_empty()), &f.code_challenge, &f.code_challenge_method, state).await
+    issue_code(
+        &s,
+        &f.client_id,
+        user_id,
+        tenant_id,
+        &f.redirect_uri,
+        &f.scope,
+        f.nonce.as_deref().filter(|n| !n.is_empty()),
+        &f.code_challenge,
+        &f.code_challenge_method,
+        state,
+    )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn issue_code(s: &AppState, client_id: &str, user_id: Uuid, tenant_id: Uuid, redirect_uri: &str, scope: &str, nonce: Option<&str>, code_challenge: &str, ccm: &str, state: &str) -> Response {
+async fn issue_code(
+    s: &AppState,
+    client_id: &str,
+    user_id: Uuid,
+    tenant_id: Uuid,
+    redirect_uri: &str,
+    scope: &str,
+    nonce: Option<&str>,
+    code_challenge: &str,
+    ccm: &str,
+    state: &str,
+) -> Response {
     let code = random_token_hex(32);
     let rec = AuthzCodeRecord {
         code_hash: sha256_hex(&code),
         client_id: client_id.to_string(),
-        user_id, tenant_id,
+        user_id,
+        tenant_id,
         redirect_uri: redirect_uri.to_string(),
         scope: scope.to_string(),
         nonce: nonce.map(String::from),
@@ -293,10 +455,19 @@ async fn issue_code(s: &AppState, client_id: &str, user_id: Uuid, tenant_id: Uui
         created_at: chrono::Utc::now(),
     };
     if let Err(e) = AuthzCodeStore::save_code(&s.db, rec).await {
-        return redirect_with(redirect_uri, &[("error", "server_error"), ("error_description", &e.to_string()), ("state", state)]);
+        return redirect_with(
+            redirect_uri,
+            &[
+                ("error", "server_error"),
+                ("error_description", &e.to_string()),
+                ("state", state),
+            ],
+        );
     }
     let mut params = vec![("code", code.as_str())];
-    if !state.is_empty() { params.push(("state", state)); }
+    if !state.is_empty() {
+        params.push(("state", state));
+    }
     redirect_with(redirect_uri, &params)
 }
 
@@ -313,36 +484,100 @@ fn authenticate_client(client: &OAuthClientRecord, secret: Option<&str>) -> bool
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn token_authorization_code(s: &AppState, client_id: &str, client_secret: Option<&str>, code: &str, redirect_uri: &str, code_verifier: Option<&str>, dpop_jkt: Option<String>) -> Response {
+pub async fn token_authorization_code(
+    s: &AppState,
+    client_id: &str,
+    client_secret: Option<&str>,
+    code: &str,
+    redirect_uri: &str,
+    code_verifier: Option<&str>,
+    dpop_jkt: Option<String>,
+) -> Response {
     let client = match OAuthClientStore::find_client(&s.db, client_id).await {
         Ok(Some(c)) => c,
         _ => return oauth_err(StatusCode::UNAUTHORIZED, "invalid_client", "unknown client"),
     };
     if !authenticate_client(&client, client_secret) {
-        return oauth_err(StatusCode::UNAUTHORIZED, "invalid_client", "client authentication failed");
+        return oauth_err(
+            StatusCode::UNAUTHORIZED,
+            "invalid_client",
+            "client authentication failed",
+        );
     }
     if !client.allows_grant("authorization_code") {
-        return oauth_err(StatusCode::BAD_REQUEST, "unauthorized_client", "grant not allowed");
+        return oauth_err(
+            StatusCode::BAD_REQUEST,
+            "unauthorized_client",
+            "grant not allowed",
+        );
     }
     let rec = match AuthzCodeStore::consume_code(&s.db, &sha256_hex(code)).await {
         Ok(Some(r)) => r,
-        Ok(None) => return oauth_err(StatusCode::BAD_REQUEST, "invalid_grant", "code invalid, expired or already used"),
-        Err(e) => return oauth_err(StatusCode::INTERNAL_SERVER_ERROR, "server_error", &e.to_string()),
+        Ok(None) => {
+            return oauth_err(
+                StatusCode::BAD_REQUEST,
+                "invalid_grant",
+                "code invalid, expired or already used",
+            )
+        }
+        Err(e) => {
+            return oauth_err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "server_error",
+                &e.to_string(),
+            )
+        }
     };
     if rec.client_id != client_id || rec.redirect_uri != redirect_uri {
-        return oauth_err(StatusCode::BAD_REQUEST, "invalid_grant", "code/redirect_uri mismatch");
+        return oauth_err(
+            StatusCode::BAD_REQUEST,
+            "invalid_grant",
+            "code/redirect_uri mismatch",
+        );
     }
     // PKCE S256 verification.
-    match (rec.code_challenge.as_deref(), rec.code_challenge_method.as_deref()) {
+    match (
+        rec.code_challenge.as_deref(),
+        rec.code_challenge_method.as_deref(),
+    ) {
         (Some(challenge), Some("S256")) => {
-            let verifier = match code_verifier { Some(v) if !v.is_empty() => v, _ => return oauth_err(StatusCode::BAD_REQUEST, "invalid_grant", "code_verifier required") };
+            let verifier = match code_verifier {
+                Some(v) if !v.is_empty() => v,
+                _ => {
+                    return oauth_err(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_grant",
+                        "code_verifier required",
+                    )
+                }
+            };
             if &sha256_base64url(verifier) != challenge {
-                return oauth_err(StatusCode::BAD_REQUEST, "invalid_grant", "PKCE verification failed");
+                return oauth_err(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_grant",
+                    "PKCE verification failed",
+                );
             }
         }
-        _ => return oauth_err(StatusCode::BAD_REQUEST, "invalid_grant", "missing PKCE challenge"),
+        _ => {
+            return oauth_err(
+                StatusCode::BAD_REQUEST,
+                "invalid_grant",
+                "missing PKCE challenge",
+            )
+        }
     }
-    issue_tokens(s, &client, rec.user_id, rec.tenant_id, &rec.scope, rec.nonce.as_deref(), None, dpop_jkt).await
+    issue_tokens(
+        s,
+        &client,
+        rec.user_id,
+        rec.tenant_id,
+        &rec.scope,
+        rec.nonce.as_deref(),
+        None,
+        dpop_jkt,
+    )
+    .await
 }
 
 pub const TOKEN_EXCHANGE_GRANT: &str = "urn:ietf:params:oauth:grant-type:token-exchange";
@@ -367,28 +602,52 @@ pub async fn token_exchange(
         _ => return oauth_err(StatusCode::UNAUTHORIZED, "invalid_client", "unknown client"),
     };
     if !authenticate_client(&client, client_secret) {
-        return oauth_err(StatusCode::UNAUTHORIZED, "invalid_client", "client authentication failed");
+        return oauth_err(
+            StatusCode::UNAUTHORIZED,
+            "invalid_client",
+            "client authentication failed",
+        );
     }
     if let Some(t) = subject_token_type {
         if t != ACCESS_TOKEN_TYPE {
-            return oauth_err(StatusCode::BAD_REQUEST, "invalid_request", "only access_token subject_token_type is supported");
+            return oauth_err(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "only access_token subject_token_type is supported",
+            );
         }
     }
     // Verify the subject token (must be one we issued).
     let verifier = match op_verifier(s).await {
         Some(v) => v,
-        None => return oauth_err(StatusCode::INTERNAL_SERVER_ERROR, "server_error", "no OP key"),
+        None => {
+            return oauth_err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "server_error",
+                "no OP key",
+            )
+        }
     };
     let claims = match verifier.verify(subject_token) {
         Ok(c) => c,
-        Err(_) => return oauth_err(StatusCode::BAD_REQUEST, "invalid_grant", "subject_token invalid or expired"),
+        Err(_) => {
+            return oauth_err(
+                StatusCode::BAD_REQUEST,
+                "invalid_grant",
+                "subject_token invalid or expired",
+            )
+        }
     };
     let user_id: Uuid = match claims.sub.parse() {
         Ok(u) => u,
         Err(_) => return oauth_err(StatusCode::BAD_REQUEST, "invalid_grant", "bad subject"),
     };
     let Some(op) = &s.op_issuer else {
-        return oauth_err(StatusCode::INTERNAL_SERVER_ERROR, "server_error", "OP signing key unavailable");
+        return oauth_err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server_error",
+            "OP signing key unavailable",
+        );
     };
     // Down-scoping only: the exchanged scope may narrow but not widen the subject's.
     // `scope` is a custom claim on our access token, so read it from the payload
@@ -396,12 +655,22 @@ pub async fn token_exchange(
     let subject_scope = jwt_payload(subject_token)
         .and_then(|p| p.get("scope").and_then(|v| v.as_str().map(String::from)))
         .unwrap_or_default();
-    let base_scope = if subject_scope.is_empty() { "openid".to_string() } else { subject_scope };
+    let base_scope = if subject_scope.is_empty() {
+        "openid".to_string()
+    } else {
+        subject_scope
+    };
     let scope = match requested_scope {
         Some(req) if !req.is_empty() => {
             let base: std::collections::HashSet<&str> = base_scope.split_whitespace().collect();
-            if req.split_whitespace().all(|r| base.contains(r)) { req.to_string() } else {
-                return oauth_err(StatusCode::BAD_REQUEST, "invalid_scope", "requested scope exceeds subject token scope");
+            if req.split_whitespace().all(|r| base.contains(r)) {
+                req.to_string()
+            } else {
+                return oauth_err(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_scope",
+                    "requested scope exceeds subject token scope",
+                );
             }
         }
         _ => base_scope,
@@ -411,11 +680,19 @@ pub async fn token_exchange(
         "iss": s.base_url, "sub": claims.sub, "scope": scope, "client_id": client.client_id,
         "iat": now, "exp": now + AT_TTL_SECS, "token_use": "access", "act": { "client_id": client.client_id },
     });
-    if let Some(aud) = audience { ac["aud"] = json!(aud); }
+    if let Some(aud) = audience {
+        ac["aud"] = json!(aud);
+    }
     let _ = user_id;
     let token = match op.sign(&ac) {
         Ok(t) => t,
-        Err(e) => return oauth_err(StatusCode::INTERNAL_SERVER_ERROR, "server_error", &e.to_string()),
+        Err(e) => {
+            return oauth_err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "server_error",
+                &e.to_string(),
+            )
+        }
     };
     let mut resp = Json(json!({
         "access_token": token,
@@ -423,38 +700,88 @@ pub async fn token_exchange(
         "token_type": "Bearer",
         "expires_in": AT_TTL_SECS,
         "scope": scope,
-    })).into_response();
+    }))
+    .into_response();
     no_cache_headers(&mut resp);
     resp
 }
 
-pub async fn token_refresh(s: &AppState, client_id: &str, client_secret: Option<&str>, refresh_token: &str, dpop_jkt: Option<String>) -> Response {
+pub async fn token_refresh(
+    s: &AppState,
+    client_id: &str,
+    client_secret: Option<&str>,
+    refresh_token: &str,
+    dpop_jkt: Option<String>,
+) -> Response {
     let client = match OAuthClientStore::find_client(&s.db, client_id).await {
         Ok(Some(c)) => c,
         _ => return oauth_err(StatusCode::UNAUTHORIZED, "invalid_client", "unknown client"),
     };
     if !authenticate_client(&client, client_secret) {
-        return oauth_err(StatusCode::UNAUTHORIZED, "invalid_client", "client authentication failed");
+        return oauth_err(
+            StatusCode::UNAUTHORIZED,
+            "invalid_client",
+            "client authentication failed",
+        );
     }
     match RefreshTokenStore::rotate_refresh(&s.db, &sha256_hex(refresh_token)).await {
         Ok(RefreshOutcome::Rotated(old)) => {
             if old.client_id != client_id {
                 return oauth_err(StatusCode::BAD_REQUEST, "invalid_grant", "client mismatch");
             }
-            issue_tokens(s, &client, old.user_id, old.tenant_id, &old.scope, None, Some(old.family_id), dpop_jkt).await
+            issue_tokens(
+                s,
+                &client,
+                old.user_id,
+                old.tenant_id,
+                &old.scope,
+                None,
+                Some(old.family_id),
+                dpop_jkt,
+            )
+            .await
         }
-        Ok(RefreshOutcome::Reused) => oauth_err(StatusCode::BAD_REQUEST, "invalid_grant", "refresh token reuse detected — session revoked"),
-        Ok(RefreshOutcome::Expired) => oauth_err(StatusCode::BAD_REQUEST, "invalid_grant", "refresh token expired"),
-        Ok(RefreshOutcome::NotFound) => oauth_err(StatusCode::BAD_REQUEST, "invalid_grant", "unknown refresh token"),
-        Err(e) => oauth_err(StatusCode::INTERNAL_SERVER_ERROR, "server_error", &e.to_string()),
+        Ok(RefreshOutcome::Reused) => oauth_err(
+            StatusCode::BAD_REQUEST,
+            "invalid_grant",
+            "refresh token reuse detected — session revoked",
+        ),
+        Ok(RefreshOutcome::Expired) => oauth_err(
+            StatusCode::BAD_REQUEST,
+            "invalid_grant",
+            "refresh token expired",
+        ),
+        Ok(RefreshOutcome::NotFound) => oauth_err(
+            StatusCode::BAD_REQUEST,
+            "invalid_grant",
+            "unknown refresh token",
+        ),
+        Err(e) => oauth_err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server_error",
+            &e.to_string(),
+        ),
     }
 }
 
 /// Mint access (+ id, + rotating refresh) tokens. `family` = Some for a refresh
 /// rotation (continue the family), None for a fresh authorization_code grant.
-async fn issue_tokens(s: &AppState, client: &OAuthClientRecord, user_id: Uuid, tenant_id: Uuid, scope: &str, nonce: Option<&str>, family: Option<Uuid>, dpop_jkt: Option<String>) -> Response {
+async fn issue_tokens(
+    s: &AppState,
+    client: &OAuthClientRecord,
+    user_id: Uuid,
+    tenant_id: Uuid,
+    scope: &str,
+    nonce: Option<&str>,
+    family: Option<Uuid>,
+    dpop_jkt: Option<String>,
+) -> Response {
     let Some(op) = &s.op_issuer else {
-        return oauth_err(StatusCode::INTERNAL_SERVER_ERROR, "server_error", "OP signing key unavailable");
+        return oauth_err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server_error",
+            "OP signing key unavailable",
+        );
     };
     let user = UserStore::find_by_id(&s.db, user_id).await.ok().flatten();
     let now = now_unix();
@@ -471,7 +798,13 @@ async fn issue_tokens(s: &AppState, client: &OAuthClientRecord, user_id: Uuid, t
     }
     let access_token = match op.sign(&access_claims) {
         Ok(t) => t,
-        Err(e) => return oauth_err(StatusCode::INTERNAL_SERVER_ERROR, "server_error", &e.to_string()),
+        Err(e) => {
+            return oauth_err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "server_error",
+                &e.to_string(),
+            )
+        }
     };
 
     let token_type = if dpop_jkt.is_some() { "DPoP" } else { "Bearer" };
@@ -485,15 +818,27 @@ async fn issue_tokens(s: &AppState, client: &OAuthClientRecord, user_id: Uuid, t
             "iss": s.base_url, "sub": sub, "aud": client.client_id,
             "iat": now, "exp": now + AT_TTL_SECS, "auth_time": now,
         });
-        if let Some(n) = nonce { idc["nonce"] = json!(n); }
+        if let Some(n) = nonce {
+            idc["nonce"] = json!(n);
+        }
         if let Some(u) = &user {
             idc["email"] = json!(u.email);
             idc["email_verified"] = json!(true);
-            if let Some(name) = &u.display_name { idc["name"] = json!(name); }
+            if let Some(name) = &u.display_name {
+                idc["name"] = json!(name);
+            }
         }
         match op.sign(&idc) {
-            Ok(t) => { body["id_token"] = json!(t); }
-            Err(e) => return oauth_err(StatusCode::INTERNAL_SERVER_ERROR, "server_error", &e.to_string()),
+            Ok(t) => {
+                body["id_token"] = json!(t);
+            }
+            Err(e) => {
+                return oauth_err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "server_error",
+                    &e.to_string(),
+                )
+            }
         }
     }
 
@@ -502,11 +847,15 @@ async fn issue_tokens(s: &AppState, client: &OAuthClientRecord, user_id: Uuid, t
         let rt = random_token_hex(32);
         let family_id = family.unwrap_or_else(Uuid::new_v4);
         let rec = RefreshTokenRecord {
-            token_hash: sha256_hex(&rt), family_id,
-            client_id: client.client_id.clone(), user_id, tenant_id,
+            token_hash: sha256_hex(&rt),
+            family_id,
+            client_id: client.client_id.clone(),
+            user_id,
+            tenant_id,
             scope: scope.to_string(),
             expires_at: chrono::Utc::now() + chrono::Duration::days(RT_TTL_DAYS),
-            revoked_at: None, created_at: chrono::Utc::now(),
+            revoked_at: None,
+            created_at: chrono::Utc::now(),
         };
         if RefreshTokenStore::save_refresh(&s.db, rec).await.is_ok() {
             body["refresh_token"] = json!(rt);
@@ -525,7 +874,9 @@ async fn issue_tokens(s: &AppState, client: &OAuthClientRecord, user_id: Uuid, t
 fn jwt_payload(token: &str) -> Option<serde_json::Value> {
     use base64::Engine;
     let seg = token.split('.').nth(1)?;
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(seg).ok()?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(seg)
+        .ok()?;
     serde_json::from_slice(&bytes).ok()
 }
 
@@ -549,34 +900,72 @@ async fn op_verifier(s: &AppState) -> Option<JwtVerifier> {
 pub async fn userinfo(State(s): State<AppState>, headers: HeaderMap) -> Response {
     let token = match bearer(&headers) {
         Some(t) => t,
-        None => return oauth_err(StatusCode::UNAUTHORIZED, "invalid_token", "missing bearer token"),
+        None => {
+            return oauth_err(
+                StatusCode::UNAUTHORIZED,
+                "invalid_token",
+                "missing bearer token",
+            )
+        }
     };
     let verifier = match op_verifier(&s).await {
         Some(v) => v,
-        None => return oauth_err(StatusCode::INTERNAL_SERVER_ERROR, "server_error", "no OP key"),
+        None => {
+            return oauth_err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "server_error",
+                "no OP key",
+            )
+        }
     };
     let claims = match verifier.verify(&token) {
         Ok(c) => c,
-        Err(_) => return oauth_err(StatusCode::UNAUTHORIZED, "invalid_token", "token invalid or expired"),
+        Err(_) => {
+            return oauth_err(
+                StatusCode::UNAUTHORIZED,
+                "invalid_token",
+                "token invalid or expired",
+            )
+        }
     };
     // DPoP binding (RFC 9449 §7): if the token carries cnf.jkt, the request must
     // present a fresh DPoP proof (bound to method+URI+token) signed by that key.
-    if let Some(bound_jkt) = jwt_payload(&token).and_then(|p| p.get("cnf").and_then(|c| c.get("jkt").and_then(|j| j.as_str().map(String::from)))) {
+    if let Some(bound_jkt) = jwt_payload(&token).and_then(|p| {
+        p.get("cnf")
+            .and_then(|c| c.get("jkt").and_then(|j| j.as_str().map(String::from)))
+    }) {
         let htu = format!("{}/userinfo", s.base_url);
         match verify_dpop(&headers, "GET", &htu, Some(&token)) {
             Ok(Some(jkt)) if jkt == bound_jkt => {}
-            Ok(Some(_)) => return oauth_err(StatusCode::UNAUTHORIZED, "invalid_token", "DPoP key does not match token binding"),
-            Ok(None) => return oauth_err(StatusCode::UNAUTHORIZED, "invalid_token", "DPoP proof required for this token"),
+            Ok(Some(_)) => {
+                return oauth_err(
+                    StatusCode::UNAUTHORIZED,
+                    "invalid_token",
+                    "DPoP key does not match token binding",
+                )
+            }
+            Ok(None) => {
+                return oauth_err(
+                    StatusCode::UNAUTHORIZED,
+                    "invalid_token",
+                    "DPoP proof required for this token",
+                )
+            }
             Err(resp) => return resp,
         }
     }
-    let user_id: Uuid = match claims.sub.parse() { Ok(u) => u, Err(_) => return oauth_err(StatusCode::UNAUTHORIZED, "invalid_token", "bad subject") };
+    let user_id: Uuid = match claims.sub.parse() {
+        Ok(u) => u,
+        Err(_) => return oauth_err(StatusCode::UNAUTHORIZED, "invalid_token", "bad subject"),
+    };
     let user = UserStore::find_by_id(&s.db, user_id).await.ok().flatten();
     let mut out = json!({ "sub": claims.sub });
     if let Some(u) = user {
         out["email"] = json!(u.email);
         out["email_verified"] = json!(true);
-        if let Some(name) = u.display_name { out["name"] = json!(name); }
+        if let Some(name) = u.display_name {
+            out["name"] = json!(name);
+        }
     }
     let mut resp = Json(out).into_response();
     no_cache_headers(&mut resp);
@@ -597,16 +986,34 @@ pub async fn introspect(State(s): State<AppState>, Form(f): Form<IntrospectForm>
     if let Some(cid) = f.client_id.as_deref() {
         match OAuthClientStore::find_client(&s.db, cid).await {
             Ok(Some(c)) if authenticate_client(&c, f.client_secret.as_deref()) => {}
-            _ => return oauth_err(StatusCode::UNAUTHORIZED, "invalid_client", "client auth failed"),
+            _ => {
+                return oauth_err(
+                    StatusCode::UNAUTHORIZED,
+                    "invalid_client",
+                    "client auth failed",
+                )
+            }
         }
     } else {
-        return oauth_err(StatusCode::UNAUTHORIZED, "invalid_client", "client_id required");
+        return oauth_err(
+            StatusCode::UNAUTHORIZED,
+            "invalid_client",
+            "client_id required",
+        );
     }
-    let inactive = || { let mut r = Json(json!({ "active": false })).into_response(); no_cache_headers(&mut r); r };
-    let verifier = match op_verifier(&s).await { Some(v) => v, None => return inactive() };
+    let inactive = || {
+        let mut r = Json(json!({ "active": false })).into_response();
+        no_cache_headers(&mut r);
+        r
+    };
+    let verifier = match op_verifier(&s).await {
+        Some(v) => v,
+        None => return inactive(),
+    };
     match verifier.verify(&f.token) {
         Ok(c) => {
-            let mut r = Json(json!({ "active": true, "sub": c.sub, "token_type": "Bearer" })).into_response();
+            let mut r = Json(json!({ "active": true, "sub": c.sub, "token_type": "Bearer" }))
+                .into_response();
             no_cache_headers(&mut r);
             r
         }
@@ -653,18 +1060,32 @@ fn build_logout_token(s: &AppState, aud: &str, sub: &str) -> Option<String> {
     op.sign(&claims).ok()
 }
 
-pub async fn end_session(State(s): State<AppState>, jar: CookieJar, Query(q): Query<EndSessionQuery>) -> Response {
+pub async fn end_session(
+    State(s): State<AppState>,
+    jar: CookieJar,
+    Query(q): Query<EndSessionQuery>,
+) -> Response {
     // Identify who is logging out (before clearing) so RPs can be notified.
     let sub = match crate::helpers::extract_session_id(&jar) {
-        Some(sid) => SessionStore::find(&s.db, &sid).await.ok().flatten().map(|rec| rec.user_id),
+        Some(sid) => SessionStore::find(&s.db, &sid)
+            .await
+            .ok()
+            .flatten()
+            .map(|rec| rec.user_id),
         None => None,
     };
 
     // Same-origin-only post-logout redirect (avoid open redirects).
     let target = match &q.post_logout_redirect_uri {
-        Some(uri) if uri.starts_with(&s.base_url) => {
-            match &q.state { Some(st) if !st.is_empty() => format!("{}{}state={}", uri, if uri.contains('?') { '&' } else { '?' }, pct(st)), _ => uri.clone() }
-        }
+        Some(uri) if uri.starts_with(&s.base_url) => match &q.state {
+            Some(st) if !st.is_empty() => format!(
+                "{}{}state={}",
+                uri,
+                if uri.contains('?') { '&' } else { '?' },
+                pct(st)
+            ),
+            _ => uri.clone(),
+        },
         _ => format!("{}/login", s.base_url),
     };
 
@@ -678,8 +1099,13 @@ pub async fn end_session(State(s): State<AppState>, jar: CookieJar, Query(q): Qu
                     tokio::spawn(async move {
                         let http = reqwest::Client::builder()
                             .timeout(std::time::Duration::from_secs(5))
-                            .build().unwrap_or_else(|_| reqwest::Client::new());
-                        let _ = http.post(&uri).form(&[("logout_token", token.as_str())]).send().await;
+                            .build()
+                            .unwrap_or_else(|_| reqwest::Client::new());
+                        let _ = http
+                            .post(&uri)
+                            .form(&[("logout_token", token.as_str())])
+                            .send()
+                            .await;
                     });
                 }
             }
@@ -699,8 +1125,14 @@ pub async fn end_session(State(s): State<AppState>, jar: CookieJar, Query(q): Qu
     }
 
     // Front-channel logout page: load each RP's iframe, then redirect.
-    let iframes: String = frontchannel.iter()
-        .map(|u| format!("<iframe src=\"{}\" style=\"display:none\"></iframe>", html_escape(u)))
+    let iframes: String = frontchannel
+        .iter()
+        .map(|u| {
+            format!(
+                "<iframe src=\"{}\" style=\"display:none\"></iframe>",
+                html_escape(u)
+            )
+        })
         .collect();
     let html = format!(
         "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>ログアウト</title></head>\
@@ -731,63 +1163,123 @@ pub struct CreateClientReq {
     pub frontchannel_logout_uri: Option<String>,
 }
 
-pub async fn create_client(State(s): State<AppState>, jar: CookieJar, Json(b): Json<CreateClientReq>) -> Result<Response, ApiError> {
+pub async fn create_client(
+    State(s): State<AppState>,
+    jar: CookieJar,
+    Json(b): Json<CreateClientReq>,
+) -> Result<Response, ApiError> {
     crate::helpers::require_admin(&s, &jar).await?;
     let client_id = format!("volta-{}", &Uuid::new_v4().simple().to_string()[..16]);
     let (secret, secret_hash) = if b.confidential {
         let sec = random_token_hex(32);
         (Some(sec.clone()), Some(sha256_hex(&sec)))
-    } else { (None, None) };
-    let scopes = if b.scopes.is_empty() { vec!["openid".into(), "email".into(), "profile".into()] } else { b.scopes };
-    let grant_types = if b.grant_types.is_empty() { vec!["authorization_code".into(), "refresh_token".into()] } else { b.grant_types };
+    } else {
+        (None, None)
+    };
+    let scopes = if b.scopes.is_empty() {
+        vec!["openid".into(), "email".into(), "profile".into()]
+    } else {
+        b.scopes
+    };
+    let grant_types = if b.grant_types.is_empty() {
+        vec!["authorization_code".into(), "refresh_token".into()]
+    } else {
+        b.grant_types
+    };
     let rec = OAuthClientRecord {
-        id: Uuid::new_v4(), client_id: client_id.clone(), client_secret_hash: secret_hash,
-        name: b.name, redirect_uris: b.redirect_uris, grant_types, scopes,
+        id: Uuid::new_v4(),
+        client_id: client_id.clone(),
+        client_secret_hash: secret_hash,
+        name: b.name,
+        redirect_uris: b.redirect_uris,
+        grant_types,
+        scopes,
         is_confidential: b.confidential,
         backchannel_logout_uri: b.backchannel_logout_uri.filter(|u| !u.is_empty()),
         frontchannel_logout_uri: b.frontchannel_logout_uri.filter(|u| !u.is_empty()),
         created_at: chrono::Utc::now(),
     };
-    OAuthClientStore::create_client(&s.db, rec).await.map_err(|e| ApiError::internal(&e.to_string()))?;
+    OAuthClientStore::create_client(&s.db, rec)
+        .await
+        .map_err(|e| ApiError::internal(&e.to_string()))?;
     // client_secret is shown exactly once.
     Ok(Json(json!({ "client_id": client_id, "client_secret": secret })).into_response())
 }
 
 pub async fn list_clients(State(s): State<AppState>, jar: CookieJar) -> Result<Response, ApiError> {
     crate::helpers::require_admin(&s, &jar).await?;
-    let clients = OAuthClientStore::list_clients(&s.db).await.map_err(|e| ApiError::internal(&e.to_string()))?;
-    let items: Vec<_> = clients.into_iter().map(|c| json!({
-        "client_id": c.client_id, "name": c.name, "redirect_uris": c.redirect_uris,
-        "scopes": c.scopes, "grant_types": c.grant_types, "confidential": c.is_confidential,
-        "created_at": c.created_at.to_rfc3339(),
-    })).collect();
+    let clients = OAuthClientStore::list_clients(&s.db)
+        .await
+        .map_err(|e| ApiError::internal(&e.to_string()))?;
+    let items: Vec<_> = clients
+        .into_iter()
+        .map(|c| {
+            json!({
+                "client_id": c.client_id, "name": c.name, "redirect_uris": c.redirect_uris,
+                "scopes": c.scopes, "grant_types": c.grant_types, "confidential": c.is_confidential,
+                "created_at": c.created_at.to_rfc3339(),
+            })
+        })
+        .collect();
     Ok(Json(json!({ "clients": items })).into_response())
 }
 
 // ─── account linking (self-service) ───────────────────────
 
-pub async fn list_identities(State(s): State<AppState>, jar: CookieJar) -> Result<Response, ApiError> {
+pub async fn list_identities(
+    State(s): State<AppState>,
+    jar: CookieJar,
+) -> Result<Response, ApiError> {
     let session = crate::helpers::require_session(&s, &jar).await?;
-    let uid: Uuid = session.user_id.parse().map_err(|_| ApiError::internal("bad uid"))?;
-    let ids = UserIdentityStore::list_by_user(&s.db, uid).await.map_err(|e| ApiError::internal(&e.to_string()))?;
-    let items: Vec<_> = ids.into_iter().map(|i| json!({
-        "id": i.id, "provider": i.provider, "email": i.email,
-        "email_verified": i.email_verified, "created_at": i.created_at.to_rfc3339(),
-    })).collect();
+    let uid: Uuid = session
+        .user_id
+        .parse()
+        .map_err(|_| ApiError::internal("bad uid"))?;
+    let ids = UserIdentityStore::list_by_user(&s.db, uid)
+        .await
+        .map_err(|e| ApiError::internal(&e.to_string()))?;
+    let items: Vec<_> = ids
+        .into_iter()
+        .map(|i| {
+            json!({
+                "id": i.id, "provider": i.provider, "email": i.email,
+                "email_verified": i.email_verified, "created_at": i.created_at.to_rfc3339(),
+            })
+        })
+        .collect();
     Ok(Json(json!({ "identities": items })).into_response())
 }
 
-pub async fn unlink_identity(State(s): State<AppState>, jar: CookieJar, axum::extract::Path(id): axum::extract::Path<Uuid>) -> Result<Response, ApiError> {
+pub async fn unlink_identity(
+    State(s): State<AppState>,
+    jar: CookieJar,
+    axum::extract::Path(id): axum::extract::Path<Uuid>,
+) -> Result<Response, ApiError> {
     let session = crate::helpers::require_session(&s, &jar).await?;
-    let uid: Uuid = session.user_id.parse().map_err(|_| ApiError::internal("bad uid"))?;
+    let uid: Uuid = session
+        .user_id
+        .parse()
+        .map_err(|_| ApiError::internal("bad uid"))?;
     // Refuse to remove the last federated identity — would risk locking the user
     // out if they have no other login method.
-    if UserIdentityStore::count_by_user(&s.db, uid).await.map_err(|e| ApiError::internal(&e.to_string()))? <= 1 {
-        return Err(ApiError::bad_request("LAST_IDENTITY", "最後のログイン手段は解除できません。別のIdPを連携してから解除してください。"));
+    if UserIdentityStore::count_by_user(&s.db, uid)
+        .await
+        .map_err(|e| ApiError::internal(&e.to_string()))?
+        <= 1
+    {
+        return Err(ApiError::bad_request(
+            "LAST_IDENTITY",
+            "最後のログイン手段は解除できません。別のIdPを連携してから解除してください。",
+        ));
     }
-    let removed = UserIdentityStore::unlink(&s.db, uid, id).await.map_err(|e| ApiError::internal(&e.to_string()))?;
+    let removed = UserIdentityStore::unlink(&s.db, uid, id)
+        .await
+        .map_err(|e| ApiError::internal(&e.to_string()))?;
     if !removed {
-        return Err(ApiError::bad_request("NOT_FOUND", "その連携は見つかりません"));
+        return Err(ApiError::bad_request(
+            "NOT_FOUND",
+            "その連携は見つかりません",
+        ));
     }
     Ok(Json(json!({ "ok": true })).into_response())
 }

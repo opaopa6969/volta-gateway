@@ -78,11 +78,13 @@ fn build_flow_view(f: &FlowView) -> serde_json::Value {
     let transitions: Vec<serde_json::Value> = f
         .edges
         .iter()
-        .map(|e| serde_json::json!({
-            "from": e.from,
-            "to": e.to,
-            "label": e.label,
-        }))
+        .map(|e| {
+            serde_json::json!({
+                "from": e.from,
+                "to": e.to,
+                "label": e.label,
+            })
+        })
         .collect();
     serde_json::json!({
         "name": f.name,
@@ -106,20 +108,58 @@ mod flow_tables {
     pub static OIDC: FlowView = FlowView {
         name: "oidc",
         states: &[
-            "INIT", "REDIRECTED", "CALLBACK_RECEIVED", "TOKEN_EXCHANGED",
-            "USER_RESOLVED", "COMPLETE", "COMPLETE_MFA_PENDING", "TERMINAL_ERROR",
+            "INIT",
+            "REDIRECTED",
+            "CALLBACK_RECEIVED",
+            "TOKEN_EXCHANGED",
+            "USER_RESOLVED",
+            "COMPLETE",
+            "COMPLETE_MFA_PENDING",
+            "TERMINAL_ERROR",
         ],
         initial: "INIT",
         terminals: &["COMPLETE", "COMPLETE_MFA_PENDING", "TERMINAL_ERROR"],
         edges: &[
-            Edge { from: "INIT", to: "REDIRECTED", label: "OidcInitProcessor" },
-            Edge { from: "REDIRECTED", to: "CALLBACK_RECEIVED", label: "OidcCallbackGuard" },
-            Edge { from: "CALLBACK_RECEIVED", to: "TOKEN_EXCHANGED", label: "OidcTokenExchangeProcessor" },
-            Edge { from: "TOKEN_EXCHANGED", to: "USER_RESOLVED", label: "UserResolveProcessor" },
-            Edge { from: "USER_RESOLVED", to: "COMPLETE", label: "branch(no_mfa)" },
-            Edge { from: "USER_RESOLVED", to: "COMPLETE_MFA_PENDING", label: "branch(mfa_required)" },
-            Edge { from: "REDIRECTED", to: "TERMINAL_ERROR", label: "guard_fail" },
-            Edge { from: "CALLBACK_RECEIVED", to: "TERMINAL_ERROR", label: "idp_error" },
+            Edge {
+                from: "INIT",
+                to: "REDIRECTED",
+                label: "OidcInitProcessor",
+            },
+            Edge {
+                from: "REDIRECTED",
+                to: "CALLBACK_RECEIVED",
+                label: "OidcCallbackGuard",
+            },
+            Edge {
+                from: "CALLBACK_RECEIVED",
+                to: "TOKEN_EXCHANGED",
+                label: "OidcTokenExchangeProcessor",
+            },
+            Edge {
+                from: "TOKEN_EXCHANGED",
+                to: "USER_RESOLVED",
+                label: "UserResolveProcessor",
+            },
+            Edge {
+                from: "USER_RESOLVED",
+                to: "COMPLETE",
+                label: "branch(no_mfa)",
+            },
+            Edge {
+                from: "USER_RESOLVED",
+                to: "COMPLETE_MFA_PENDING",
+                label: "branch(mfa_required)",
+            },
+            Edge {
+                from: "REDIRECTED",
+                to: "TERMINAL_ERROR",
+                label: "guard_fail",
+            },
+            Edge {
+                from: "CALLBACK_RECEIVED",
+                to: "TERMINAL_ERROR",
+                label: "idp_error",
+            },
         ],
     };
 
@@ -132,30 +172,89 @@ mod flow_tables {
         states: &[
             "INIT",
             // registration (attestation) ceremony
-            "REG_CHALLENGE", "ATTESTATION_RECEIVED", "REGISTERED",
+            "REG_CHALLENGE",
+            "ATTESTATION_RECEIVED",
+            "REGISTERED",
             // authentication (discoverable assertion) ceremony
-            "AUTH_CHALLENGE", "ASSERTION_RECEIVED", "USER_RESOLVED", "COUNTER_CHECKED", "COMPLETE",
+            "AUTH_CHALLENGE",
+            "ASSERTION_RECEIVED",
+            "USER_RESOLVED",
+            "COUNTER_CHECKED",
+            "COMPLETE",
             // terminals
-            "TERMINAL_ERROR", "CLONE_REJECTED",
+            "TERMINAL_ERROR",
+            "CLONE_REJECTED",
         ],
         initial: "INIT",
         terminals: &["REGISTERED", "COMPLETE", "TERMINAL_ERROR", "CLONE_REJECTED"],
         edges: &[
             // ── registration (register/start → create() → register/finish) ──
-            Edge { from: "INIT", to: "REG_CHALLENGE", label: "register_start" },
-            Edge { from: "REG_CHALLENGE", to: "ATTESTATION_RECEIVED", label: "attestation_ext" },
-            Edge { from: "ATTESTATION_RECEIVED", to: "REGISTERED", label: "verify_and_store" },
-            Edge { from: "REG_CHALLENGE", to: "TERMINAL_ERROR", label: "already_registered" },
-            Edge { from: "ATTESTATION_RECEIVED", to: "TERMINAL_ERROR", label: "attestation_invalid" },
+            Edge {
+                from: "INIT",
+                to: "REG_CHALLENGE",
+                label: "register_start",
+            },
+            Edge {
+                from: "REG_CHALLENGE",
+                to: "ATTESTATION_RECEIVED",
+                label: "attestation_ext",
+            },
+            Edge {
+                from: "ATTESTATION_RECEIVED",
+                to: "REGISTERED",
+                label: "verify_and_store",
+            },
+            Edge {
+                from: "REG_CHALLENGE",
+                to: "TERMINAL_ERROR",
+                label: "already_registered",
+            },
+            Edge {
+                from: "ATTESTATION_RECEIVED",
+                to: "TERMINAL_ERROR",
+                label: "attestation_invalid",
+            },
             // ── authentication (discover/start → get() → discover/finish) ──
-            Edge { from: "INIT", to: "AUTH_CHALLENGE", label: "discover_start" },
-            Edge { from: "AUTH_CHALLENGE", to: "ASSERTION_RECEIVED", label: "assertion_ext" },
-            Edge { from: "ASSERTION_RECEIVED", to: "USER_RESOLVED", label: "verify_user_handle" },
-            Edge { from: "USER_RESOLVED", to: "COUNTER_CHECKED", label: "sign_counter_check" },
-            Edge { from: "COUNTER_CHECKED", to: "COMPLETE", label: "session_issue" },
-            Edge { from: "COUNTER_CHECKED", to: "CLONE_REJECTED", label: "signcount_regression" },
-            Edge { from: "AUTH_CHALLENGE", to: "TERMINAL_ERROR", label: "challenge_expired" },
-            Edge { from: "ASSERTION_RECEIVED", to: "TERMINAL_ERROR", label: "invalid_signature" },
+            Edge {
+                from: "INIT",
+                to: "AUTH_CHALLENGE",
+                label: "discover_start",
+            },
+            Edge {
+                from: "AUTH_CHALLENGE",
+                to: "ASSERTION_RECEIVED",
+                label: "assertion_ext",
+            },
+            Edge {
+                from: "ASSERTION_RECEIVED",
+                to: "USER_RESOLVED",
+                label: "verify_user_handle",
+            },
+            Edge {
+                from: "USER_RESOLVED",
+                to: "COUNTER_CHECKED",
+                label: "sign_counter_check",
+            },
+            Edge {
+                from: "COUNTER_CHECKED",
+                to: "COMPLETE",
+                label: "session_issue",
+            },
+            Edge {
+                from: "COUNTER_CHECKED",
+                to: "CLONE_REJECTED",
+                label: "signcount_regression",
+            },
+            Edge {
+                from: "AUTH_CHALLENGE",
+                to: "TERMINAL_ERROR",
+                label: "challenge_expired",
+            },
+            Edge {
+                from: "ASSERTION_RECEIVED",
+                to: "TERMINAL_ERROR",
+                label: "invalid_signature",
+            },
         ],
     };
 
@@ -165,46 +264,106 @@ mod flow_tables {
         initial: "CHALLENGE_SHOWN",
         terminals: &["VERIFIED", "TERMINAL_ERROR", "EXPIRED"],
         edges: &[
-            Edge { from: "CHALLENGE_SHOWN", to: "VERIFIED", label: "MfaCodeGuard" },
-            Edge { from: "CHALLENGE_SHOWN", to: "TERMINAL_ERROR", label: "3x_incorrect" },
-            Edge { from: "CHALLENGE_SHOWN", to: "EXPIRED", label: "ttl" },
+            Edge {
+                from: "CHALLENGE_SHOWN",
+                to: "VERIFIED",
+                label: "MfaCodeGuard",
+            },
+            Edge {
+                from: "CHALLENGE_SHOWN",
+                to: "TERMINAL_ERROR",
+                label: "3x_incorrect",
+            },
+            Edge {
+                from: "CHALLENGE_SHOWN",
+                to: "EXPIRED",
+                label: "ttl",
+            },
         ],
     };
 
     pub static INVITE: FlowView = FlowView {
         name: "invite",
         states: &[
-            "CONSENT_SHOWN", "ACCOUNT_SWITCHING", "ACCEPTED",
-            "COMPLETE", "TERMINAL_ERROR", "EXPIRED",
+            "CONSENT_SHOWN",
+            "ACCOUNT_SWITCHING",
+            "ACCEPTED",
+            "COMPLETE",
+            "TERMINAL_ERROR",
+            "EXPIRED",
         ],
         initial: "CONSENT_SHOWN",
         terminals: &["COMPLETE", "TERMINAL_ERROR", "EXPIRED"],
         edges: &[
-            Edge { from: "CONSENT_SHOWN", to: "ACCEPTED", label: "EmailMatchGuard" },
-            Edge { from: "CONSENT_SHOWN", to: "ACCOUNT_SWITCHING", label: "email_mismatch" },
-            Edge { from: "ACCOUNT_SWITCHING", to: "ACCEPTED", label: "ResumeGuard" },
-            Edge { from: "ACCEPTED", to: "COMPLETE", label: "InviteCompleteProcessor" },
-            Edge { from: "CONSENT_SHOWN", to: "TERMINAL_ERROR", label: "invite_expired" },
-            Edge { from: "ACCOUNT_SWITCHING", to: "EXPIRED", label: "resume_timeout" },
+            Edge {
+                from: "CONSENT_SHOWN",
+                to: "ACCEPTED",
+                label: "EmailMatchGuard",
+            },
+            Edge {
+                from: "CONSENT_SHOWN",
+                to: "ACCOUNT_SWITCHING",
+                label: "email_mismatch",
+            },
+            Edge {
+                from: "ACCOUNT_SWITCHING",
+                to: "ACCEPTED",
+                label: "ResumeGuard",
+            },
+            Edge {
+                from: "ACCEPTED",
+                to: "COMPLETE",
+                label: "InviteCompleteProcessor",
+            },
+            Edge {
+                from: "CONSENT_SHOWN",
+                to: "TERMINAL_ERROR",
+                label: "invite_expired",
+            },
+            Edge {
+                from: "ACCOUNT_SWITCHING",
+                to: "EXPIRED",
+                label: "resume_timeout",
+            },
         ],
     };
 
     // External (HTTP-guarded) transitions per flow — input to rule #4 of
     // `auth-core::flow::validate`. We list only the primary "success" edge of
     // each guard; failure / branch edges ride on the same external input.
-    pub static OIDC_EXTERNAL: [Edge; 1] = [
-        Edge { from: "REDIRECTED", to: "CALLBACK_RECEIVED", label: "OidcCallbackGuard" },
-    ];
+    pub static OIDC_EXTERNAL: [Edge; 1] = [Edge {
+        from: "REDIRECTED",
+        to: "CALLBACK_RECEIVED",
+        label: "OidcCallbackGuard",
+    }];
     pub static PASSKEY_EXTERNAL: [Edge; 2] = [
-        Edge { from: "REG_CHALLENGE", to: "ATTESTATION_RECEIVED", label: "attestation_ext" },
-        Edge { from: "AUTH_CHALLENGE", to: "ASSERTION_RECEIVED", label: "assertion_ext" },
+        Edge {
+            from: "REG_CHALLENGE",
+            to: "ATTESTATION_RECEIVED",
+            label: "attestation_ext",
+        },
+        Edge {
+            from: "AUTH_CHALLENGE",
+            to: "ASSERTION_RECEIVED",
+            label: "assertion_ext",
+        },
     ];
-    pub static MFA_EXTERNAL: [Edge; 1] = [
-        Edge { from: "CHALLENGE_SHOWN", to: "VERIFIED", label: "MfaCodeGuard" },
-    ];
+    pub static MFA_EXTERNAL: [Edge; 1] = [Edge {
+        from: "CHALLENGE_SHOWN",
+        to: "VERIFIED",
+        label: "MfaCodeGuard",
+    }];
     pub static INVITE_EXTERNAL: [Edge; 2] = [
-        Edge { from: "CONSENT_SHOWN", to: "ACCEPTED", label: "EmailMatchGuard" },
-        Edge { from: "ACCOUNT_SWITCHING", to: "ACCEPTED", label: "ResumeGuard" },
+        Edge {
+            from: "CONSENT_SHOWN",
+            to: "ACCEPTED",
+            label: "EmailMatchGuard",
+        },
+        Edge {
+            from: "ACCOUNT_SWITCHING",
+            to: "ACCEPTED",
+            label: "ResumeGuard",
+        },
     ];
 
     // ── Phase 2 flows (auth-core/src/flow/{registration,email_verification,
@@ -213,108 +372,287 @@ mod flow_tables {
     pub static REGISTRATION: FlowView = FlowView {
         name: "registration",
         states: &[
-            "START", "EMAIL_VERIFICATION_PENDING", "EMAIL_VERIFIED",
-            "MFA_SETUP_OPTIONAL", "COMPLETED", "CANCELLED",
+            "START",
+            "EMAIL_VERIFICATION_PENDING",
+            "EMAIL_VERIFIED",
+            "MFA_SETUP_OPTIONAL",
+            "COMPLETED",
+            "CANCELLED",
         ],
         initial: "START",
         terminals: &["COMPLETED", "CANCELLED"],
         edges: &[
-            Edge { from: "START", to: "EMAIL_VERIFICATION_PENDING", label: "RegIssueVerification" },
-            Edge { from: "EMAIL_VERIFICATION_PENDING", to: "EMAIL_VERIFIED", label: "RegVerifyEmailGuard" },
-            Edge { from: "EMAIL_VERIFIED", to: "MFA_SETUP_OPTIONAL", label: "branch(setup)" },
-            Edge { from: "EMAIL_VERIFIED", to: "COMPLETED", label: "branch(skip)" },
-            Edge { from: "MFA_SETUP_OPTIONAL", to: "COMPLETED", label: "RegMfaDoneGuard" },
-            Edge { from: "EMAIL_VERIFICATION_PENDING", to: "CANCELLED", label: "expire_or_cancel" },
+            Edge {
+                from: "START",
+                to: "EMAIL_VERIFICATION_PENDING",
+                label: "RegIssueVerification",
+            },
+            Edge {
+                from: "EMAIL_VERIFICATION_PENDING",
+                to: "EMAIL_VERIFIED",
+                label: "RegVerifyEmailGuard",
+            },
+            Edge {
+                from: "EMAIL_VERIFIED",
+                to: "MFA_SETUP_OPTIONAL",
+                label: "branch(setup)",
+            },
+            Edge {
+                from: "EMAIL_VERIFIED",
+                to: "COMPLETED",
+                label: "branch(skip)",
+            },
+            Edge {
+                from: "MFA_SETUP_OPTIONAL",
+                to: "COMPLETED",
+                label: "RegMfaDoneGuard",
+            },
+            Edge {
+                from: "EMAIL_VERIFICATION_PENDING",
+                to: "CANCELLED",
+                label: "expire_or_cancel",
+            },
         ],
     };
     pub static REGISTRATION_EXTERNAL: [Edge; 2] = [
-        Edge { from: "EMAIL_VERIFICATION_PENDING", to: "EMAIL_VERIFIED", label: "RegVerifyEmailGuard" },
-        Edge { from: "MFA_SETUP_OPTIONAL", to: "COMPLETED", label: "RegMfaDoneGuard" },
+        Edge {
+            from: "EMAIL_VERIFICATION_PENDING",
+            to: "EMAIL_VERIFIED",
+            label: "RegVerifyEmailGuard",
+        },
+        Edge {
+            from: "MFA_SETUP_OPTIONAL",
+            to: "COMPLETED",
+            label: "RegMfaDoneGuard",
+        },
     ];
 
     pub static EMAIL_VERIFICATION: FlowView = FlowView {
         name: "email_verification",
-        states: &["TOKEN_ISSUED", "SEND_REQUESTED", "SENT", "VERIFIED", "CANCELLED"],
+        states: &[
+            "TOKEN_ISSUED",
+            "SEND_REQUESTED",
+            "SENT",
+            "VERIFIED",
+            "CANCELLED",
+        ],
         initial: "TOKEN_ISSUED",
         terminals: &["VERIFIED", "CANCELLED"],
         edges: &[
-            Edge { from: "TOKEN_ISSUED", to: "SEND_REQUESTED", label: "EvRequestSend" },
-            Edge { from: "SEND_REQUESTED", to: "SENT", label: "EvMarkSentGuard" },
-            Edge { from: "SENT", to: "VERIFIED", label: "EvVerifyTokenGuard" },
-            Edge { from: "SEND_REQUESTED", to: "CANCELLED", label: "send_failed" },
+            Edge {
+                from: "TOKEN_ISSUED",
+                to: "SEND_REQUESTED",
+                label: "EvRequestSend",
+            },
+            Edge {
+                from: "SEND_REQUESTED",
+                to: "SENT",
+                label: "EvMarkSentGuard",
+            },
+            Edge {
+                from: "SENT",
+                to: "VERIFIED",
+                label: "EvVerifyTokenGuard",
+            },
+            Edge {
+                from: "SEND_REQUESTED",
+                to: "CANCELLED",
+                label: "send_failed",
+            },
         ],
     };
     pub static EMAIL_VERIFICATION_EXTERNAL: [Edge; 2] = [
-        Edge { from: "SEND_REQUESTED", to: "SENT", label: "EvMarkSentGuard" },
-        Edge { from: "SENT", to: "VERIFIED", label: "EvVerifyTokenGuard" },
+        Edge {
+            from: "SEND_REQUESTED",
+            to: "SENT",
+            label: "EvMarkSentGuard",
+        },
+        Edge {
+            from: "SENT",
+            to: "VERIFIED",
+            label: "EvVerifyTokenGuard",
+        },
     ];
 
     pub static PASSWORD_RESET: FlowView = FlowView {
         name: "password_reset",
         states: &[
-            "REQUESTED", "TOKEN_ISSUED", "SEND_REQUESTED", "SENT",
-            "TOKEN_VERIFIED", "PASSWORD_CHANGED", "COMPLETED", "CANCELLED",
+            "REQUESTED",
+            "TOKEN_ISSUED",
+            "SEND_REQUESTED",
+            "SENT",
+            "TOKEN_VERIFIED",
+            "PASSWORD_CHANGED",
+            "COMPLETED",
+            "CANCELLED",
         ],
         initial: "REQUESTED",
         terminals: &["COMPLETED", "CANCELLED"],
         edges: &[
-            Edge { from: "REQUESTED", to: "TOKEN_ISSUED", label: "PrIssueResetToken" },
-            Edge { from: "TOKEN_ISSUED", to: "SEND_REQUESTED", label: "PrRequestSend" },
-            Edge { from: "SEND_REQUESTED", to: "SENT", label: "PrMarkSentGuard" },
-            Edge { from: "SENT", to: "TOKEN_VERIFIED", label: "PrVerifyResetTokenGuard" },
-            Edge { from: "TOKEN_VERIFIED", to: "PASSWORD_CHANGED", label: "PrChangePasswordGuard" },
-            Edge { from: "PASSWORD_CHANGED", to: "COMPLETED", label: "PrComplete" },
-            Edge { from: "SEND_REQUESTED", to: "CANCELLED", label: "expire" },
+            Edge {
+                from: "REQUESTED",
+                to: "TOKEN_ISSUED",
+                label: "PrIssueResetToken",
+            },
+            Edge {
+                from: "TOKEN_ISSUED",
+                to: "SEND_REQUESTED",
+                label: "PrRequestSend",
+            },
+            Edge {
+                from: "SEND_REQUESTED",
+                to: "SENT",
+                label: "PrMarkSentGuard",
+            },
+            Edge {
+                from: "SENT",
+                to: "TOKEN_VERIFIED",
+                label: "PrVerifyResetTokenGuard",
+            },
+            Edge {
+                from: "TOKEN_VERIFIED",
+                to: "PASSWORD_CHANGED",
+                label: "PrChangePasswordGuard",
+            },
+            Edge {
+                from: "PASSWORD_CHANGED",
+                to: "COMPLETED",
+                label: "PrComplete",
+            },
+            Edge {
+                from: "SEND_REQUESTED",
+                to: "CANCELLED",
+                label: "expire",
+            },
         ],
     };
     pub static PASSWORD_RESET_EXTERNAL: [Edge; 3] = [
-        Edge { from: "SEND_REQUESTED", to: "SENT", label: "PrMarkSentGuard" },
-        Edge { from: "SENT", to: "TOKEN_VERIFIED", label: "PrVerifyResetTokenGuard" },
-        Edge { from: "TOKEN_VERIFIED", to: "PASSWORD_CHANGED", label: "PrChangePasswordGuard" },
+        Edge {
+            from: "SEND_REQUESTED",
+            to: "SENT",
+            label: "PrMarkSentGuard",
+        },
+        Edge {
+            from: "SENT",
+            to: "TOKEN_VERIFIED",
+            label: "PrVerifyResetTokenGuard",
+        },
+        Edge {
+            from: "TOKEN_VERIFIED",
+            to: "PASSWORD_CHANGED",
+            label: "PrChangePasswordGuard",
+        },
     ];
 
     pub static MFA_SETUP: FlowView = FlowView {
         name: "mfa_setup",
         states: &[
-            "NOT_CONFIGURED", "SETUP_STARTED", "SECRET_ISSUED",
-            "CONFIRMATION_PENDING", "ENABLED", "RECOVERY_CODES_ISSUED", "CANCELLED",
+            "NOT_CONFIGURED",
+            "SETUP_STARTED",
+            "SECRET_ISSUED",
+            "CONFIRMATION_PENDING",
+            "ENABLED",
+            "RECOVERY_CODES_ISSUED",
+            "CANCELLED",
         ],
         initial: "NOT_CONFIGURED",
         terminals: &["RECOVERY_CODES_ISSUED", "CANCELLED"],
         edges: &[
-            Edge { from: "NOT_CONFIGURED", to: "SETUP_STARTED", label: "MfaStartSetupGuard" },
-            Edge { from: "SETUP_STARTED", to: "SECRET_ISSUED", label: "MfaIssueSecret" },
-            Edge { from: "SECRET_ISSUED", to: "CONFIRMATION_PENDING", label: "MfaPresentSecret" },
-            Edge { from: "CONFIRMATION_PENDING", to: "ENABLED", label: "MfaConfirmCodeGuard" },
-            Edge { from: "ENABLED", to: "RECOVERY_CODES_ISSUED", label: "MfaIssueRecoveryCodes" },
-            Edge { from: "CONFIRMATION_PENDING", to: "CANCELLED", label: "cancel" },
+            Edge {
+                from: "NOT_CONFIGURED",
+                to: "SETUP_STARTED",
+                label: "MfaStartSetupGuard",
+            },
+            Edge {
+                from: "SETUP_STARTED",
+                to: "SECRET_ISSUED",
+                label: "MfaIssueSecret",
+            },
+            Edge {
+                from: "SECRET_ISSUED",
+                to: "CONFIRMATION_PENDING",
+                label: "MfaPresentSecret",
+            },
+            Edge {
+                from: "CONFIRMATION_PENDING",
+                to: "ENABLED",
+                label: "MfaConfirmCodeGuard",
+            },
+            Edge {
+                from: "ENABLED",
+                to: "RECOVERY_CODES_ISSUED",
+                label: "MfaIssueRecoveryCodes",
+            },
+            Edge {
+                from: "CONFIRMATION_PENDING",
+                to: "CANCELLED",
+                label: "cancel",
+            },
         ],
     };
     pub static MFA_SETUP_EXTERNAL: [Edge; 2] = [
-        Edge { from: "NOT_CONFIGURED", to: "SETUP_STARTED", label: "MfaStartSetupGuard" },
-        Edge { from: "CONFIRMATION_PENDING", to: "ENABLED", label: "MfaConfirmCodeGuard" },
+        Edge {
+            from: "NOT_CONFIGURED",
+            to: "SETUP_STARTED",
+            label: "MfaStartSetupGuard",
+        },
+        Edge {
+            from: "CONFIRMATION_PENDING",
+            to: "ENABLED",
+            label: "MfaConfirmCodeGuard",
+        },
     ];
 
     pub static LOGIN_CHALLENGE: FlowView = FlowView {
         name: "login_challenge",
         states: &[
-            "PASSWORD_ACCEPTED", "MFA_REQUIRED", "CHALLENGE_SENT",
-            "CHALLENGE_VERIFIED", "LOGIN_GRANTED", "LOGIN_DENIED",
+            "PASSWORD_ACCEPTED",
+            "MFA_REQUIRED",
+            "CHALLENGE_SENT",
+            "CHALLENGE_VERIFIED",
+            "LOGIN_GRANTED",
+            "LOGIN_DENIED",
         ],
         initial: "PASSWORD_ACCEPTED",
         terminals: &["LOGIN_GRANTED", "LOGIN_DENIED"],
         edges: &[
-            Edge { from: "PASSWORD_ACCEPTED", to: "MFA_REQUIRED", label: "branch(mfa)" },
-            Edge { from: "PASSWORD_ACCEPTED", to: "LOGIN_GRANTED", label: "branch(grant)" },
-            Edge { from: "MFA_REQUIRED", to: "CHALLENGE_SENT", label: "LcSendChallenge" },
-            Edge { from: "CHALLENGE_SENT", to: "CHALLENGE_VERIFIED", label: "LcVerifyChallengeGuard" },
-            Edge { from: "CHALLENGE_VERIFIED", to: "LOGIN_GRANTED", label: "LcGrant" },
-            Edge { from: "CHALLENGE_SENT", to: "LOGIN_DENIED", label: "deny" },
+            Edge {
+                from: "PASSWORD_ACCEPTED",
+                to: "MFA_REQUIRED",
+                label: "branch(mfa)",
+            },
+            Edge {
+                from: "PASSWORD_ACCEPTED",
+                to: "LOGIN_GRANTED",
+                label: "branch(grant)",
+            },
+            Edge {
+                from: "MFA_REQUIRED",
+                to: "CHALLENGE_SENT",
+                label: "LcSendChallenge",
+            },
+            Edge {
+                from: "CHALLENGE_SENT",
+                to: "CHALLENGE_VERIFIED",
+                label: "LcVerifyChallengeGuard",
+            },
+            Edge {
+                from: "CHALLENGE_VERIFIED",
+                to: "LOGIN_GRANTED",
+                label: "LcGrant",
+            },
+            Edge {
+                from: "CHALLENGE_SENT",
+                to: "LOGIN_DENIED",
+                label: "deny",
+            },
         ],
     };
-    pub static LOGIN_CHALLENGE_EXTERNAL: [Edge; 1] = [
-        Edge { from: "CHALLENGE_SENT", to: "CHALLENGE_VERIFIED", label: "LcVerifyChallengeGuard" },
-    ];
+    pub static LOGIN_CHALLENGE_EXTERNAL: [Edge; 1] = [Edge {
+        from: "CHALLENGE_SENT",
+        to: "CHALLENGE_VERIFIED",
+        label: "LcVerifyChallengeGuard",
+    }];
 
     // OAuth 2.0 Device Authorization Grant (RFC 8628). Store-authoritative; the
     // richer PENDING→APPROVED/DENIED/EXPIRED picture (vs the tramli skeleton in
@@ -326,15 +664,33 @@ mod flow_tables {
         initial: "PENDING",
         terminals: &["COMPLETED", "DENIED", "EXPIRED"],
         edges: &[
-            Edge { from: "PENDING", to: "APPROVED", label: "device_approve" },
-            Edge { from: "PENDING", to: "DENIED", label: "device_deny" },
-            Edge { from: "PENDING", to: "EXPIRED", label: "ttl" },
-            Edge { from: "APPROVED", to: "COMPLETED", label: "token_poll" },
+            Edge {
+                from: "PENDING",
+                to: "APPROVED",
+                label: "device_approve",
+            },
+            Edge {
+                from: "PENDING",
+                to: "DENIED",
+                label: "device_deny",
+            },
+            Edge {
+                from: "PENDING",
+                to: "EXPIRED",
+                label: "ttl",
+            },
+            Edge {
+                from: "APPROVED",
+                to: "COMPLETED",
+                label: "token_poll",
+            },
         ],
     };
-    pub static DEVICE_GRANT_EXTERNAL: [Edge; 1] = [
-        Edge { from: "PENDING", to: "APPROVED", label: "device_approve" },
-    ];
+    pub static DEVICE_GRANT_EXTERNAL: [Edge; 1] = [Edge {
+        from: "PENDING",
+        to: "APPROVED",
+        label: "device_approve",
+    }];
 }
 
 /// Expose the same descriptors to `auth-core::flow::validate` at startup
@@ -474,22 +830,33 @@ mod tests {
             let name = flow["name"].as_str().unwrap();
             let mermaid = flow["mermaid"].as_str().unwrap();
             assert!(!mermaid.is_empty(), "flow {} missing mermaid", name);
-            assert!(mermaid.contains("stateDiagram-v2"), "flow {} bad header", name);
-            assert!(mermaid.contains("[*] -->"), "flow {} no initial arrow", name);
+            assert!(
+                mermaid.contains("stateDiagram-v2"),
+                "flow {} bad header",
+                name
+            );
+            assert!(
+                mermaid.contains("[*] -->"),
+                "flow {} no initial arrow",
+                name
+            );
         }
     }
 
     #[test]
     fn every_flow_has_initial_in_states() {
         let flows = [
-            &flow_tables::OIDC, &flow_tables::PASSKEY,
-            &flow_tables::MFA, &flow_tables::INVITE,
+            &flow_tables::OIDC,
+            &flow_tables::PASSKEY,
+            &flow_tables::MFA,
+            &flow_tables::INVITE,
         ];
         for f in flows {
             assert!(
                 f.states.contains(&f.initial),
                 "flow {} initial state {} not in states list",
-                f.name, f.initial
+                f.name,
+                f.initial
             );
         }
     }
@@ -497,15 +864,18 @@ mod tests {
     #[test]
     fn every_flow_terminals_are_states() {
         let flows = [
-            &flow_tables::OIDC, &flow_tables::PASSKEY,
-            &flow_tables::MFA, &flow_tables::INVITE,
+            &flow_tables::OIDC,
+            &flow_tables::PASSKEY,
+            &flow_tables::MFA,
+            &flow_tables::INVITE,
         ];
         for f in flows {
             for t in f.terminals {
                 assert!(
                     f.states.contains(t),
                     "flow {} terminal {} not in states list",
-                    f.name, t
+                    f.name,
+                    t
                 );
             }
         }
@@ -514,12 +884,19 @@ mod tests {
     #[test]
     fn every_edge_endpoint_is_declared_state() {
         let flows = [
-            &flow_tables::OIDC, &flow_tables::PASSKEY,
-            &flow_tables::MFA, &flow_tables::INVITE,
+            &flow_tables::OIDC,
+            &flow_tables::PASSKEY,
+            &flow_tables::MFA,
+            &flow_tables::INVITE,
         ];
         for f in flows {
             for e in f.edges {
-                assert!(f.states.contains(&e.from), "flow {} edge from {}", f.name, e.from);
+                assert!(
+                    f.states.contains(&e.from),
+                    "flow {} edge from {}",
+                    f.name,
+                    e.from
+                );
                 assert!(f.states.contains(&e.to), "flow {} edge to {}", f.name, e.to);
             }
         }
@@ -538,42 +915,51 @@ pub async fn flow_transitions(
 ) -> Result<Response, ApiError> {
     let _ = require_admin(&state, &jar).await?;
 
-    let exists: Option<(Uuid,)> = sqlx::query_as(
-        "SELECT id FROM auth_flows WHERE id = $1"
-    )
-    .bind(flow_id)
-    .fetch_optional(state.db.pool())
-    .await
-    .map_err(|e| ApiError::internal(&e.to_string()))?;
+    let exists: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM auth_flows WHERE id = $1")
+        .bind(flow_id)
+        .fetch_optional(state.db.pool())
+        .await
+        .map_err(|e| ApiError::internal(&e.to_string()))?;
 
     if exists.is_none() {
         return Err(ApiError::bad_request("NOT_FOUND", "flow not found"));
     }
 
-    let rows: Vec<(i64, Option<String>, String, String, Option<serde_json::Value>, Option<String>, chrono::DateTime<chrono::Utc>)> =
-        sqlx::query_as(
-            "SELECT id, from_state, to_state, trigger, context_snapshot, error_detail, created_at \
-             FROM auth_flow_transitions WHERE flow_id = $1 ORDER BY created_at ASC"
-        )
-        .bind(flow_id)
-        .fetch_all(state.db.pool())
-        .await
-        .map_err(|e| ApiError::internal(&e.to_string()))?;
+    let rows: Vec<(
+        i64,
+        Option<String>,
+        String,
+        String,
+        Option<serde_json::Value>,
+        Option<String>,
+        chrono::DateTime<chrono::Utc>,
+    )> = sqlx::query_as(
+        "SELECT id, from_state, to_state, trigger, context_snapshot, error_detail, created_at \
+             FROM auth_flow_transitions WHERE flow_id = $1 ORDER BY created_at ASC",
+    )
+    .bind(flow_id)
+    .fetch_all(state.db.pool())
+    .await
+    .map_err(|e| ApiError::internal(&e.to_string()))?;
 
-    let transitions: Vec<_> = rows.into_iter().map(|(id, from, to, trigger, ctx, err, at)| {
-        serde_json::json!({
-            "id": id,
-            "from_state": from,
-            "to_state": to,
-            "trigger": trigger,
-            "context_snapshot": ctx,
-            "error_detail": err,
-            "created_at": at.to_rfc3339(),
+    let transitions: Vec<_> = rows
+        .into_iter()
+        .map(|(id, from, to, trigger, ctx, err, at)| {
+            serde_json::json!({
+                "id": id,
+                "from_state": from,
+                "to_state": to,
+                "trigger": trigger,
+                "context_snapshot": ctx,
+                "error_detail": err,
+                "created_at": at.to_rfc3339(),
+            })
         })
-    }).collect();
+        .collect();
 
     Ok(Json(serde_json::json!({
         "flow_id": flow_id,
         "transitions": transitions,
-    })).into_response())
+    }))
+    .into_response())
 }

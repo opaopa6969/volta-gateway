@@ -1,7 +1,7 @@
+use crate::error::AuthError;
+use crate::record::{MagicLinkRecord, MfaRecord, SigningKeyRecord};
 use async_trait::async_trait;
 use uuid::Uuid;
-use crate::error::AuthError;
-use crate::record::{MfaRecord, MagicLinkRecord, SigningKeyRecord};
 
 /// MFA store — TOTP secret management.
 #[async_trait]
@@ -11,9 +11,15 @@ pub trait MfaStore: Send + Sync {
     async fn has_active(&self, user_id: Uuid) -> Result<bool, AuthError>;
     async fn deactivate(&self, user_id: Uuid, mfa_type: &str) -> Result<(), AuthError>;
     /// Store a secret as INACTIVE (pending confirmation). Activated by `activate`.
-    async fn upsert_pending(&self, user_id: Uuid, mfa_type: &str, secret: &str) -> Result<(), AuthError>;
+    async fn upsert_pending(
+        &self,
+        user_id: Uuid,
+        mfa_type: &str,
+        secret: &str,
+    ) -> Result<(), AuthError>;
     /// Find regardless of active state (to read a pending secret for verification).
-    async fn find_any(&self, user_id: Uuid, mfa_type: &str) -> Result<Option<MfaRecord>, AuthError>;
+    async fn find_any(&self, user_id: Uuid, mfa_type: &str)
+        -> Result<Option<MfaRecord>, AuthError>;
     /// Mark a stored secret active (after confirmation).
     async fn activate(&self, user_id: Uuid, mfa_type: &str) -> Result<(), AuthError>;
 }
@@ -40,6 +46,12 @@ pub trait SigningKeyStore: Send + Sync {
     async fn save(&self, kid: &str, public_pem: &str, private_pem: &str) -> Result<(), AuthError>;
     async fn load_active(&self) -> Result<Option<SigningKeyRecord>, AuthError>;
     async fn list(&self) -> Result<Vec<SigningKeyRecord>, AuthError>;
-    async fn rotate(&self, old_kid: &str, new_kid: &str, public_pem: &str, private_pem: &str) -> Result<(), AuthError>;
+    async fn rotate(
+        &self,
+        old_kid: &str,
+        new_kid: &str,
+        public_pem: &str,
+        private_pem: &str,
+    ) -> Result<(), AuthError>;
     async fn revoke(&self, kid: &str) -> Result<(), AuthError>;
 }

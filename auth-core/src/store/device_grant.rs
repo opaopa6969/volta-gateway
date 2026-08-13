@@ -9,7 +9,11 @@ use crate::record::DeviceGrantRecord;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DevicePollOutcome {
     /// User approved — issue a token for this identity, then invalidate the grant.
-    Approved { user_id: Uuid, tenant_id: Uuid, scope: Option<String> },
+    Approved {
+        user_id: Uuid,
+        tenant_id: Uuid,
+        scope: Option<String>,
+    },
     /// Still waiting for the user (`authorization_pending`).
     Pending,
     /// Polled faster than `interval` (`slow_down`).
@@ -26,7 +30,10 @@ pub enum DevicePollOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeviceDecisionOutcome {
     /// Recorded (returns the client_id + scope for the confirmation screen).
-    Ok { client_id: String, scope: Option<String> },
+    Ok {
+        client_id: String,
+        scope: Option<String>,
+    },
     /// No pending grant for that user_code.
     NotFound,
     /// Grant existed but has expired.

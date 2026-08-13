@@ -55,7 +55,10 @@ pub enum FlowError {
     /// Flow-level: a terminal is not in `states`.
     TerminalNotDeclared(&'static str),
     /// An edge endpoint isn't declared in `states`.
-    UnknownEdgeState { from: &'static str, to: &'static str },
+    UnknownEdgeState {
+        from: &'static str,
+        to: &'static str,
+    },
     /// Rule 1: state is not reachable from `initial`.
     UnreachableState(&'static str),
     /// Rule 2: no path from `initial` to any terminal.
@@ -68,7 +71,10 @@ pub enum FlowError {
     UnknownBranchTarget(&'static str),
     /// Rule 6: processor at `state` requires `missing` key(s) that no
     /// upstream processor produces along this path.
-    RequirementMismatch { state: &'static str, missing: Vec<&'static str> },
+    RequirementMismatch {
+        state: &'static str,
+        missing: Vec<&'static str>,
+    },
     /// Rule 7: two context types in the same flow share the same alias.
     DuplicateAlias {
         alias: &'static str,
@@ -96,7 +102,10 @@ pub fn validate(flow: &FlowDescriptor) -> Result<(), Vec<FlowError>> {
     }
     for e in flow.edges {
         if !state_set.contains(e.from) || !state_set.contains(e.to) {
-            errors.push(FlowError::UnknownEdgeState { from: e.from, to: e.to });
+            errors.push(FlowError::UnknownEdgeState {
+                from: e.from,
+                to: e.to,
+            });
         }
         if !state_set.contains(e.to) {
             errors.push(FlowError::UnknownBranchTarget(e.to));
@@ -104,8 +113,12 @@ pub fn validate(flow: &FlowDescriptor) -> Result<(), Vec<FlowError>> {
     }
 
     // Bail if the flow is so broken that reachability analysis would crash.
-    if errors.iter().any(|e| matches!(e,
-        FlowError::InitialNotDeclared(_) | FlowError::UnknownEdgeState { .. })) {
+    if errors.iter().any(|e| {
+        matches!(
+            e,
+            FlowError::InitialNotDeclared(_) | FlowError::UnknownEdgeState { .. }
+        )
+    }) {
         return Err(errors);
     }
 
@@ -151,11 +164,8 @@ pub fn validate(flow: &FlowDescriptor) -> Result<(), Vec<FlowError>> {
 
     // Rule 6: requires/produces chain consistent along every path.
     if !flow.processors.is_empty() {
-        let proc_map: HashMap<&'static str, &ProcessorSpec> = flow
-            .processors
-            .iter()
-            .map(|p| (p.state, p))
-            .collect();
+        let proc_map: HashMap<&'static str, &ProcessorSpec> =
+            flow.processors.iter().map(|p| (p.state, p)).collect();
         check_requires_produces(flow, &proc_map, &mut errors);
     }
 
@@ -165,7 +175,11 @@ pub fn validate(flow: &FlowDescriptor) -> Result<(), Vec<FlowError>> {
         for &(alias, fqcn) in flow.flow_data_aliases {
             if let Some(&prev_fqcn) = seen.get(alias) {
                 if prev_fqcn != fqcn {
-                    errors.push(FlowError::DuplicateAlias { alias, first: prev_fqcn, second: fqcn });
+                    errors.push(FlowError::DuplicateAlias {
+                        alias,
+                        first: prev_fqcn,
+                        second: fqcn,
+                    });
                 }
             } else {
                 seen.insert(alias, fqcn);
@@ -181,7 +195,11 @@ pub fn validate(flow: &FlowDescriptor) -> Result<(), Vec<FlowError>> {
         }
     }
 
-    if errors.is_empty() { Ok(()) } else { Err(errors) }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
 }
 
 /// Validate rule #6 (requires/produces chain) by DFS over all paths from
@@ -317,7 +335,11 @@ fn find_cycle(edges: &[&Edge]) -> Option<Vec<&'static str>> {
     }
 
     #[derive(Copy, Clone, PartialEq)]
-    enum Color { White, Gray, Black }
+    enum Color {
+        White,
+        Gray,
+        Black,
+    }
     let mut color: HashMap<&'static str, Color> =
         nodes.iter().map(|&n| (n, Color::White)).collect();
 
@@ -370,7 +392,11 @@ mod tests {
 
     #[allow(dead_code)]
     fn edge(from: &'static str, to: &'static str) -> Edge {
-        Edge { from, to, label: "auto" }
+        Edge {
+            from,
+            to,
+            label: "auto",
+        }
     }
 
     static GOOD: FlowDescriptor = FlowDescriptor {
@@ -379,8 +405,16 @@ mod tests {
         initial: "A",
         terminals: &["C"],
         edges: &[
-            Edge { from: "A", to: "B", label: "auto" },
-            Edge { from: "B", to: "C", label: "auto" },
+            Edge {
+                from: "A",
+                to: "B",
+                label: "auto",
+            },
+            Edge {
+                from: "B",
+                to: "C",
+                label: "auto",
+            },
         ],
         external_edges: &[],
         processors: &[],
@@ -395,29 +429,54 @@ mod tests {
     #[test]
     fn initial_not_declared_fails() {
         static F: FlowDescriptor = FlowDescriptor {
-            name: "f", states: &["B"], initial: "A", terminals: &["B"],
-            edges: &[], external_edges: &[], processors: &[], flow_data_aliases: &[],
+            name: "f",
+            states: &["B"],
+            initial: "A",
+            terminals: &["B"],
+            edges: &[],
+            external_edges: &[],
+            processors: &[],
+            flow_data_aliases: &[],
         };
         let err = validate(&F).unwrap_err();
-        assert!(err.iter().any(|e| matches!(e, FlowError::InitialNotDeclared("A"))));
+        assert!(err
+            .iter()
+            .any(|e| matches!(e, FlowError::InitialNotDeclared("A"))));
     }
 
     #[test]
     fn unreachable_state_is_detected() {
         static F: FlowDescriptor = FlowDescriptor {
-            name: "f", states: &["A", "B", "C"], initial: "A", terminals: &["B"],
-            edges: &[Edge { from: "A", to: "B", label: "auto" }],
-            external_edges: &[], processors: &[], flow_data_aliases: &[],
+            name: "f",
+            states: &["A", "B", "C"],
+            initial: "A",
+            terminals: &["B"],
+            edges: &[Edge {
+                from: "A",
+                to: "B",
+                label: "auto",
+            }],
+            external_edges: &[],
+            processors: &[],
+            flow_data_aliases: &[],
         };
         let err = validate(&F).unwrap_err();
-        assert!(err.iter().any(|e| matches!(e, FlowError::UnreachableState("C"))));
+        assert!(err
+            .iter()
+            .any(|e| matches!(e, FlowError::UnreachableState("C"))));
     }
 
     #[test]
     fn no_terminal_path_detected() {
         static F: FlowDescriptor = FlowDescriptor {
-            name: "f", states: &["A", "B"], initial: "A", terminals: &["B"],
-            edges: &[], external_edges: &[], processors: &[], flow_data_aliases: &[],
+            name: "f",
+            states: &["A", "B"],
+            initial: "A",
+            terminals: &["B"],
+            edges: &[],
+            external_edges: &[],
+            processors: &[],
+            flow_data_aliases: &[],
         };
         let err = validate(&F).unwrap_err();
         assert!(err.iter().any(|e| matches!(e, FlowError::NoTerminalPath)));
@@ -426,61 +485,130 @@ mod tests {
     #[test]
     fn cycle_in_auto_branch_detected() {
         static F: FlowDescriptor = FlowDescriptor {
-            name: "f", states: &["A", "B"], initial: "A", terminals: &["B"],
+            name: "f",
+            states: &["A", "B"],
+            initial: "A",
+            terminals: &["B"],
             edges: &[
-                Edge { from: "A", to: "B", label: "auto" },
-                Edge { from: "B", to: "A", label: "auto" },
+                Edge {
+                    from: "A",
+                    to: "B",
+                    label: "auto",
+                },
+                Edge {
+                    from: "B",
+                    to: "A",
+                    label: "auto",
+                },
             ],
-            external_edges: &[], processors: &[], flow_data_aliases: &[],
+            external_edges: &[],
+            processors: &[],
+            flow_data_aliases: &[],
         };
         let err = validate(&F).unwrap_err();
-        assert!(err.iter().any(|e| matches!(e, FlowError::AutoBranchCycle(_))));
+        assert!(err
+            .iter()
+            .any(|e| matches!(e, FlowError::AutoBranchCycle(_))));
     }
 
     #[test]
     fn multiple_external_edges_detected() {
         static F: FlowDescriptor = FlowDescriptor {
-            name: "f", states: &["A", "B", "C"], initial: "A", terminals: &["C"],
+            name: "f",
+            states: &["A", "B", "C"],
+            initial: "A",
+            terminals: &["C"],
             edges: &[
-                Edge { from: "A", to: "B", label: "Guard1" },
-                Edge { from: "A", to: "C", label: "Guard2" },
-                Edge { from: "B", to: "C", label: "auto" },
+                Edge {
+                    from: "A",
+                    to: "B",
+                    label: "Guard1",
+                },
+                Edge {
+                    from: "A",
+                    to: "C",
+                    label: "Guard2",
+                },
+                Edge {
+                    from: "B",
+                    to: "C",
+                    label: "auto",
+                },
             ],
             external_edges: &[
-                Edge { from: "A", to: "B", label: "Guard1" },
-                Edge { from: "A", to: "C", label: "Guard2" },
+                Edge {
+                    from: "A",
+                    to: "B",
+                    label: "Guard1",
+                },
+                Edge {
+                    from: "A",
+                    to: "C",
+                    label: "Guard2",
+                },
             ],
-            processors: &[], flow_data_aliases: &[],
+            processors: &[],
+            flow_data_aliases: &[],
         };
         let err = validate(&F).unwrap_err();
-        assert!(err.iter().any(|e| matches!(e, FlowError::MultipleExternalEdges("A"))));
+        assert!(err
+            .iter()
+            .any(|e| matches!(e, FlowError::MultipleExternalEdges("A"))));
     }
 
     #[test]
     fn terminal_with_outgoing_detected() {
         static F: FlowDescriptor = FlowDescriptor {
-            name: "f", states: &["A", "B"], initial: "A", terminals: &["A"],
-            edges: &[Edge { from: "A", to: "B", label: "auto" }],
-            external_edges: &[], processors: &[], flow_data_aliases: &[],
+            name: "f",
+            states: &["A", "B"],
+            initial: "A",
+            terminals: &["A"],
+            edges: &[Edge {
+                from: "A",
+                to: "B",
+                label: "auto",
+            }],
+            external_edges: &[],
+            processors: &[],
+            flow_data_aliases: &[],
         };
         let err = validate(&F).unwrap_err();
-        assert!(err.iter().any(|e| matches!(e, FlowError::TerminalHasOutgoing("A"))));
+        assert!(err
+            .iter()
+            .any(|e| matches!(e, FlowError::TerminalHasOutgoing("A"))));
     }
 
     #[test]
     fn collects_all_errors_at_once() {
         // unreachable + terminal-with-outgoing in the same flow
         static F: FlowDescriptor = FlowDescriptor {
-            name: "f", states: &["A", "B", "C", "UNREACH"], initial: "A", terminals: &["A"],
+            name: "f",
+            states: &["A", "B", "C", "UNREACH"],
+            initial: "A",
+            terminals: &["A"],
             edges: &[
-                Edge { from: "A", to: "B", label: "auto" },
-                Edge { from: "B", to: "C", label: "auto" },
+                Edge {
+                    from: "A",
+                    to: "B",
+                    label: "auto",
+                },
+                Edge {
+                    from: "B",
+                    to: "C",
+                    label: "auto",
+                },
             ],
-            external_edges: &[], processors: &[], flow_data_aliases: &[],
+            external_edges: &[],
+            processors: &[],
+            flow_data_aliases: &[],
         };
         let err = validate(&F).unwrap_err();
-        let unreach = err.iter().any(|e| matches!(e, FlowError::UnreachableState("UNREACH")));
-        let term_out = err.iter().any(|e| matches!(e, FlowError::TerminalHasOutgoing("A")));
+        let unreach = err
+            .iter()
+            .any(|e| matches!(e, FlowError::UnreachableState("UNREACH")));
+        let term_out = err
+            .iter()
+            .any(|e| matches!(e, FlowError::TerminalHasOutgoing("A")));
         assert!(unreach && term_out, "expected both errors, got {:?}", err);
     }
 
@@ -491,8 +619,16 @@ mod tests {
     #[test]
     fn requirement_mismatch_is_detected() {
         static PROCS: &[ProcessorSpec] = &[
-            ProcessorSpec { state: "A", requires: &[], produces: &["init_data"] },
-            ProcessorSpec { state: "B", requires: &["token"], produces: &[] },
+            ProcessorSpec {
+                state: "A",
+                requires: &[],
+                produces: &["init_data"],
+            },
+            ProcessorSpec {
+                state: "B",
+                requires: &["token"],
+                produces: &[],
+            },
         ];
         static F: FlowDescriptor = FlowDescriptor {
             name: "f",
@@ -500,8 +636,16 @@ mod tests {
             initial: "A",
             terminals: &["C"],
             edges: &[
-                Edge { from: "A", to: "B", label: "auto" },
-                Edge { from: "B", to: "C", label: "auto" },
+                Edge {
+                    from: "A",
+                    to: "B",
+                    label: "auto",
+                },
+                Edge {
+                    from: "B",
+                    to: "C",
+                    label: "auto",
+                },
             ],
             external_edges: &[],
             processors: PROCS,
@@ -518,9 +662,21 @@ mod tests {
     #[test]
     fn requirement_satisfied_by_upstream_passes() {
         static PROCS: &[ProcessorSpec] = &[
-            ProcessorSpec { state: "A", requires: &[], produces: &["init_data"] },
-            ProcessorSpec { state: "B", requires: &["init_data"], produces: &["token"] },
-            ProcessorSpec { state: "C", requires: &["token"], produces: &[] },
+            ProcessorSpec {
+                state: "A",
+                requires: &[],
+                produces: &["init_data"],
+            },
+            ProcessorSpec {
+                state: "B",
+                requires: &["init_data"],
+                produces: &["token"],
+            },
+            ProcessorSpec {
+                state: "C",
+                requires: &["token"],
+                produces: &[],
+            },
         ];
         static F: FlowDescriptor = FlowDescriptor {
             name: "f",
@@ -528,9 +684,21 @@ mod tests {
             initial: "A",
             terminals: &["DONE"],
             edges: &[
-                Edge { from: "A", to: "B", label: "auto" },
-                Edge { from: "B", to: "C", label: "auto" },
-                Edge { from: "C", to: "DONE", label: "auto" },
+                Edge {
+                    from: "A",
+                    to: "B",
+                    label: "auto",
+                },
+                Edge {
+                    from: "B",
+                    to: "C",
+                    label: "auto",
+                },
+                Edge {
+                    from: "C",
+                    to: "DONE",
+                    label: "auto",
+                },
             ],
             external_edges: &[],
             processors: PROCS,
@@ -545,10 +713,26 @@ mod tests {
     fn requirement_mismatch_on_branch_path() {
         // A → B (produces "x") → [C, D]  C requires "y" (not produced)
         static PROCS: &[ProcessorSpec] = &[
-            ProcessorSpec { state: "A", requires: &[], produces: &[] },
-            ProcessorSpec { state: "B", requires: &[], produces: &["x"] },
-            ProcessorSpec { state: "C", requires: &["y"], produces: &[] },
-            ProcessorSpec { state: "D", requires: &["x"], produces: &[] },
+            ProcessorSpec {
+                state: "A",
+                requires: &[],
+                produces: &[],
+            },
+            ProcessorSpec {
+                state: "B",
+                requires: &[],
+                produces: &["x"],
+            },
+            ProcessorSpec {
+                state: "C",
+                requires: &["y"],
+                produces: &[],
+            },
+            ProcessorSpec {
+                state: "D",
+                requires: &["x"],
+                produces: &[],
+            },
         ];
         static F: FlowDescriptor = FlowDescriptor {
             name: "f",
@@ -556,18 +740,30 @@ mod tests {
             initial: "A",
             terminals: &["C", "D"],
             edges: &[
-                Edge { from: "A", to: "B", label: "auto" },
-                Edge { from: "B", to: "C", label: "branch_no" },
-                Edge { from: "B", to: "D", label: "branch_yes" },
+                Edge {
+                    from: "A",
+                    to: "B",
+                    label: "auto",
+                },
+                Edge {
+                    from: "B",
+                    to: "C",
+                    label: "branch_no",
+                },
+                Edge {
+                    from: "B",
+                    to: "D",
+                    label: "branch_yes",
+                },
             ],
             external_edges: &[],
             processors: PROCS,
             flow_data_aliases: &[],
         };
         let err = validate(&F).unwrap_err();
-        let found = err.iter().any(|e| matches!(
-            e, FlowError::RequirementMismatch { state: "C", .. }
-        ));
+        let found = err
+            .iter()
+            .any(|e| matches!(e, FlowError::RequirementMismatch { state: "C", .. }));
         assert!(found, "expected RequirementMismatch for C, got {:?}", err);
     }
 
@@ -581,7 +777,11 @@ mod tests {
             states: &["A", "B"],
             initial: "A",
             terminals: &["B"],
-            edges: &[Edge { from: "A", to: "B", label: "auto" }],
+            edges: &[Edge {
+                from: "A",
+                to: "B",
+                label: "auto",
+            }],
             external_edges: &[],
             processors: &[],
             flow_data_aliases: &[
@@ -590,9 +790,15 @@ mod tests {
             ],
         };
         let err = validate(&F).unwrap_err();
-        let found = err.iter().any(|e| matches!(
-            e, FlowError::DuplicateAlias { alias: "oidc.token", .. }
-        ));
+        let found = err.iter().any(|e| {
+            matches!(
+                e,
+                FlowError::DuplicateAlias {
+                    alias: "oidc.token",
+                    ..
+                }
+            )
+        });
         assert!(found, "expected DuplicateAlias, got {:?}", err);
     }
 
@@ -604,7 +810,11 @@ mod tests {
             states: &["A", "B"],
             initial: "A",
             terminals: &["B"],
-            edges: &[Edge { from: "A", to: "B", label: "auto" }],
+            edges: &[Edge {
+                from: "A",
+                to: "B",
+                label: "auto",
+            }],
             external_edges: &[],
             processors: &[],
             flow_data_aliases: &[
@@ -623,7 +833,11 @@ mod tests {
             states: &["S", "T"],
             initial: "S",
             terminals: &["T"],
-            edges: &[Edge { from: "S", to: "T", label: "auto" }],
+            edges: &[Edge {
+                from: "S",
+                to: "T",
+                label: "auto",
+            }],
             external_edges: &[],
             processors: &[],
             flow_data_aliases: &[("shared.alias", "com.example.TypeA")],
@@ -633,15 +847,25 @@ mod tests {
             states: &["S", "T"],
             initial: "S",
             terminals: &["T"],
-            edges: &[Edge { from: "S", to: "T", label: "auto" }],
+            edges: &[Edge {
+                from: "S",
+                to: "T",
+                label: "auto",
+            }],
             external_edges: &[],
             processors: &[],
             flow_data_aliases: &[("shared.alias", "com.example.TypeB")],
         };
         let errs = validate_global_aliases(&[&FLOW_A, &FLOW_B]);
-        let found = errs.iter().any(|e| matches!(
-            e, FlowError::DuplicateAlias { alias: "shared.alias", .. }
-        ));
+        let found = errs.iter().any(|e| {
+            matches!(
+                e,
+                FlowError::DuplicateAlias {
+                    alias: "shared.alias",
+                    ..
+                }
+            )
+        });
         assert!(found, "expected cross-flow DuplicateAlias, got {:?}", errs);
     }
 
@@ -653,7 +877,11 @@ mod tests {
             states: &["S", "T"],
             initial: "S",
             terminals: &["T"],
-            edges: &[Edge { from: "S", to: "T", label: "auto" }],
+            edges: &[Edge {
+                from: "S",
+                to: "T",
+                label: "auto",
+            }],
             external_edges: &[],
             processors: &[],
             flow_data_aliases: &[("shared.token", "com.example.Token")],
@@ -663,12 +891,20 @@ mod tests {
             states: &["S", "T"],
             initial: "S",
             terminals: &["T"],
-            edges: &[Edge { from: "S", to: "T", label: "auto" }],
+            edges: &[Edge {
+                from: "S",
+                to: "T",
+                label: "auto",
+            }],
             external_edges: &[],
             processors: &[],
             flow_data_aliases: &[("shared.token", "com.example.Token")],
         };
         let errs = validate_global_aliases(&[&FLOW_A, &FLOW_B]);
-        assert!(errs.is_empty(), "same alias+fqcn across flows should be allowed, got {:?}", errs);
+        assert!(
+            errs.is_empty(),
+            "same alias+fqcn across flows should be allowed, got {:?}",
+            errs
+        );
     }
 }

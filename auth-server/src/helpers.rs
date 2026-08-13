@@ -72,7 +72,10 @@ fn bearer_token(headers: &axum::http::HeaderMap) -> Option<&str> {
     headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.strip_prefix("Bearer ").or_else(|| s.strip_prefix("bearer ")))
+        .and_then(|s| {
+            s.strip_prefix("Bearer ")
+                .or_else(|| s.strip_prefix("bearer "))
+        })
         .map(str::trim)
         .filter(|s| !s.is_empty())
 }
@@ -153,8 +156,8 @@ mod tests {
 
     #[test]
     fn read_accounts_splits_and_filters() {
-        use axum_extra::extract::CookieJar;
         use axum::http::header::COOKIE;
+        use axum_extra::extract::CookieJar;
         let mut h = HeaderMap::new();
         h.insert(COOKIE, "__volta_accounts=s1,s2,,s3".parse().unwrap());
         let jar = CookieJar::from_headers(&h);
@@ -221,7 +224,8 @@ pub fn set_session_cookie(resp: &mut Response, session_id: &str, state: &AppStat
     if state.force_secure_cookie {
         cookie.push_str("; Secure");
     }
-    resp.headers_mut().append("set-cookie", cookie.parse().unwrap());
+    resp.headers_mut()
+        .append("set-cookie", cookie.parse().unwrap());
 }
 
 /// Silent device-marker cookie for risk-based auth (Phase 4c). Long-lived,
@@ -232,7 +236,9 @@ const DEVICE_COOKIE_MAX_AGE: u64 = 400 * 24 * 3600; // ~400d (browser cap)
 
 /// Existing device-marker value, if the browser presented one.
 pub fn read_device_marker(jar: &CookieJar) -> Option<String> {
-    jar.get(DEVICE_COOKIE).map(|c| c.value().to_string()).filter(|v| !v.is_empty())
+    jar.get(DEVICE_COOKIE)
+        .map(|c| c.value().to_string())
+        .filter(|v| !v.is_empty())
 }
 
 /// Persist/refresh the device marker on the response.
@@ -241,16 +247,27 @@ pub fn set_device_cookie(resp: &mut Response, device_id: &str, state: &AppState)
         "{}={}; Path=/; Max-Age={}; HttpOnly; SameSite=Lax",
         DEVICE_COOKIE, device_id, DEVICE_COOKIE_MAX_AGE,
     );
-    if !state.cookie_domain.is_empty() { cookie.push_str(&format!("; Domain={}", state.cookie_domain)); }
-    if state.force_secure_cookie { cookie.push_str("; Secure"); }
-    resp.headers_mut().append("set-cookie", cookie.parse().unwrap());
+    if !state.cookie_domain.is_empty() {
+        cookie.push_str(&format!("; Domain={}", state.cookie_domain));
+    }
+    if state.force_secure_cookie {
+        cookie.push_str("; Secure");
+    }
+    resp.headers_mut()
+        .append("set-cookie", cookie.parse().unwrap());
 }
 
 /// Read the remembered-accounts list (session ids) from the request cookie.
 /// Order is preserved; entries are opaque and validated by the caller.
 pub fn read_accounts(jar: &CookieJar) -> Vec<String> {
     jar.get(ACCOUNTS_COOKIE)
-        .map(|c| c.value().split(',').filter(|s| !s.is_empty()).map(String::from).collect())
+        .map(|c| {
+            c.value()
+                .split(',')
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -271,16 +288,26 @@ pub fn dedup_cap_accounts(ids: &[String]) -> Vec<String> {
 pub fn set_accounts_cookie(resp: &mut Response, ids: &[String], state: &AppState) {
     let deduped = dedup_cap_accounts(ids);
     let mut cookie = if deduped.is_empty() {
-        format!("{}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax", ACCOUNTS_COOKIE)
+        format!(
+            "{}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax",
+            ACCOUNTS_COOKIE
+        )
     } else {
         format!(
             "{}={}; Path=/; Max-Age={}; HttpOnly; SameSite=Lax",
-            ACCOUNTS_COOKIE, deduped.join(","), state.session_ttl_secs,
+            ACCOUNTS_COOKIE,
+            deduped.join(","),
+            state.session_ttl_secs,
         )
     };
-    if !state.cookie_domain.is_empty() { cookie.push_str(&format!("; Domain={}", state.cookie_domain)); }
-    if state.force_secure_cookie { cookie.push_str("; Secure"); }
-    resp.headers_mut().append("set-cookie", cookie.parse().unwrap());
+    if !state.cookie_domain.is_empty() {
+        cookie.push_str(&format!("; Domain={}", state.cookie_domain));
+    }
+    if state.force_secure_cookie {
+        cookie.push_str("; Secure");
+    }
+    resp.headers_mut()
+        .append("set-cookie", cookie.parse().unwrap());
 }
 
 /// Clear __volta_session cookie.
@@ -299,12 +326,14 @@ pub fn clear_session_cookie(resp: &mut Response, state: &AppState) {
     if state.force_secure_cookie {
         cookie.push_str("; Secure");
     }
-    resp.headers_mut().append("set-cookie", cookie.parse().unwrap());
+    resp.headers_mut()
+        .append("set-cookie", cookie.parse().unwrap());
 }
 
 /// Check if Accept header wants JSON.
 pub fn is_json_accept(headers: &HeaderMap) -> bool {
-    headers.get("accept")
+    headers
+        .get("accept")
         .and_then(|v| v.to_str().ok())
         .map(|v| v.contains("application/json"))
         .unwrap_or(false)
@@ -352,8 +381,12 @@ pub fn verify_state(state: &str, key: &[u8]) -> Option<(String, String, Option<S
     match last_colon_in_rest {
         Some(pos) => {
             let return_to = rest[..pos].to_string();
-            let invite_str = &rest[pos+1..];
-            let invite = if invite_str.is_empty() { None } else { Some(invite_str.to_string()) };
+            let invite_str = &rest[pos + 1..];
+            let invite = if invite_str.is_empty() {
+                None
+            } else {
+                Some(invite_str.to_string())
+            };
             Some((flow_id, return_to, invite))
         }
         None => {

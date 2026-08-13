@@ -33,8 +33,12 @@ pub struct PluginConfig {
     pub phase: String,
 }
 
-fn default_plugin_type() -> String { "native".into() }
-fn default_phase() -> String { "request".into() }
+fn default_plugin_type() -> String {
+    "native".into()
+}
+fn default_phase() -> String {
+    "request".into()
+}
 
 /// Plugin lifecycle state (tramli SM pattern).
 #[derive(Debug, Clone, PartialEq)]
@@ -84,7 +88,9 @@ pub mod builtin {
     }
 
     impl Plugin for ApiKeyAuth {
-        fn name(&self) -> &str { "api-key-auth" }
+        fn name(&self) -> &str {
+            "api-key-auth"
+        }
 
         fn on_request(&self, ctx: &mut PluginContext) -> Result<(), String> {
             match ctx.headers.get(&self.header) {
@@ -100,7 +106,9 @@ pub mod builtin {
             }
         }
 
-        fn on_response(&self, _ctx: &mut PluginContext) -> Result<(), String> { Ok(()) }
+        fn on_response(&self, _ctx: &mut PluginContext) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     /// Per-user rate limiting plugin.
@@ -116,14 +124,18 @@ pub mod builtin {
     impl RateLimitByUser {
         pub fn new(max_requests: u64, window_secs: u64, user_header: String) -> Self {
             Self {
-                max_requests, window_secs, user_header,
+                max_requests,
+                window_secs,
+                user_header,
                 state: Arc::new(std::sync::Mutex::new(HashMap::new())),
             }
         }
     }
 
     impl Plugin for RateLimitByUser {
-        fn name(&self) -> &str { "rate-limit-by-user" }
+        fn name(&self) -> &str {
+            "rate-limit-by-user"
+        }
 
         fn on_request(&self, ctx: &mut PluginContext) -> Result<(), String> {
             let user_id = match ctx.headers.get(&self.user_header) {
@@ -132,23 +144,32 @@ pub mod builtin {
             };
 
             let mut state = self.state.lock().unwrap();
-            let entry = state.entry(user_id).or_insert((0, std::time::Instant::now()));
+            let entry = state
+                .entry(user_id)
+                .or_insert((0, std::time::Instant::now()));
 
             if entry.1.elapsed() >= std::time::Duration::from_secs(self.window_secs) {
                 *entry = (1, std::time::Instant::now());
             } else {
                 entry.0 += 1;
                 if entry.0 > self.max_requests {
-                    ctx.reject = Some((429, format!(
-                        "User rate limit exceeded ({}/{}s)", self.max_requests, self.window_secs
-                    )));
-                    ctx.add_headers.insert("Retry-After".into(), self.window_secs.to_string());
+                    ctx.reject = Some((
+                        429,
+                        format!(
+                            "User rate limit exceeded ({}/{}s)",
+                            self.max_requests, self.window_secs
+                        ),
+                    ));
+                    ctx.add_headers
+                        .insert("Retry-After".into(), self.window_secs.to_string());
                 }
             }
             Ok(())
         }
 
-        fn on_response(&self, _ctx: &mut PluginContext) -> Result<(), String> { Ok(()) }
+        fn on_response(&self, _ctx: &mut PluginContext) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     /// Monetizer plugin — enriches requests with billing headers (X-Monetizer-*).
@@ -180,7 +201,12 @@ pub mod builtin {
     }
 
     impl Monetizer {
-        pub fn new(verify_url: String, config_id: String, cache_ttl_secs: u64, user_header: String) -> Self {
+        pub fn new(
+            verify_url: String,
+            config_id: String,
+            cache_ttl_secs: u64,
+            user_header: String,
+        ) -> Self {
             Self {
                 verify_url,
                 config_id,
@@ -221,17 +247,24 @@ pub mod builtin {
         }
 
         fn fetch_billing(&self, user_id: &str) -> Result<MonetizerBilling, String> {
-            let url = format!("{}?user={}&config={}", self.verify_url, user_id, self.config_id);
+            let url = format!(
+                "{}?user={}&config={}",
+                self.verify_url, user_id, self.config_id
+            );
             let handle = tokio::runtime::Handle::current();
             let http = self.http.clone();
             tokio::task::block_in_place(|| {
                 handle.block_on(async {
-                    let resp = http.get(&url).send().await
+                    let resp = http
+                        .get(&url)
+                        .send()
+                        .await
                         .map_err(|e| format!("monetizer verify request failed: {}", e))?;
                     if !resp.status().is_success() {
                         return Err(format!("monetizer verify returned {}", resp.status()));
                     }
-                    resp.json::<MonetizerBilling>().await
+                    resp.json::<MonetizerBilling>()
+                        .await
                         .map_err(|e| format!("monetizer verify parse failed: {}", e))
                 })
             })
@@ -239,17 +272,23 @@ pub mod builtin {
     }
 
     impl Plugin for Monetizer {
-        fn name(&self) -> &str { "monetizer" }
+        fn name(&self) -> &str {
+            "monetizer"
+        }
 
         fn on_request(&self, ctx: &mut PluginContext) -> Result<(), String> {
             let user_id = match ctx.headers.get(&self.user_header) {
                 Some(id) => id.clone(),
                 None => {
                     // 認証なしユーザー → free プランのデフォルトヘッダー
-                    ctx.add_headers.insert("X-Monetizer-Plan".into(), "free".into());
-                    ctx.add_headers.insert("X-Monetizer-Status".into(), "none".into());
-                    ctx.add_headers.insert("X-Monetizer-Features".into(), "".into());
-                    ctx.add_headers.insert("X-Monetizer-Show-Ads".into(), "true".into());
+                    ctx.add_headers
+                        .insert("X-Monetizer-Plan".into(), "free".into());
+                    ctx.add_headers
+                        .insert("X-Monetizer-Status".into(), "none".into());
+                    ctx.add_headers
+                        .insert("X-Monetizer-Features".into(), "".into());
+                    ctx.add_headers
+                        .insert("X-Monetizer-Show-Ads".into(), "true".into());
                     return Ok(());
                 }
             };
@@ -263,18 +302,25 @@ pub mod builtin {
                 }
             };
 
-            ctx.add_headers.insert("X-Monetizer-Plan".into(), billing.plan);
-            ctx.add_headers.insert("X-Monetizer-Status".into(), billing.status);
-            ctx.add_headers.insert("X-Monetizer-Features".into(), billing.features);
-            ctx.add_headers.insert("X-Monetizer-Show-Ads".into(), billing.show_ads);
+            ctx.add_headers
+                .insert("X-Monetizer-Plan".into(), billing.plan);
+            ctx.add_headers
+                .insert("X-Monetizer-Status".into(), billing.status);
+            ctx.add_headers
+                .insert("X-Monetizer-Features".into(), billing.features);
+            ctx.add_headers
+                .insert("X-Monetizer-Show-Ads".into(), billing.show_ads);
             if !billing.trial_end.is_empty() {
-                ctx.add_headers.insert("X-Monetizer-Trial-End".into(), billing.trial_end);
+                ctx.add_headers
+                    .insert("X-Monetizer-Trial-End".into(), billing.trial_end);
             }
 
             Ok(())
         }
 
-        fn on_response(&self, _ctx: &mut PluginContext) -> Result<(), String> { Ok(()) }
+        fn on_response(&self, _ctx: &mut PluginContext) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     /// Request/response header injection plugin.
@@ -284,7 +330,9 @@ pub mod builtin {
     }
 
     impl Plugin for HeaderInjector {
-        fn name(&self) -> &str { "header-injector" }
+        fn name(&self) -> &str {
+            "header-injector"
+        }
 
         fn on_request(&self, ctx: &mut PluginContext) -> Result<(), String> {
             for (k, v) in &self.request_headers {
@@ -309,7 +357,9 @@ pub struct PluginManager {
 
 impl PluginManager {
     pub fn new() -> Self {
-        Self { plugins: Vec::new() }
+        Self {
+            plugins: Vec::new(),
+        }
     }
 
     /// Register a native plugin. Transitions: LOADED → VALIDATED → ACTIVE.
@@ -339,39 +389,71 @@ impl PluginManager {
         for config in configs {
             match config.name.as_str() {
                 "api-key-auth" => {
-                    let header = config.config.get("header").cloned()
+                    let header = config
+                        .config
+                        .get("header")
+                        .cloned()
                         .unwrap_or_else(|| "x-api-key".into());
-                    let keys: Vec<String> = config.config.get("keys")
+                    let keys: Vec<String> = config
+                        .config
+                        .get("keys")
                         .map(|s| s.split(',').map(|k| k.trim().to_string()).collect())
                         .unwrap_or_default();
-                    mgr.register(config.clone(), Arc::new(builtin::ApiKeyAuth {
-                        header,
-                        valid_keys: keys,
-                    }));
+                    mgr.register(
+                        config.clone(),
+                        Arc::new(builtin::ApiKeyAuth {
+                            header,
+                            valid_keys: keys,
+                        }),
+                    );
                 }
                 "rate-limit-by-user" => {
-                    let max_req: u64 = config.config.get("max_requests")
-                        .and_then(|s| s.parse().ok()).unwrap_or(100);
-                    let window: u64 = config.config.get("window_secs")
-                        .and_then(|s| s.parse().ok()).unwrap_or(60);
-                    let header = config.config.get("user_header")
-                        .cloned().unwrap_or_else(|| "x-volta-user-id".into());
-                    mgr.register(config.clone(), Arc::new(builtin::RateLimitByUser::new(
-                        max_req, window, header,
-                    )));
+                    let max_req: u64 = config
+                        .config
+                        .get("max_requests")
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(100);
+                    let window: u64 = config
+                        .config
+                        .get("window_secs")
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(60);
+                    let header = config
+                        .config
+                        .get("user_header")
+                        .cloned()
+                        .unwrap_or_else(|| "x-volta-user-id".into());
+                    mgr.register(
+                        config.clone(),
+                        Arc::new(builtin::RateLimitByUser::new(max_req, window, header)),
+                    );
                 }
                 "monetizer" => {
-                    let verify_url = config.config.get("verify_url").cloned()
+                    let verify_url = config
+                        .config
+                        .get("verify_url")
+                        .cloned()
                         .unwrap_or_else(|| "http://monetizer:3001/__monetizer/verify".into());
-                    let config_id = config.config.get("config_id").cloned()
-                        .unwrap_or_default();
-                    let cache_ttl: u64 = config.config.get("cache_ttl_secs")
-                        .and_then(|s| s.parse().ok()).unwrap_or(5);
-                    let user_header = config.config.get("user_header")
-                        .cloned().unwrap_or_else(|| "x-volta-user-id".into());
-                    mgr.register(config.clone(), Arc::new(builtin::Monetizer::new(
-                        verify_url, config_id, cache_ttl, user_header,
-                    )));
+                    let config_id = config.config.get("config_id").cloned().unwrap_or_default();
+                    let cache_ttl: u64 = config
+                        .config
+                        .get("cache_ttl_secs")
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(5);
+                    let user_header = config
+                        .config
+                        .get("user_header")
+                        .cloned()
+                        .unwrap_or_else(|| "x-volta-user-id".into());
+                    mgr.register(
+                        config.clone(),
+                        Arc::new(builtin::Monetizer::new(
+                            verify_url,
+                            config_id,
+                            cache_ttl,
+                            user_header,
+                        )),
+                    );
                 }
                 "header-injector" => {
                     let mut req_headers = HashMap::new();
@@ -383,10 +465,13 @@ impl PluginManager {
                             resp_headers.insert(k[5..].to_string(), v.clone());
                         }
                     }
-                    mgr.register(config.clone(), Arc::new(builtin::HeaderInjector {
-                        request_headers: req_headers,
-                        response_headers: resp_headers,
-                    }));
+                    mgr.register(
+                        config.clone(),
+                        Arc::new(builtin::HeaderInjector {
+                            request_headers: req_headers,
+                            response_headers: resp_headers,
+                        }),
+                    );
                 }
                 other => {
                     warn!(plugin = other, "unknown plugin, skipping");
@@ -399,8 +484,12 @@ impl PluginManager {
     /// Run request-phase plugins. Returns Some((status, body)) to short-circuit.
     pub fn run_request(&self, ctx: &mut PluginContext) -> Option<(u16, String)> {
         for (config, state, plugin) in &self.plugins {
-            if *state != PluginState::Active { continue; }
-            if config.phase != "request" && config.phase != "both" { continue; }
+            if *state != PluginState::Active {
+                continue;
+            }
+            if config.phase != "request" && config.phase != "both" {
+                continue;
+            }
             if let Err(e) = plugin.on_request(ctx) {
                 warn!(plugin = plugin.name(), error = %e, "plugin request error");
                 continue;
@@ -415,8 +504,12 @@ impl PluginManager {
     /// Run response-phase plugins.
     pub fn run_response(&self, ctx: &mut PluginContext) {
         for (config, state, plugin) in &self.plugins {
-            if *state != PluginState::Active { continue; }
-            if config.phase != "response" && config.phase != "both" { continue; }
+            if *state != PluginState::Active {
+                continue;
+            }
+            if config.phase != "response" && config.phase != "both" {
+                continue;
+            }
             if let Err(e) = plugin.on_response(ctx) {
                 warn!(plugin = plugin.name(), error = %e, "plugin response error");
             }
@@ -425,7 +518,8 @@ impl PluginManager {
 
     /// Get plugin states for admin API.
     pub fn states(&self) -> Vec<(String, String)> {
-        self.plugins.iter()
+        self.plugins
+            .iter()
             .map(|(c, s, _)| (c.name.clone(), format!("{:?}", s)))
             .collect()
     }

@@ -3,7 +3,7 @@
 //! This is the "in-process auth" that replaces the HTTP roundtrip
 //! to volta-auth-proxy /auth/verify.
 
-use crate::jwt::{JwtVerifier, JwtError};
+use crate::jwt::{JwtError, JwtVerifier};
 use std::collections::HashMap;
 
 /// Session verification result (compatible with gateway's AuthResult).
@@ -28,7 +28,10 @@ pub struct SessionVerifier {
 
 impl SessionVerifier {
     pub fn new(jwt: JwtVerifier, cookie_name: &str) -> Self {
-        Self { jwt, cookie_name: cookie_name.to_string() }
+        Self {
+            jwt,
+            cookie_name: cookie_name.to_string(),
+        }
     }
 
     /// Verify session from cookie header string.
@@ -86,10 +89,7 @@ mod tests {
 
     #[test]
     fn extract_cookie_missing() {
-        assert_eq!(
-            extract_cookie_value("other=xyz", "__volta_session"),
-            None
-        );
+        assert_eq!(extract_cookie_value("other=xyz", "__volta_session"), None);
     }
 
     #[test]
@@ -100,7 +100,10 @@ mod tests {
     #[test]
     fn session_no_cookie() {
         let verifier = SessionVerifier::new(test_verifier(), "__volta_session");
-        assert!(matches!(verifier.verify_cookie(None), SessionResult::NoSession));
+        assert!(matches!(
+            verifier.verify_cookie(None),
+            SessionResult::NoSession
+        ));
     }
 
     #[test]
@@ -114,8 +117,8 @@ mod tests {
 
     #[test]
     fn jwt_valid_token() {
-        use jsonwebtoken::{encode, EncodingKey, Header};
         use crate::jwt::VoltaClaims;
+        use jsonwebtoken::{encode, EncodingKey, Header};
 
         let secret = b"test-secret-key-at-least-32-bytes!!";
         let claims = VoltaClaims {
@@ -130,7 +133,12 @@ mod tests {
             exp: Some((chrono::Utc::now().timestamp() + 3600) as u64),
         };
 
-        let token = encode(&Header::default(), &claims, &EncodingKey::from_secret(secret)).unwrap();
+        let token = encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(secret),
+        )
+        .unwrap();
         let verifier = JwtVerifier::new_hs256(secret);
         let result = verifier.verify(&token);
         assert!(result.is_ok());
@@ -141,8 +149,8 @@ mod tests {
 
     #[test]
     fn jwt_to_volta_headers() {
-        use jsonwebtoken::{encode, EncodingKey, Header};
         use crate::jwt::VoltaClaims;
+        use jsonwebtoken::{encode, EncodingKey, Header};
 
         let secret = b"test-secret-key-at-least-32-bytes!!";
         let claims = VoltaClaims {
@@ -157,7 +165,12 @@ mod tests {
             exp: Some((chrono::Utc::now().timestamp() + 3600) as u64),
         };
 
-        let token = encode(&Header::default(), &claims, &EncodingKey::from_secret(secret)).unwrap();
+        let token = encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(secret),
+        )
+        .unwrap();
         let verifier = JwtVerifier::new_hs256(secret);
         let headers = verifier.verify_to_headers(&token).unwrap();
         assert_eq!(headers.get("x-volta-user-id").unwrap(), "user-456");
@@ -167,62 +180,89 @@ mod tests {
 
     #[test]
     fn jwt_expired_token() {
-        use jsonwebtoken::{encode, EncodingKey, Header};
         use crate::jwt::VoltaClaims;
+        use jsonwebtoken::{encode, EncodingKey, Header};
 
         let secret = b"test-secret-key-at-least-32-bytes!!";
         let claims = VoltaClaims {
             sub: "user-789".into(),
-            email: None, tenant_id: None, tenant_slug: None,
-            roles: None, name: None, app_id: None,
+            email: None,
+            tenant_id: None,
+            tenant_slug: None,
+            roles: None,
+            name: None,
+            app_id: None,
             iat: Some(1000),
             exp: Some(1001), // way in the past
         };
 
-        let token = encode(&Header::default(), &claims, &EncodingKey::from_secret(secret)).unwrap();
+        let token = encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(secret),
+        )
+        .unwrap();
         let verifier = JwtVerifier::new_hs256(secret);
         assert!(matches!(verifier.verify(&token), Err(JwtError::Expired)));
     }
 
     #[test]
     fn jwt_wrong_secret() {
-        use jsonwebtoken::{encode, EncodingKey, Header};
         use crate::jwt::VoltaClaims;
+        use jsonwebtoken::{encode, EncodingKey, Header};
 
         let claims = VoltaClaims {
-            sub: "u".into(), email: None, tenant_id: None, tenant_slug: None,
-            roles: None, name: None, app_id: None,
+            sub: "u".into(),
+            email: None,
+            tenant_id: None,
+            tenant_slug: None,
+            roles: None,
+            name: None,
+            app_id: None,
             iat: Some(chrono::Utc::now().timestamp() as u64),
             exp: Some((chrono::Utc::now().timestamp() + 3600) as u64),
         };
 
-        let token = encode(&Header::default(), &claims, &EncodingKey::from_secret(b"secret-AAAAAAAAAAAAAAAAAAAAAAAAAA")).unwrap();
+        let token = encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(b"secret-AAAAAAAAAAAAAAAAAAAAAAAAAA"),
+        )
+        .unwrap();
         let verifier = JwtVerifier::new_hs256(b"secret-BBBBBBBBBBBBBBBBBBBBBBBBBB");
-        assert!(matches!(verifier.verify(&token), Err(JwtError::InvalidSignature)));
+        assert!(matches!(
+            verifier.verify(&token),
+            Err(JwtError::InvalidSignature)
+        ));
     }
 
     #[test]
     fn full_session_verify() {
-        use jsonwebtoken::{encode, EncodingKey, Header};
         use crate::jwt::VoltaClaims;
+        use jsonwebtoken::{encode, EncodingKey, Header};
 
         let secret = b"test-secret-key-at-least-32-bytes!!";
         let claims = VoltaClaims {
             sub: "user-full".into(),
             email: Some("full@test.com".into()),
-            tenant_id: None, tenant_slug: None,
-            roles: None, name: None, app_id: None,
+            tenant_id: None,
+            tenant_slug: None,
+            roles: None,
+            name: None,
+            app_id: None,
             iat: Some(chrono::Utc::now().timestamp() as u64),
             exp: Some((chrono::Utc::now().timestamp() + 3600) as u64),
         };
 
-        let token = encode(&Header::default(), &claims, &EncodingKey::from_secret(secret)).unwrap();
+        let token = encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(secret),
+        )
+        .unwrap();
         let cookie = format!("__volta_session={}; other=xyz", token);
 
-        let verifier = SessionVerifier::new(
-            JwtVerifier::new_hs256(secret),
-            "__volta_session",
-        );
+        let verifier = SessionVerifier::new(JwtVerifier::new_hs256(secret), "__volta_session");
 
         match verifier.verify_cookie(Some(&cookie)) {
             SessionResult::Valid(headers) => {

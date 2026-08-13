@@ -19,11 +19,21 @@ pub enum PasskeyState {
 }
 
 impl FlowState for PasskeyState {
-    fn is_terminal(&self) -> bool { matches!(self, Self::Complete | Self::TerminalError) }
-    fn is_initial(&self) -> bool { matches!(self, Self::Init) }
+    fn is_terminal(&self) -> bool {
+        matches!(self, Self::Complete | Self::TerminalError)
+    }
+    fn is_initial(&self) -> bool {
+        matches!(self, Self::Init)
+    }
     fn all_states() -> &'static [Self] {
-        &[Self::Init, Self::ChallengeIssued, Self::AssertionReceived,
-          Self::UserResolved, Self::Complete, Self::TerminalError]
+        &[
+            Self::Init,
+            Self::ChallengeIssued,
+            Self::AssertionReceived,
+            Self::UserResolved,
+            Self::Complete,
+            Self::TerminalError,
+        ]
     }
 }
 
@@ -55,9 +65,15 @@ pub struct PasskeyUser {
 // Processors
 struct ChallengeProcessor;
 impl StateProcessor<PasskeyState> for ChallengeProcessor {
-    fn name(&self) -> &str { "PasskeyChallenge" }
-    fn requires(&self) -> Vec<TypeId> { requires!(PasskeyInitData) }
-    fn produces(&self) -> Vec<TypeId> { data_types!(PasskeyChallenge) }
+    fn name(&self) -> &str {
+        "PasskeyChallenge"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        requires!(PasskeyInitData)
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        data_types!(PasskeyChallenge)
+    }
     fn process(&self, ctx: &mut FlowContext) -> Result<(), FlowError> {
         let _init = ctx.get::<PasskeyInitData>()?;
         ctx.put(PasskeyChallenge {
@@ -70,9 +86,15 @@ impl StateProcessor<PasskeyState> for ChallengeProcessor {
 
 struct AssertionGuard;
 impl TransitionGuard<PasskeyState> for AssertionGuard {
-    fn name(&self) -> &str { "PasskeyAssertionGuard" }
-    fn requires(&self) -> Vec<TypeId> { vec![] }
-    fn produces(&self) -> Vec<TypeId> { data_types!(PasskeyAssertion) }
+    fn name(&self) -> &str {
+        "PasskeyAssertionGuard"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        vec![]
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        data_types!(PasskeyAssertion)
+    }
     fn validate(&self, ctx: &FlowContext) -> GuardOutput {
         match ctx.find::<PasskeyAssertion>() {
             Some(data) => GuardOutput::accept_with(data.clone()),
@@ -83,25 +105,42 @@ impl TransitionGuard<PasskeyState> for AssertionGuard {
 
 struct VerifyProcessor;
 impl StateProcessor<PasskeyState> for VerifyProcessor {
-    fn name(&self) -> &str { "PasskeyVerify" }
-    fn requires(&self) -> Vec<TypeId> { requires!(PasskeyAssertion, PasskeyChallenge) }
-    fn produces(&self) -> Vec<TypeId> { data_types!(PasskeyUser) }
+    fn name(&self) -> &str {
+        "PasskeyVerify"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        requires!(PasskeyAssertion, PasskeyChallenge)
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        data_types!(PasskeyUser)
+    }
     fn process(&self, ctx: &mut FlowContext) -> Result<(), FlowError> {
         let _assertion = ctx.get::<PasskeyAssertion>()?;
         // Placeholder — real impl verifies WebAuthn assertion
-        ctx.put(PasskeyUser { user_id: String::new(), credential_verified: true });
+        ctx.put(PasskeyUser {
+            user_id: String::new(),
+            credential_verified: true,
+        });
         Ok(())
     }
 }
 
 struct PasskeyCompleteProcessor;
 impl StateProcessor<PasskeyState> for PasskeyCompleteProcessor {
-    fn name(&self) -> &str { "PasskeyComplete" }
-    fn requires(&self) -> Vec<TypeId> { requires!(PasskeyUser) }
-    fn produces(&self) -> Vec<TypeId> { vec![] }
+    fn name(&self) -> &str {
+        "PasskeyComplete"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        requires!(PasskeyUser)
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        vec![]
+    }
     fn process(&self, ctx: &mut FlowContext) -> Result<(), FlowError> {
         let user = ctx.get::<PasskeyUser>()?;
-        if !user.credential_verified { return Err(FlowError::new("VERIFY", "credential not verified")); }
+        if !user.credential_verified {
+            return Err(FlowError::new("VERIFY", "credential not verified"));
+        }
         Ok(())
     }
 }
@@ -114,15 +153,17 @@ pub fn build_passkey_flow() -> Arc<FlowDefinition<PasskeyState>> {
             .strict_mode()
             .initially_available(requires!(PasskeyInitData))
             .externally_provided(data_types!(PasskeyAssertion))
-
-            .from(Init).auto(ChallengeIssued, ChallengeProcessor)
-            .from(ChallengeIssued).external(AssertionReceived, AssertionGuard)
-            .from(AssertionReceived).auto(UserResolved, VerifyProcessor)
-            .from(UserResolved).auto(Complete, PasskeyCompleteProcessor)
+            .from(Init)
+            .auto(ChallengeIssued, ChallengeProcessor)
+            .from(ChallengeIssued)
+            .external(AssertionReceived, AssertionGuard)
+            .from(AssertionReceived)
+            .auto(UserResolved, VerifyProcessor)
+            .from(UserResolved)
+            .auto(Complete, PasskeyCompleteProcessor)
             .on_any_error(TerminalError)
-
             .build()
-            .expect("Passkey flow definition is invalid")
+            .expect("Passkey flow definition is invalid"),
     )
 }
 
@@ -140,29 +181,44 @@ mod tests {
     fn passkey_init_to_challenge() {
         let def = build_passkey_flow();
         let mut engine = FlowEngine::new(InMemoryFlowStore::new());
-        let data: Vec<(TypeId, Box<dyn CloneAny>)> = vec![
-            (TypeId::of::<PasskeyInitData>(), Box::new(PasskeyInitData { session_id: "s1".into() })),
-        ];
+        let data: Vec<(TypeId, Box<dyn CloneAny>)> = vec![(
+            TypeId::of::<PasskeyInitData>(),
+            Box::new(PasskeyInitData {
+                session_id: "s1".into(),
+            }),
+        )];
         let flow_id = engine.start_flow(def, "test", data).unwrap();
-        assert_eq!(engine.store.get(&flow_id).unwrap().current_state(), PasskeyState::ChallengeIssued);
+        assert_eq!(
+            engine.store.get(&flow_id).unwrap().current_state(),
+            PasskeyState::ChallengeIssued
+        );
     }
 
     #[test]
     fn passkey_full_flow() {
         let def = build_passkey_flow();
         let mut engine = FlowEngine::new(InMemoryFlowStore::new());
-        let data: Vec<(TypeId, Box<dyn CloneAny>)> = vec![
-            (TypeId::of::<PasskeyInitData>(), Box::new(PasskeyInitData { session_id: "s1".into() })),
-        ];
+        let data: Vec<(TypeId, Box<dyn CloneAny>)> = vec![(
+            TypeId::of::<PasskeyInitData>(),
+            Box::new(PasskeyInitData {
+                session_id: "s1".into(),
+            }),
+        )];
         let flow_id = engine.start_flow(def, "test", data).unwrap();
 
-        let assertion: Vec<(TypeId, Box<dyn CloneAny>)> = vec![
-            (TypeId::of::<PasskeyAssertion>(), Box::new(PasskeyAssertion {
-                credential_id: "cred1".into(), authenticator_data: "ad".into(),
-                client_data_json: "cdj".into(), signature: "sig".into(),
-            })),
-        ];
+        let assertion: Vec<(TypeId, Box<dyn CloneAny>)> = vec![(
+            TypeId::of::<PasskeyAssertion>(),
+            Box::new(PasskeyAssertion {
+                credential_id: "cred1".into(),
+                authenticator_data: "ad".into(),
+                client_data_json: "cdj".into(),
+                signature: "sig".into(),
+            }),
+        )];
         engine.resume_and_execute(&flow_id, assertion).unwrap();
-        assert_eq!(engine.store.get(&flow_id).unwrap().current_state(), PasskeyState::Complete);
+        assert_eq!(
+            engine.store.get(&flow_id).unwrap().current_state(),
+            PasskeyState::Complete
+        );
     }
 }

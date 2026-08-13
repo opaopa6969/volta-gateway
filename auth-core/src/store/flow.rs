@@ -1,7 +1,7 @@
-use async_trait::async_trait;
-use uuid::Uuid;
 use crate::error::AuthError;
 use crate::record::FlowRecord;
+use async_trait::async_trait;
+use uuid::Uuid;
 
 /// Flow persistence trait — persists tramli SM flow metadata to a database.
 ///

@@ -204,7 +204,9 @@ impl std::fmt::Display for NotificationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::ChannelNotEnabled(c) => write!(f, "channel not enabled: {}", c.as_str()),
-            Self::NoSenderForChannel(c) => write!(f, "no sender registered for channel: {}", c.as_str()),
+            Self::NoSenderForChannel(c) => {
+                write!(f, "no sender registered for channel: {}", c.as_str())
+            }
             Self::SendFailed { retryable, reason } => {
                 write!(f, "send failed (retryable={}): {}", retryable, reason)
             }
@@ -218,7 +220,13 @@ impl std::error::Error for NotificationError {}
 impl NotificationError {
     /// Whether the outbox worker should retry this send.
     pub fn is_retryable(&self) -> bool {
-        matches!(self, Self::SendFailed { retryable: true, .. })
+        matches!(
+            self,
+            Self::SendFailed {
+                retryable: true,
+                ..
+            }
+        )
     }
 }
 
@@ -234,7 +242,10 @@ impl From<NotificationError> for crate::error::AuthError {
 pub trait NotificationSender: Send + Sync {
     fn channel(&self) -> NotificationChannel;
     fn provider(&self) -> NotificationProvider;
-    async fn send(&self, msg: &NotificationMessage) -> Result<NotificationReceipt, NotificationError>;
+    async fn send(
+        &self,
+        msg: &NotificationMessage,
+    ) -> Result<NotificationReceipt, NotificationError>;
 }
 
 /// Which channels are usable and which is the default.
@@ -262,12 +273,18 @@ impl NotificationConfig {
     /// Parse from a default-channel string and a CSV of enabled channels.
     /// Unknown tokens are an error so misconfiguration fails loudly.
     pub fn parse(default_channel: &str, enabled_csv: &str) -> Result<Self, NotificationError> {
-        let default_channel = NotificationChannel::parse(default_channel)
-            .ok_or_else(|| NotificationError::InvalidConfig(format!("unknown default channel: {default_channel}")))?;
+        let default_channel = NotificationChannel::parse(default_channel).ok_or_else(|| {
+            NotificationError::InvalidConfig(format!("unknown default channel: {default_channel}"))
+        })?;
         let mut enabled = Vec::new();
-        for tok in enabled_csv.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-            let ch = NotificationChannel::parse(tok)
-                .ok_or_else(|| NotificationError::InvalidConfig(format!("unknown channel: {tok}")))?;
+        for tok in enabled_csv
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            let ch = NotificationChannel::parse(tok).ok_or_else(|| {
+                NotificationError::InvalidConfig(format!("unknown channel: {tok}"))
+            })?;
             if !enabled.contains(&ch) {
                 enabled.push(ch);
             }
@@ -275,7 +292,10 @@ impl NotificationConfig {
         if enabled.is_empty() {
             enabled.push(default_channel);
         }
-        Ok(Self { default_channel, enabled_channels: enabled })
+        Ok(Self {
+            default_channel,
+            enabled_channels: enabled,
+        })
     }
 }
 
@@ -288,7 +308,10 @@ pub struct NotificationService {
 
 impl NotificationService {
     pub fn new(config: NotificationConfig) -> Self {
-        Self { config, senders: HashMap::new() }
+        Self {
+            config,
+            senders: HashMap::new(),
+        }
     }
 
     /// Register (or replace) the sender for its channel.
@@ -363,7 +386,10 @@ mod tests {
     async fn disabled_channel_is_hard_error_and_does_not_send() {
         let (svc, dummy) = svc_with_dummy();
         let err = svc.send(&msg(NotificationChannel::Sms)).await.unwrap_err();
-        assert!(matches!(err, NotificationError::ChannelNotEnabled(NotificationChannel::Sms)));
+        assert!(matches!(
+            err,
+            NotificationError::ChannelNotEnabled(NotificationChannel::Sms)
+        ));
         assert_eq!(dummy.count(), 0);
     }
 
@@ -374,8 +400,14 @@ mod tests {
             enabled_channels: vec![NotificationChannel::Email, NotificationChannel::Sms],
         };
         let svc = NotificationService::new(cfg); // no senders registered
-        let err = svc.send(&msg(NotificationChannel::Email)).await.unwrap_err();
-        assert!(matches!(err, NotificationError::NoSenderForChannel(NotificationChannel::Email)));
+        let err = svc
+            .send(&msg(NotificationChannel::Email))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            NotificationError::NoSenderForChannel(NotificationChannel::Email)
+        ));
     }
 
     #[test]
@@ -389,16 +421,31 @@ mod tests {
 
     #[test]
     fn channel_and_provider_roundtrip() {
-        assert_eq!(NotificationChannel::parse("email"), Some(NotificationChannel::Email));
-        assert_eq!(NotificationProvider::parse_email("ses"), Some(NotificationProvider::Ses));
-        assert_eq!(NotificationProvider::parse_sms("twilio"), Some(NotificationProvider::Twilio));
-        assert_eq!(NotificationProvider::parse_line("dummy"), Some(NotificationProvider::DummyLine));
+        assert_eq!(
+            NotificationChannel::parse("email"),
+            Some(NotificationChannel::Email)
+        );
+        assert_eq!(
+            NotificationProvider::parse_email("ses"),
+            Some(NotificationProvider::Ses)
+        );
+        assert_eq!(
+            NotificationProvider::parse_sms("twilio"),
+            Some(NotificationProvider::Twilio)
+        );
+        assert_eq!(
+            NotificationProvider::parse_line("dummy"),
+            Some(NotificationProvider::DummyLine)
+        );
     }
 
     #[test]
     fn resolve_channel_falls_back_to_default() {
         let (svc, _) = svc_with_dummy();
         assert_eq!(svc.resolve_channel(None), NotificationChannel::Email);
-        assert_eq!(svc.resolve_channel(Some(NotificationChannel::Sms)), NotificationChannel::Sms);
+        assert_eq!(
+            svc.resolve_channel(Some(NotificationChannel::Sms)),
+            NotificationChannel::Sms
+        );
     }
 }

@@ -3,7 +3,7 @@
 //! This replaces the HTTP call to volta-auth-proxy /auth/verify for
 //! session cookie validation (read path).
 
-use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation, Algorithm};
+use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -103,12 +103,14 @@ impl JwtVerifier {
 
     /// Create a verifier with RSA public key (PEM).
     pub fn new_rsa(pem: &[u8]) -> Result<Self, String> {
-        let key = DecodingKey::from_rsa_pem(pem)
-            .map_err(|e| format!("invalid RSA PEM: {}", e))?;
+        let key = DecodingKey::from_rsa_pem(pem).map_err(|e| format!("invalid RSA PEM: {}", e))?;
         let mut validation = Validation::new(Algorithm::RS256);
         validation.validate_exp = true;
         validation.required_spec_claims.clear();
-        Ok(Self { decoding_key: key, validation })
+        Ok(Self {
+            decoding_key: key,
+            validation,
+        })
     }
 
     /// Verify a JWT token and return claims.
@@ -171,9 +173,12 @@ impl JwtIssuer {
 
     /// RSA issuer that stamps a `kid` header (for OP id/access tokens verified
     /// via JWKS).
-    pub fn new_rsa_with_kid(pem: &[u8], ttl_secs: u64, kid: Option<String>) -> Result<Self, String> {
-        let key = EncodingKey::from_rsa_pem(pem)
-            .map_err(|e| format!("invalid RSA PEM: {}", e))?;
+    pub fn new_rsa_with_kid(
+        pem: &[u8],
+        ttl_secs: u64,
+        kid: Option<String>,
+    ) -> Result<Self, String> {
+        let key = EncodingKey::from_rsa_pem(pem).map_err(|e| format!("invalid RSA PEM: {}", e))?;
         Ok(Self {
             encoding_key: key,
             algorithm: Algorithm::RS256,
@@ -298,12 +303,20 @@ mod tests {
         // Then verify must reject it.
         let c = VoltaClaims {
             sub: String::new(),
-            email: None, tenant_id: None, tenant_slug: None,
-            roles: None, name: None, app_id: None,
-            iat: None, exp: None,
+            email: None,
+            tenant_id: None,
+            tenant_slug: None,
+            roles: None,
+            name: None,
+            app_id: None,
+            iat: None,
+            exp: None,
         };
         let token = issuer.issue(&c).unwrap();
-        assert!(matches!(verifier.verify(&token), Err(JwtError::MissingClaims(_))));
+        assert!(matches!(
+            verifier.verify(&token),
+            Err(JwtError::MissingClaims(_))
+        ));
     }
 
     #[test]
@@ -336,6 +349,9 @@ mod tests {
         // A token signed with HS256 but verified with a completely different secret
         let other_issuer = JwtIssuer::new_hs256(b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", 3600);
         let token = other_issuer.issue(&minimal_claims("attacker")).unwrap();
-        assert!(matches!(verifier.verify(&token), Err(JwtError::InvalidSignature)));
+        assert!(matches!(
+            verifier.verify(&token),
+            Err(JwtError::InvalidSignature)
+        ));
     }
 }

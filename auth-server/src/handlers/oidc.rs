@@ -14,16 +14,19 @@ use rand::RngCore;
 use serde::Deserialize;
 
 use crate::error::{no_cache_headers, ApiError};
-use crate::helpers::{is_json_accept, read_device_marker, require_session, set_device_cookie, set_session_cookie};
-use axum_extra::extract::CookieJar;
+use crate::helpers::{
+    is_json_accept, read_device_marker, require_session, set_device_cookie, set_session_cookie,
+};
 use crate::state::AppState;
+use axum_extra::extract::CookieJar;
 
 use volta_auth_core::crypto::{random_token_hex, sha256_hex};
 use volta_auth_core::idp::PkcePair;
 use volta_auth_core::record::OidcFlowRecord;
 use volta_auth_core::risk::{self, RiskDecision, RiskSignals, RiskThresholds};
 use volta_auth_core::store::{
-    MembershipStore, OidcFlowStore, RiskDeviceStore, SessionStepUpStore, SessionStore, TenantStore, UserIdentityStore, UserStore,
+    MembershipStore, OidcFlowStore, RiskDeviceStore, SessionStepUpStore, SessionStore, TenantStore,
+    UserIdentityStore, UserStore,
 };
 
 /// Per-request context feeding risk-based adaptive auth (Phase 4c).
@@ -36,15 +39,24 @@ pub struct RiskContext {
 
 /// First hop of `X-Forwarded-For` (set by the gateway), else `X-Real-IP`.
 fn client_ip(headers: &HeaderMap) -> Option<String> {
-    headers.get("x-forwarded-for")
+    headers
+        .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.split(',').next())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-        .or_else(|| headers.get("x-real-ip").and_then(|v| v.to_str().ok()).map(|s| s.to_string()))
+        .or_else(|| {
+            headers
+                .get("x-real-ip")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string())
+        })
 }
 fn user_agent(headers: &HeaderMap) -> Option<String> {
-    headers.get("user-agent").and_then(|v| v.to_str().ok()).map(|s| s.to_string())
+    headers
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
 }
 
 /// Resolve (or mint) the device id from the request, returning
@@ -109,7 +121,9 @@ pub async fn login(
     Query(q): Query<LoginQuery>,
     jar: CookieJar,
 ) -> Response {
-    let return_to = q.return_to.unwrap_or_else(|| format!("{}/", state.base_url));
+    let return_to = q
+        .return_to
+        .unwrap_or_else(|| format!("{}/", state.base_url));
     let callback_url = format!("{}/callback", state.base_url);
     let adding = q.add.as_deref() == Some("1");
     // Multi-account: force the IdP chooser so "add account" doesn't silently
@@ -118,7 +132,15 @@ pub async fn login(
 
     // Build the flow + redirect for both eager (`?start=1`) and lazy (plain
     // /login) paths. The lazy path just wraps the same URL in a minimal HTML.
-    let auth_url = match begin_oidc_flow(&state, &return_to, q.invite.as_deref(), &callback_url, prompt).await {
+    let auth_url = match begin_oidc_flow(
+        &state,
+        &return_to,
+        q.invite.as_deref(),
+        &callback_url,
+        prompt,
+    )
+    .await
+    {
         Ok(url) => url,
         Err(e) => return e.into_response(),
     };
@@ -129,7 +151,9 @@ pub async fn login(
     if adding {
         let mut accounts = crate::helpers::read_accounts(&jar);
         if let Some(active) = crate::helpers::extract_session_id(&jar) {
-            if !accounts.contains(&active) { accounts.insert(0, active); }
+            if !accounts.contains(&active) {
+                accounts.insert(0, active);
+            }
         }
         let mut resp = Redirect::to(&auth_url).into_response();
         crate::helpers::set_accounts_cookie(&mut resp, &accounts, &state);
@@ -295,9 +319,13 @@ async fn begin_oidc_flow(
     .await
     .map_err(|e| ApiError::internal(&e.to_string()))?;
 
-    Ok(state
-        .idp
-        .authorization_url_pkce_prompt(callback_url, &opaque_state, &nonce, Some(&pkce.challenge), prompt))
+    Ok(state.idp.authorization_url_pkce_prompt(
+        callback_url,
+        &opaque_state,
+        &nonce,
+        Some(&pkce.challenge),
+        prompt,
+    ))
 }
 
 /// 32 random bytes → URL-safe-base64 with no padding. Opaque to the IdP and
@@ -323,7 +351,8 @@ pub async fn callback(
     Query(q): Query<CallbackQuery>,
 ) -> Response {
     if let Some(ref err) = q.error {
-        return ApiError::bad_request("OIDC_FAILED", &format!("OIDC failed: {}", err)).into_response();
+        return ApiError::bad_request("OIDC_FAILED", &format!("OIDC failed: {}", err))
+            .into_response();
     }
 
     let code = match &q.code {
@@ -339,11 +368,8 @@ pub async fn callback(
     let flow = match OidcFlowStore::consume(&state.db, &opaque_state).await {
         Ok(Some(f)) => f,
         Ok(None) => {
-            return ApiError::bad_request(
-                "INVALID_STATE",
-                "Invalid or expired state parameter",
-            )
-            .into_response();
+            return ApiError::bad_request("INVALID_STATE", "Invalid or expired state parameter")
+                .into_response();
         }
         Err(e) => return ApiError::internal(&e.to_string()).into_response(),
     };
@@ -352,7 +378,8 @@ pub async fn callback(
     if is_json_accept(&headers) {
         match complete_oidc(&state, &code, &flow, &risk_ctx).await {
             Ok((session_id, redirect_to)) => {
-                let mut resp = Json(serde_json::json!({"redirect_to": redirect_to})).into_response();
+                let mut resp =
+                    Json(serde_json::json!({"redirect_to": redirect_to})).into_response();
                 set_session_cookie(&mut resp, &session_id, &state);
                 set_device_cookie(&mut resp, &device_id, &state);
                 no_cache_headers(&mut resp);
@@ -442,9 +469,7 @@ async fn complete_oidc(
     let verifier = state
         .key_cipher
         .decrypt(&flow.code_verifier_encrypted)
-        .map_err(|e| {
-            ApiError::internal(&format!("PKCE verifier decryption failed: {}", e))
-        })?;
+        .map_err(|e| ApiError::internal(&format!("PKCE verifier decryption failed: {}", e)))?;
     let verifier_str = std::str::from_utf8(&verifier)
         .map_err(|_| ApiError::internal("PKCE verifier is not valid UTF-8"))?;
 
@@ -452,14 +477,17 @@ async fn complete_oidc(
         .idp
         .exchange_code_pkce(code, &callback_url, Some(verifier_str))
         .await
-        .map_err(|e| ApiError::bad_request("OIDC_FAILED", &format!("Authentication failed: {}", e)))?;
+        .map_err(|e| {
+            ApiError::bad_request("OIDC_FAILED", &format!("Authentication failed: {}", e))
+        })?;
 
     // Backlog P1 #4: verify id_token when the IdP config declares an issuer.
     // Providers without `issuer_url` (plain OAuth2 like GitHub) keep the old
     // `userinfo`-only path.
-    let id_token_sub: Option<String> = if let (Some(ref id_token), Some(ref issuer)) =
-        (token_resp.id_token.as_ref(), state.idp.config().issuer_url.as_ref())
-    {
+    let id_token_sub: Option<String> = if let (Some(ref id_token), Some(ref issuer)) = (
+        token_resp.id_token.as_ref(),
+        state.idp.config().issuer_url.as_ref(),
+    ) {
         let verifier = volta_auth_core::oidc::IdTokenVerifier::from_issuer(
             issuer.trim_end_matches('/'),
             &state.idp.config().client_id,
@@ -480,11 +508,18 @@ async fn complete_oidc(
         None
     };
 
-    let userinfo = state.idp.userinfo(&token_resp.access_token).await
-        .map_err(|e| ApiError::bad_request("OIDC_FAILED", &format!("Authentication failed: {}", e)))?;
+    let userinfo = state
+        .idp
+        .userinfo(&token_resp.access_token)
+        .await
+        .map_err(|e| {
+            ApiError::bad_request("OIDC_FAILED", &format!("Authentication failed: {}", e))
+        })?;
 
     // #14: NFC-normalize + lowercase before store/compare.
-    let email = userinfo.email.clone()
+    let email = userinfo
+        .email
+        .clone()
         .map(|e| crate::security::normalize_email(&e))
         .filter(|e| !e.is_empty())
         .ok_or_else(|| ApiError::bad_request("OIDC_FAILED", "IdP did not return email"))?;
@@ -501,50 +536,78 @@ async fn complete_oidc(
     // google users (google_sub set, no identity row) get back-filled here.
     let provider = state.idp.config().provider.clone();
     let email_verified = userinfo.email_verified.unwrap_or(false);
-    let user = match UserIdentityStore::find_by_subject(&state.db, &provider, &sub).await
+    let user = match UserIdentityStore::find_by_subject(&state.db, &provider, &sub)
+        .await
         .map_err(|e| ApiError::internal(&e.to_string()))?
     {
-        Some(idn) => UserStore::find_by_id(&state.db, idn.user_id).await
+        Some(idn) => UserStore::find_by_id(&state.db, idn.user_id)
+            .await
             .map_err(|e| ApiError::internal(&e.to_string()))?
             .ok_or_else(|| ApiError::internal("linked identity points to a missing user"))?,
         None => {
             let existing = if email_verified {
-                UserStore::find_by_email(&state.db, &email).await
+                UserStore::find_by_email(&state.db, &email)
+                    .await
                     .map_err(|e| ApiError::internal(&e.to_string()))?
-            } else { None };
+            } else {
+                None
+            };
             let user = match existing {
                 Some(u) => u,
-                None => UserStore::upsert(&state.db, volta_auth_core::record::UserRecord {
-                    id: uuid::Uuid::new_v4(),
-                    email: email.clone(),
-                    display_name: userinfo.name.clone(),
-                    google_sub: if provider == "google" { Some(sub.clone()) } else { None },
-                    created_at: now,
-                    is_active: true,
-                    locale: None,
-                    deleted_at: None,
-                }).await.map_err(|e| ApiError::internal(&e.to_string()))?,
+                None => UserStore::upsert(
+                    &state.db,
+                    volta_auth_core::record::UserRecord {
+                        id: uuid::Uuid::new_v4(),
+                        email: email.clone(),
+                        display_name: userinfo.name.clone(),
+                        google_sub: if provider == "google" {
+                            Some(sub.clone())
+                        } else {
+                            None
+                        },
+                        created_at: now,
+                        is_active: true,
+                        locale: None,
+                        deleted_at: None,
+                    },
+                )
+                .await
+                .map_err(|e| ApiError::internal(&e.to_string()))?,
             };
-            let _ = UserIdentityStore::link(&state.db, volta_auth_core::record::UserIdentityRecord {
-                id: uuid::Uuid::new_v4(), user_id: user.id, provider: provider.clone(),
-                subject: sub.clone(), email: Some(email.clone()), email_verified, created_at: now,
-            }).await;
+            let _ = UserIdentityStore::link(
+                &state.db,
+                volta_auth_core::record::UserIdentityRecord {
+                    id: uuid::Uuid::new_v4(),
+                    user_id: user.id,
+                    provider: provider.clone(),
+                    subject: sub.clone(),
+                    email: Some(email.clone()),
+                    email_verified,
+                    created_at: now,
+                },
+            )
+            .await;
             user
         }
     };
 
-    let tenants = TenantStore::find_by_user(&state.db, user.id).await
+    let tenants = TenantStore::find_by_user(&state.db, user.id)
+        .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
 
     let (tenant_id, tenant_slug, roles) = if let Some(t) = tenants.first() {
-        let membership = MembershipStore::find(&state.db, user.id, t.id).await
+        let membership = MembershipStore::find(&state.db, user.id, t.id)
+            .await
             .map_err(|e| ApiError::internal(&e.to_string()))?;
-        let role = membership.map(|m| m.role).unwrap_or_else(|| "MEMBER".into());
+        let role = membership
+            .map(|m| m.role)
+            .unwrap_or_else(|| "MEMBER".into());
         (t.id.to_string(), Some(t.slug.clone()), vec![role])
     } else {
         let slug = email.split('@').next().unwrap_or("user").to_string();
         let display = user.display_name.clone().unwrap_or_else(|| email.clone());
-        let tenant = TenantStore::create_personal(&state.db, user.id, &display, &slug).await
+        let tenant = TenantStore::create_personal(&state.db, user.id, &display, &slug)
+            .await
             .map_err(|e| ApiError::internal(&e.to_string()))?;
         // 新規ユーザの初期 role をメールドメインで決める。
         //   env TRUSTED_EMAIL_DOMAINS(カンマ区切り)に一致 → MEMBER、それ以外 → GUEST。
@@ -553,10 +616,15 @@ async fn complete_oidc(
         let initial_role = match std::env::var("TRUSTED_EMAIL_DOMAINS") {
             Ok(raw) if raw.split(',').any(|s| !s.trim().is_empty()) => {
                 let domain = email.rsplit('@').next().unwrap_or("").to_lowercase();
-                let trusted = raw.split(',')
+                let trusted = raw
+                    .split(',')
                     .map(|s| s.trim().to_lowercase())
                     .any(|d| !d.is_empty() && d == domain);
-                if trusted { "MEMBER" } else { "GUEST" }
+                if trusted {
+                    "MEMBER"
+                } else {
+                    "GUEST"
+                }
             }
             _ => "OWNER",
         };
@@ -566,7 +634,11 @@ async fn complete_oidc(
                 let _ = MembershipStore::update_role(&state.db, m.id, initial_role).await;
             }
         }
-        (tenant.id.to_string(), Some(tenant.slug), vec![initial_role.to_string()])
+        (
+            tenant.id.to_string(),
+            Some(tenant.slug),
+            vec![initial_role.to_string()],
+        )
     };
 
     // ── Risk-based adaptive auth (Phase 4c) ──────────────────
@@ -574,54 +646,83 @@ async fn complete_oidc(
     // differs from their most recent session. Fail-open — store/lookup errors
     // resolve to the low-risk interpretation, never a lock-out.
     let known = RiskDeviceStore::check_and_record(&state.db, user.id, &ctx.device_hash)
-        .await.unwrap_or(true);
+        .await
+        .unwrap_or(true);
     let ip_changed = match &ctx.client_ip {
-        Some(ip) => SessionStore::list_by_user(&state.db, &user.id.to_string()).await
-            .ok().unwrap_or_default().into_iter()
-            .max_by_key(|sess| sess.created_at)   // most recent prior session
+        Some(ip) => SessionStore::list_by_user(&state.db, &user.id.to_string())
+            .await
+            .ok()
+            .unwrap_or_default()
+            .into_iter()
+            .max_by_key(|sess| sess.created_at) // most recent prior session
             .and_then(|sess| sess.ip_address)
             .map(|prev| prev != *ip)
             .unwrap_or(false),
         None => false,
     };
-    let signals = RiskSignals { new_device: !known, ip_changed, ..Default::default() };
+    let signals = RiskSignals {
+        new_device: !known,
+        ip_changed,
+        ..Default::default()
+    };
     let (risk_level, decision) = risk::evaluate(&signals, &RiskThresholds::default(), 0);
 
     if decision == RiskDecision::Block {
-        let mut ev = crate::auth_events::AuthEvent::now("LOGIN_BLOCKED").with_user(user.id.to_string());
-        ev.detail = Some(serde_json::json!({ "risk_level": risk_level, "new_device": !known, "ip_changed": ip_changed }));
-        state.auth_events.publish_and_audit(
-            ev, &state.db, ctx.client_ip.clone(), Some("USER".into()), Some(user.id.to_string()), None,
-        ).await;
+        let mut ev =
+            crate::auth_events::AuthEvent::now("LOGIN_BLOCKED").with_user(user.id.to_string());
+        ev.detail = Some(
+            serde_json::json!({ "risk_level": risk_level, "new_device": !known, "ip_changed": ip_changed }),
+        );
+        state
+            .auth_events
+            .publish_and_audit(
+                ev,
+                &state.db,
+                ctx.client_ip.clone(),
+                Some("USER".into()),
+                Some(user.id.to_string()),
+                None,
+            )
+            .await;
         return Err(ApiError::forbidden("LOGIN_BLOCKED", "不審なアクセスを検知したためログインを拒否しました。時間をおくか、管理者にお問い合わせください。"));
     }
 
     let session_id = uuid::Uuid::new_v4().to_string();
     let now_epoch = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
 
-    let return_to = flow.return_to.clone().unwrap_or_else(|| format!("{}/", state.base_url));
+    let return_to = flow
+        .return_to
+        .clone()
+        .unwrap_or_else(|| format!("{}/", state.base_url));
     let tenant_id_for_event = tenant_id.clone();
-    SessionStore::create(&state.db, volta_auth_core::record::SessionRecord {
-        session_id: session_id.clone(),
-        user_id: user.id.to_string(),
-        tenant_id,
-        return_to: Some(return_to.clone()),
-        created_at: now_epoch,
-        last_active_at: now_epoch,
-        expires_at: now_epoch + state.session_ttl_secs,
-        invalidated_at: None,
-        // StepUp (risk ≥ action) leaves the session MFA-unverified so ForwardAuth
-        // routes the user through /mfa/challenge when they have a second factor.
-        mfa_verified_at: None,
-        ip_address: ctx.client_ip.clone(),
-        user_agent: ctx.user_agent.clone(),
-        csrf_token: None,
-        email: Some(email),
-        tenant_slug,
-        roles,
-        display_name: user.display_name,
-    }).await.map_err(|e| ApiError::internal(&e.to_string()))?;
+    SessionStore::create(
+        &state.db,
+        volta_auth_core::record::SessionRecord {
+            session_id: session_id.clone(),
+            user_id: user.id.to_string(),
+            tenant_id,
+            return_to: Some(return_to.clone()),
+            created_at: now_epoch,
+            last_active_at: now_epoch,
+            expires_at: now_epoch + state.session_ttl_secs,
+            invalidated_at: None,
+            // StepUp (risk ≥ action) leaves the session MFA-unverified so ForwardAuth
+            // routes the user through /mfa/challenge when they have a second factor.
+            mfa_verified_at: None,
+            ip_address: ctx.client_ip.clone(),
+            user_agent: ctx.user_agent.clone(),
+            csrf_token: None,
+            email: Some(email),
+            tenant_slug,
+            roles,
+            display_name: user.display_name,
+        },
+    )
+    .await
+    .map_err(|e| ApiError::internal(&e.to_string()))?;
 
     // Risk step-up: flag the session so ForwardAuth requires a second factor
     // (TOTP or passkey) even if tenant policy wouldn't otherwise.
@@ -629,17 +730,20 @@ async fn complete_oidc(
         let _ = SessionStepUpStore::mark(&state.db, &session_id).await;
     }
 
-    state.auth_events.publish_and_audit(
-        crate::auth_events::AuthEvent::now("LOGIN_SUCCESS")
-            .with_user(user.id.to_string())
-            .with_tenant(tenant_id_for_event)
-            .with_session(session_id.clone()),
-        &state.db,
-        None,                               // actor_ip: OIDC completion has no direct request headers here
-        Some("SESSION".into()),
-        Some(session_id.clone()),
-        None,
-    ).await;
+    state
+        .auth_events
+        .publish_and_audit(
+            crate::auth_events::AuthEvent::now("LOGIN_SUCCESS")
+                .with_user(user.id.to_string())
+                .with_tenant(tenant_id_for_event)
+                .with_session(session_id.clone()),
+            &state.db,
+            None, // actor_ip: OIDC completion has no direct request headers here
+            Some("SESSION".into()),
+            Some(session_id.clone()),
+            None,
+        )
+        .await;
 
     Ok((session_id, return_to))
 }

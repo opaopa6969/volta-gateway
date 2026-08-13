@@ -42,7 +42,10 @@ pub struct ExtensionError {
 
 impl ExtensionError {
     pub fn new(status: u16, message: impl Into<String>) -> Self {
-        Self { status, message: message.into() }
+        Self {
+            status,
+            message: message.into(),
+        }
     }
 }
 
@@ -52,13 +55,22 @@ pub trait MiddlewareExtension: Send + Sync {
     fn name(&self) -> &str;
 
     /// Validate config at startup. Return Err to prevent loading.
-    fn validate_config(_config: &Value) -> Result<(), String> where Self: Sized { Ok(()) }
+    fn validate_config(_config: &Value) -> Result<(), String>
+    where
+        Self: Sized,
+    {
+        Ok(())
+    }
 
     /// Called after auth, before backend forward.
-    async fn on_request(&self, _ctx: &mut ExtensionContext) -> Result<(), ExtensionError> { Ok(()) }
+    async fn on_request(&self, _ctx: &mut ExtensionContext) -> Result<(), ExtensionError> {
+        Ok(())
+    }
 
     /// Called after backend response, before returning to client.
-    async fn on_response(&self, _ctx: &mut ExtensionContext) -> Result<(), ExtensionError> { Ok(()) }
+    async fn on_response(&self, _ctx: &mut ExtensionContext) -> Result<(), ExtensionError> {
+        Ok(())
+    }
 }
 
 /// Built-in extensions.
@@ -74,10 +86,14 @@ pub mod builtin {
 
     #[async_trait::async_trait]
     impl MiddlewareExtension for JwtValidator {
-        fn name(&self) -> &str { "jwt-validator" }
+        fn name(&self) -> &str {
+            "jwt-validator"
+        }
 
         async fn on_request(&self, ctx: &mut ExtensionContext) -> Result<(), ExtensionError> {
-            let auth_header = ctx.headers.get("authorization")
+            let auth_header = ctx
+                .headers
+                .get("authorization")
                 .ok_or_else(|| ExtensionError::new(401, "Authorization header required"))?;
 
             if !auth_header.starts_with("Bearer ") {
@@ -104,14 +120,14 @@ pub mod builtin {
 
     #[async_trait::async_trait]
     impl MiddlewareExtension for RequestIdPropagation {
-        fn name(&self) -> &str { "request-id-propagation" }
+        fn name(&self) -> &str {
+            "request-id-propagation"
+        }
 
         async fn on_request(&self, ctx: &mut ExtensionContext) -> Result<(), ExtensionError> {
             if !ctx.headers.contains_key("x-request-id") {
-                ctx.add_headers.insert(
-                    "x-request-id".into(),
-                    uuid::Uuid::new_v4().to_string(),
-                );
+                ctx.add_headers
+                    .insert("x-request-id".into(), uuid::Uuid::new_v4().to_string());
             }
             Ok(())
         }
@@ -125,7 +141,9 @@ pub struct ExtensionManager {
 
 impl ExtensionManager {
     pub fn new() -> Self {
-        Self { extensions: Vec::new() }
+        Self {
+            extensions: Vec::new(),
+        }
     }
 
     pub fn register(&mut self, name: String, ext: Arc<dyn MiddlewareExtension>) {

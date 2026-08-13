@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use volta_gateway::proxy::{ErrorPages, CorsTable};
+use volta_gateway::proxy::{CorsTable, ErrorPages};
 
 // ─── Circuit Breaker Tests ─────────────────────────────
 
@@ -28,7 +28,9 @@ impl TestCircuitBreaker {
         match map.get(backend) {
             None => true,
             Some((_, last, open)) => {
-                if !open { return true; }
+                if !open {
+                    return true;
+                }
                 last.elapsed() >= Duration::from_secs(self.recovery_secs)
             }
         }
@@ -41,7 +43,8 @@ impl TestCircuitBreaker {
 
     fn record_failure(&self, backend: &str) {
         let mut map = self.backends.lock().unwrap();
-        let entry = map.entry(backend.to_string())
+        let entry = map
+            .entry(backend.to_string())
             .or_insert((0, Instant::now(), false));
         entry.0 += 1;
         entry.1 = Instant::now();
@@ -89,7 +92,7 @@ fn circuit_breaker_independent_per_backend() {
     cb.record_failure("http://a:3000");
     cb.record_failure("http://a:3000");
     assert!(!cb.is_available("http://a:3000")); // open
-    assert!(cb.is_available("http://b:3000"));  // still closed
+    assert!(cb.is_available("http://b:3000")); // still closed
 }
 
 // ─── Compression Header Preservation Tests ─────────────
@@ -97,8 +100,8 @@ fn circuit_breaker_independent_per_backend() {
 #[test]
 fn compression_preserves_headers_via_into_parts() {
     // Simulate what GW-36 fix does: into_parts() preserves headers
-    use hyper::{Response, StatusCode};
     use hyper::header::HeaderValue;
+    use hyper::{Response, StatusCode};
 
     let resp = Response::builder()
         .status(StatusCode::OK)
@@ -135,7 +138,9 @@ fn compression_preserves_headers_via_into_parts() {
     for (name, value) in &parts.headers {
         match name.as_str() {
             "content-length" | "content-encoding" | "transfer-encoding" => {}
-            _ => { new_resp = new_resp.header(name, value); }
+            _ => {
+                new_resp = new_resp.header(name, value);
+            }
         }
     }
     new_resp = new_resp
@@ -143,8 +148,14 @@ fn compression_preserves_headers_via_into_parts() {
         .header("content-length", "42");
 
     let rebuilt = new_resp.body(()).unwrap();
-    assert_eq!(rebuilt.headers().get("set-cookie").unwrap(), "session=abc123; Path=/; HttpOnly");
-    assert_eq!(rebuilt.headers().get("cache-control").unwrap(), "max-age=3600");
+    assert_eq!(
+        rebuilt.headers().get("set-cookie").unwrap(),
+        "session=abc123; Path=/; HttpOnly"
+    );
+    assert_eq!(
+        rebuilt.headers().get("cache-control").unwrap(),
+        "max-age=3600"
+    );
     assert_eq!(rebuilt.headers().get("content-encoding").unwrap(), "gzip");
 }
 
@@ -166,17 +177,32 @@ fn compression_skips_non_compressible() {
         .header("content-type", "image/png")
         .body(())
         .unwrap();
-    let is_compressible = resp.headers().get("content-type")
+    let is_compressible = resp
+        .headers()
+        .get("content-type")
         .and_then(|v| v.to_str().ok())
-        .map(|ct| ct.starts_with("text/") || ct.contains("json") || ct.contains("xml") || ct.contains("javascript"))
+        .map(|ct| {
+            ct.starts_with("text/")
+                || ct.contains("json")
+                || ct.contains("xml")
+                || ct.contains("javascript")
+        })
         .unwrap_or(false);
     assert!(!is_compressible);
 }
 
 #[test]
 fn compression_detects_compressible_types() {
-    for ct in &["text/html", "application/json", "text/xml", "application/javascript"] {
-        let is_compressible = ct.starts_with("text/") || ct.contains("json") || ct.contains("xml") || ct.contains("javascript");
+    for ct in &[
+        "text/html",
+        "application/json",
+        "text/xml",
+        "application/javascript",
+    ] {
+        let is_compressible = ct.starts_with("text/")
+            || ct.contains("json")
+            || ct.contains("xml")
+            || ct.contains("javascript");
         assert!(is_compressible, "{} should be compressible", ct);
     }
 }
@@ -207,10 +233,13 @@ fn cors_explicit_wildcard() {
 #[test]
 fn cors_per_route_matches_origin() {
     let mut cors: CorsTable = HashMap::new();
-    cors.insert("app.example.com".into(), vec![
-        "https://app.example.com".into(),
-        "https://staging.example.com".into(),
-    ]);
+    cors.insert(
+        "app.example.com".into(),
+        vec![
+            "https://app.example.com".into(),
+            "https://staging.example.com".into(),
+        ],
+    );
 
     let origins = cors.get("app.example.com").unwrap();
     assert!(origins.iter().any(|o| o == "https://app.example.com"));
@@ -221,7 +250,10 @@ fn cors_per_route_matches_origin() {
 #[test]
 fn cors_per_route_rejects_unknown_origin() {
     let mut cors: CorsTable = HashMap::new();
-    cors.insert("app.example.com".into(), vec!["https://app.example.com".into()]);
+    cors.insert(
+        "app.example.com".into(),
+        vec!["https://app.example.com".into()],
+    );
 
     let origins = cors.get("app.example.com").unwrap();
     let req_origin = "https://evil.com";
@@ -263,7 +295,10 @@ routing: []
     let config: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
     let result = config.validate();
     assert!(result.is_err());
-    assert!(result.unwrap_err().iter().any(|e| e.contains("routing is empty")));
+    assert!(result
+        .unwrap_err()
+        .iter()
+        .any(|e| e.contains("routing is empty")));
 }
 
 #[test]
@@ -364,7 +399,11 @@ fn weighted_selector_distributes() {
     let mut count_b = 0;
     for _ in 0..1000 {
         let selected = selector.select("test", &backends, &weights);
-        if selected == "http://a:3000" { count_a += 1; } else { count_b += 1; }
+        if selected == "http://a:3000" {
+            count_a += 1;
+        } else {
+            count_b += 1;
+        }
     }
     // With 90/10 weights, A should get majority
     assert!(count_a > count_b, "A={} should be > B={}", count_a, count_b);
@@ -380,7 +419,11 @@ fn strip_prefix_works() {
     let strip = "/v1";
     let result = if path.starts_with(strip) {
         let stripped = &path[strip.len()..];
-        if stripped.starts_with('/') { stripped.to_string() } else { format!("/{}", stripped) }
+        if stripped.starts_with('/') {
+            stripped.to_string()
+        } else {
+            format!("/{}", stripped)
+        }
     } else {
         path.to_string()
     };
@@ -430,10 +473,10 @@ fn traceparent_format_valid() {
     assert!(tp.starts_with("00-"));
     let parts: Vec<&str> = tp.split('-').collect();
     assert_eq!(parts.len(), 4);
-    assert_eq!(parts[0], "00");        // version
-    assert_eq!(parts[1].len(), 32);    // trace_id
-    assert_eq!(parts[2].len(), 16);    // span_id
-    assert_eq!(parts[3], "01");        // flags (sampled)
+    assert_eq!(parts[0], "00"); // version
+    assert_eq!(parts[1].len(), 32); // trace_id
+    assert_eq!(parts[2].len(), 16); // span_id
+    assert_eq!(parts[3], "01"); // flags (sampled)
 }
 
 // GW-33: New field validation tests
@@ -456,7 +499,10 @@ tls:
     let config: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
     let result = config.validate();
     assert!(result.is_err());
-    assert!(result.unwrap_err().iter().any(|e| e.contains("tls.domains is empty")));
+    assert!(result
+        .unwrap_err()
+        .iter()
+        .any(|e| e.contains("tls.domains is empty")));
 }
 
 #[test]
@@ -475,7 +521,10 @@ routing:
     let config: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
     let result = config.validate();
     assert!(result.is_err());
-    assert!(result.unwrap_err().iter().any(|e| e.contains("force_https requires tls")));
+    assert!(result
+        .unwrap_err()
+        .iter()
+        .any(|e| e.contains("force_https requires tls")));
 }
 
 #[test]
@@ -517,7 +566,10 @@ routing:
     let config: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
     let result = config.validate();
     assert!(result.is_err());
-    assert!(result.unwrap_err().iter().any(|e| e.contains("no backends")));
+    assert!(result
+        .unwrap_err()
+        .iter()
+        .any(|e| e.contains("no backends")));
 }
 
 #[test]

@@ -10,9 +10,13 @@ use serde::Deserialize;
 
 use crate::auth_events::AuthEvent;
 use crate::error::{no_cache_headers, ApiError};
-use crate::helpers::{extract_session_id, is_json_accept, set_session_cookie, clear_session_cookie};
+use crate::helpers::{
+    clear_session_cookie, extract_session_id, is_json_accept, set_session_cookie,
+};
 use crate::state::AppState;
-use volta_auth_core::store::{SessionStore, MembershipStore, TenantStore, MfaStore, SessionStepUpStore, PasskeyStore};
+use volta_auth_core::store::{
+    MembershipStore, MfaStore, PasskeyStore, SessionStepUpStore, SessionStore, TenantStore,
+};
 
 /// Publish a `LOGOUT` auth event for `/viz/auth/stream` (P1.2) and persist
 /// it to `audit_logs` (P2 #10). Session lookup is best-effort — a missing
@@ -22,14 +26,17 @@ async fn publish_logout_event(state: &AppState, session_id: &str) {
     if let Ok(Some(s)) = SessionStore::find(&state.db, session_id).await {
         ev = ev.with_user(s.user_id).with_tenant(s.tenant_id);
     }
-    state.auth_events.publish_and_audit(
-        ev,
-        &state.db,
-        None,
-        Some("SESSION".into()),
-        Some(session_id.to_string()),
-        None,
-    ).await;
+    state
+        .auth_events
+        .publish_and_audit(
+            ev,
+            &state.db,
+            None,
+            Some("SESSION".into()),
+            Some(session_id.to_string()),
+            None,
+        )
+        .await;
 }
 
 /// GET /auth/verify — ForwardAuth endpoint for gateway.
@@ -46,22 +53,33 @@ async fn publish_logout_event(state: &AppState, session_id: &str) {
 ///
 /// The bypass only fires when there is no session so that authenticated LAN
 /// users still get their real user headers and MFA enforcement.
-pub async fn verify(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    jar: CookieJar,
-) -> Response {
-    let forwarded_host = headers.get("x-forwarded-host").and_then(|v| v.to_str().ok());
+pub async fn verify(State(state): State<AppState>, headers: HeaderMap, jar: CookieJar) -> Response {
+    let forwarded_host = headers
+        .get("x-forwarded-host")
+        .and_then(|v| v.to_str().ok());
     let forwarded_uri = headers.get("x-forwarded-uri").and_then(|v| v.to_str().ok());
-    let forwarded_proto = headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()).unwrap_or("http");
+    let forwarded_proto = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("http");
 
     if forwarded_host.is_none() || forwarded_uri.is_none() {
-        return ApiError::unauthorized("AUTHENTICATION_REQUIRED", "Missing forwarded headers").into_response();
+        return ApiError::unauthorized("AUTHENTICATION_REQUIRED", "Missing forwarded headers")
+            .into_response();
     }
 
     let redirect_to_login = || {
-        let return_to = format!("{}://{}{}", forwarded_proto, forwarded_host.unwrap(), forwarded_uri.unwrap());
-        let location = format!("{}/login?return_to={}", state.base_url, urlencoding::encode(&return_to));
+        let return_to = format!(
+            "{}://{}{}",
+            forwarded_proto,
+            forwarded_host.unwrap(),
+            forwarded_uri.unwrap()
+        );
+        let location = format!(
+            "{}/login?return_to={}",
+            state.base_url,
+            urlencoding::encode(&return_to)
+        );
         let mut resp = Redirect::to(&location).into_response();
         *resp.status_mut() = StatusCode::UNAUTHORIZED;
         no_cache_headers(&mut resp);
@@ -133,9 +151,15 @@ pub async fn verify(
                 // factor even without a tenant MFA policy — and a passkey counts,
                 // so passkey-only users are covered too. Unflagged sessions keep
                 // the original TOTP-only behaviour exactly.
-                let stepup_required = SessionStepUpStore::is_required(&state.db, &session.session_id).await.unwrap_or(false);
+                let stepup_required =
+                    SessionStepUpStore::is_required(&state.db, &session.session_id)
+                        .await
+                        .unwrap_or(false);
                 let has_passkey = match (stepup_required, uid) {
-                    (true, Some(u)) => PasskeyStore::list_by_user(&state.db, u).await.map(|v| !v.is_empty()).unwrap_or(false),
+                    (true, Some(u)) => PasskeyStore::list_by_user(&state.db, u)
+                        .await
+                        .map(|v| !v.is_empty())
+                        .unwrap_or(false),
                     _ => false,
                 };
                 let needs_challenge = has_totp || (stepup_required && has_passkey);
@@ -171,7 +195,11 @@ pub async fn verify(
             email: session.email.clone(),
             tenant_id: Some(session.tenant_id.clone()),
             tenant_slug: session.tenant_slug.clone(),
-            roles: if session.roles.is_empty() { None } else { Some(session.roles.join(",")) },
+            roles: if session.roles.is_empty() {
+                None
+            } else {
+                Some(session.roles.join(","))
+            },
             name: session.display_name.clone(),
             app_id: None,
             iat: None,
@@ -187,7 +215,8 @@ pub async fn verify(
     // ── No session: local-network bypass (P1.3) ───────────────
     if state.local_bypass.matches_request(&headers, None) {
         let mut resp = StatusCode::OK.into_response();
-        resp.headers_mut().insert("x-volta-auth-source", "local-bypass".parse().unwrap());
+        resp.headers_mut()
+            .insert("x-volta-auth-source", "local-bypass".parse().unwrap());
         no_cache_headers(&mut resp);
         return resp;
     }
@@ -204,7 +233,9 @@ pub struct LogoutQuery {
 /// Only forward a `return_to` that points back at our own apps (https on
 /// *.unlaxer.org) — avoids turning logout into an open redirect.
 fn is_safe_return_to(rt: &str) -> bool {
-    let Some(rest) = rt.strip_prefix("https://") else { return false; };
+    let Some(rest) = rt.strip_prefix("https://") else {
+        return false;
+    };
     let host = rest.split('/').next().unwrap_or("");
     host == "unlaxer.org" || host.ends_with(".unlaxer.org")
 }
@@ -221,7 +252,11 @@ pub async fn logout_get(
         let _ = SessionStore::revoke(&state.db, &session_id).await;
     }
     let login = match q.return_to.as_deref().filter(|r| is_safe_return_to(r)) {
-        Some(rt) => format!("{}/login?return_to={}", state.base_url, urlencoding::encode(rt)),
+        Some(rt) => format!(
+            "{}/login?return_to={}",
+            state.base_url,
+            urlencoding::encode(rt)
+        ),
         None => format!("{}/login", state.base_url),
     };
     let mut resp = Redirect::to(&login).into_response();
@@ -255,28 +290,42 @@ pub async fn logout_post(
 }
 
 /// POST /auth/refresh — get fresh JWT.
-pub async fn refresh(
-    State(state): State<AppState>,
-    jar: CookieJar,
-) -> Result<Response, ApiError> {
-    let session_id = extract_session_id(&jar)
-        .ok_or_else(|| ApiError::unauthorized("SESSION_EXPIRED", "セッションの有効期限が切れました。再ログインしてください。"))?;
+pub async fn refresh(State(state): State<AppState>, jar: CookieJar) -> Result<Response, ApiError> {
+    let session_id = extract_session_id(&jar).ok_or_else(|| {
+        ApiError::unauthorized(
+            "SESSION_EXPIRED",
+            "セッションの有効期限が切れました。再ログインしてください。",
+        )
+    })?;
 
-    let session = SessionStore::find(&state.db, &session_id).await
+    let session = SessionStore::find(&state.db, &session_id)
+        .await
         .map_err(|e| ApiError::internal(&e.to_string()))?
-        .ok_or_else(|| ApiError::unauthorized("SESSION_EXPIRED", "セッションの有効期限が切れました。再ログインしてください。"))?;
+        .ok_or_else(|| {
+            ApiError::unauthorized(
+                "SESSION_EXPIRED",
+                "セッションの有効期限が切れました。再ログインしてください。",
+            )
+        })?;
 
-    let jwt = state.jwt_issuer.issue(&volta_auth_core::jwt::VoltaClaims {
-        sub: session.user_id,
-        email: session.email,
-        tenant_id: Some(session.tenant_id),
-        tenant_slug: session.tenant_slug,
-        roles: if session.roles.is_empty() { None } else { Some(session.roles.join(",")) },
-        name: session.display_name,
-        app_id: None,
-        iat: None,
-        exp: None,
-    }).map_err(|e| ApiError::internal(&e.to_string()))?;
+    let jwt = state
+        .jwt_issuer
+        .issue(&volta_auth_core::jwt::VoltaClaims {
+            sub: session.user_id,
+            email: session.email,
+            tenant_id: Some(session.tenant_id),
+            tenant_slug: session.tenant_slug,
+            roles: if session.roles.is_empty() {
+                None
+            } else {
+                Some(session.roles.join(","))
+            },
+            name: session.display_name,
+            app_id: None,
+            iat: None,
+            exp: None,
+        })
+        .map_err(|e| ApiError::internal(&e.to_string()))?;
 
     let mut resp = Json(serde_json::json!({"token": jwt})).into_response();
     no_cache_headers(&mut resp);
@@ -295,62 +344,89 @@ pub async fn switch_tenant(
     jar: CookieJar,
     Json(body): Json<SwitchTenantRequest>,
 ) -> Result<Response, ApiError> {
-    let session_id = extract_session_id(&jar)
-        .ok_or_else(|| ApiError::unauthorized("SESSION_EXPIRED", "セッションの有効期限が切れました。再ログインしてください。"))?;
+    let session_id = extract_session_id(&jar).ok_or_else(|| {
+        ApiError::unauthorized(
+            "SESSION_EXPIRED",
+            "セッションの有効期限が切れました。再ログインしてください。",
+        )
+    })?;
 
-    let session = SessionStore::find(&state.db, &session_id).await
+    let session = SessionStore::find(&state.db, &session_id)
+        .await
         .map_err(|e| ApiError::internal(&e.to_string()))?
-        .ok_or_else(|| ApiError::unauthorized("SESSION_EXPIRED", "セッションの有効期限が切れました。再ログインしてください。"))?;
+        .ok_or_else(|| {
+            ApiError::unauthorized(
+                "SESSION_EXPIRED",
+                "セッションの有効期限が切れました。再ログインしてください。",
+            )
+        })?;
 
     // Verify user has access to the target tenant
-    let tenant_id: uuid::Uuid = body.tenant_id.parse()
+    let tenant_id: uuid::Uuid = body
+        .tenant_id
+        .parse()
         .map_err(|_| ApiError::bad_request("BAD_REQUEST", "invalid tenantId"))?;
 
-    let user_id: uuid::Uuid = session.user_id.parse()
+    let user_id: uuid::Uuid = session
+        .user_id
+        .parse()
         .map_err(|_| ApiError::internal("invalid user_id in session"))?;
-    let membership = MembershipStore::find(&state.db, user_id, tenant_id).await
+    let membership = MembershipStore::find(&state.db, user_id, tenant_id)
+        .await
         .map_err(|e| ApiError::internal(&e.to_string()))?
         .ok_or_else(|| ApiError::forbidden("TENANT_ACCESS_DENIED", "Tenant access denied"))?;
 
     if !membership.is_active {
-        return Err(ApiError::forbidden("TENANT_ACCESS_DENIED", "Tenant access denied"));
+        return Err(ApiError::forbidden(
+            "TENANT_ACCESS_DENIED",
+            "Tenant access denied",
+        ));
     }
 
     // Revoke old session, create new one with new tenant
     let _ = SessionStore::revoke(&state.db, &session_id).await;
 
-    let tenant = TenantStore::find_by_id(&state.db, tenant_id).await
+    let tenant = TenantStore::find_by_id(&state.db, tenant_id)
+        .await
         .map_err(|e| ApiError::internal(&e.to_string()))?
         .ok_or_else(|| ApiError::bad_request("NOT_FOUND", "tenant not found"))?;
 
     let new_session_id = uuid::Uuid::new_v4().to_string();
     let now_epoch = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
 
-    SessionStore::create(&state.db, volta_auth_core::record::SessionRecord {
-        session_id: new_session_id.clone(),
-        user_id: session.user_id,
-        tenant_id: body.tenant_id.clone(),
-        return_to: None,
-        created_at: now_epoch,
-        last_active_at: now_epoch,
-        expires_at: now_epoch + state.session_ttl_secs,
-        invalidated_at: None,
-        // #12: MFA verification does NOT carry over across tenants. If the new
-        // tenant requires MFA, the user must re-verify in that tenant's context.
-        // Previously we copied `session.mfa_verified_at`, which silently elevated
-        // tenant B with MFA state obtained from tenant A.
-        mfa_verified_at: None,
-        ip_address: session.ip_address,
-        user_agent: session.user_agent,
-        csrf_token: None,
-        email: session.email,
-        tenant_slug: Some(tenant.slug),
-        roles: vec![membership.role],
-        display_name: session.display_name,
-    }).await.map_err(|e| ApiError::internal(&e.to_string()))?;
+    SessionStore::create(
+        &state.db,
+        volta_auth_core::record::SessionRecord {
+            session_id: new_session_id.clone(),
+            user_id: session.user_id,
+            tenant_id: body.tenant_id.clone(),
+            return_to: None,
+            created_at: now_epoch,
+            last_active_at: now_epoch,
+            expires_at: now_epoch + state.session_ttl_secs,
+            invalidated_at: None,
+            // #12: MFA verification does NOT carry over across tenants. If the new
+            // tenant requires MFA, the user must re-verify in that tenant's context.
+            // Previously we copied `session.mfa_verified_at`, which silently elevated
+            // tenant B with MFA state obtained from tenant A.
+            mfa_verified_at: None,
+            ip_address: session.ip_address,
+            user_agent: session.user_agent,
+            csrf_token: None,
+            email: session.email,
+            tenant_slug: Some(tenant.slug),
+            roles: vec![membership.role],
+            display_name: session.display_name,
+        },
+    )
+    .await
+    .map_err(|e| ApiError::internal(&e.to_string()))?;
 
-    let mut resp = Json(serde_json::json!({"ok": true, "tenantId": body.tenant_id})).into_response();
+    let mut resp =
+        Json(serde_json::json!({"ok": true, "tenantId": body.tenant_id})).into_response();
     set_session_cookie(&mut resp, &new_session_id, &state);
     no_cache_headers(&mut resp);
     Ok(resp)

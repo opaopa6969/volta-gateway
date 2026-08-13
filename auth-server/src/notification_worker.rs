@@ -8,7 +8,9 @@ use std::time::Duration;
 
 use tracing::{error, info};
 
-use volta_auth_core::notification::{NotificationMessage, NotificationService, NotificationTemplate};
+use volta_auth_core::notification::{
+    NotificationMessage, NotificationService, NotificationTemplate,
+};
 use volta_auth_core::record::NotificationLogRecord;
 use volta_auth_core::store::pg::PgStore;
 use volta_auth_core::store::NotificationJobStore;
@@ -17,7 +19,10 @@ const MAX_ATTEMPTS: i32 = 5;
 
 pub fn spawn(db: PgStore, notifications: Arc<NotificationService>, poll: Duration) {
     tokio::spawn(async move {
-        info!(interval_secs = poll.as_secs(), "notification worker started");
+        info!(
+            interval_secs = poll.as_secs(),
+            "notification worker started"
+        );
         loop {
             if let Err(e) = poll_once(&db, &notifications).await {
                 error!(error = %e, "notification worker error");
@@ -35,16 +40,17 @@ async fn poll_once(db: &PgStore, notifications: &NotificationService) -> Result<
     info!(count = jobs.len(), "delivering notifications");
 
     for job in jobs {
-        let channel = notifications
-            .config()
-            .default_channel; // fallback
+        let channel = notifications.config().default_channel; // fallback
         let channel = volta_auth_core::notification::NotificationChannel::parse(&job.channel)
             .unwrap_or(channel);
 
         let mut tmpl = NotificationTemplate::new(&job.template_id);
         if let Some(obj) = job.payload.as_object() {
             for (k, v) in obj {
-                let val = v.as_str().map(|s| s.to_string()).unwrap_or_else(|| v.to_string());
+                let val = v
+                    .as_str()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| v.to_string());
                 tmpl.vars.insert(k.clone(), val);
             }
         }

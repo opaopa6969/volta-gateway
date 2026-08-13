@@ -48,8 +48,14 @@ pub enum VerifyError {
     MissingIdToken,
     BadFormat(String),
     SignatureInvalid(String),
-    IssuerMismatch { expected: String, actual: String },
-    AudienceMismatch { expected: String, actual: Vec<String> },
+    IssuerMismatch {
+        expected: String,
+        actual: String,
+    },
+    AudienceMismatch {
+        expected: String,
+        actual: Vec<String>,
+    },
     Expired,
     IssuedInFuture,
     NonceMismatch,
@@ -124,7 +130,9 @@ impl IdTokenVerifier {
         }
         let header = decode_header(id_token).map_err(|e| VerifyError::BadFormat(e.to_string()))?;
         let alg = header.alg;
-        let kid = header.kid.ok_or_else(|| VerifyError::BadFormat("missing kid".into()))?;
+        let kid = header
+            .kid
+            .ok_or_else(|| VerifyError::BadFormat("missing kid".into()))?;
 
         let jwks = self.jwks_cached().await?;
         let jwk = jwks
@@ -203,7 +211,10 @@ impl IdTokenVerifier {
             .await
             .map_err(|e| VerifyError::JwksFetchFailed(e.to_string()))?;
         if !resp.status().is_success() {
-            return Err(VerifyError::JwksFetchFailed(format!("HTTP {}", resp.status())));
+            return Err(VerifyError::JwksFetchFailed(format!(
+                "HTTP {}",
+                resp.status()
+            )));
         }
         resp.json::<JwkSet>()
             .await
@@ -250,14 +261,26 @@ impl Jwk {
     fn decoding_key(&self) -> Result<DecodingKey, VerifyError> {
         match self.kty.as_str() {
             "RSA" => {
-                let n = self.n.as_deref().ok_or_else(|| VerifyError::BadFormat("RSA JWK missing n".into()))?;
-                let e = self.e.as_deref().ok_or_else(|| VerifyError::BadFormat("RSA JWK missing e".into()))?;
+                let n = self
+                    .n
+                    .as_deref()
+                    .ok_or_else(|| VerifyError::BadFormat("RSA JWK missing n".into()))?;
+                let e = self
+                    .e
+                    .as_deref()
+                    .ok_or_else(|| VerifyError::BadFormat("RSA JWK missing e".into()))?;
                 DecodingKey::from_rsa_components(n, e)
                     .map_err(|e| VerifyError::BadFormat(format!("RSA key: {}", e)))
             }
             "EC" => {
-                let x = self.x.as_deref().ok_or_else(|| VerifyError::BadFormat("EC JWK missing x".into()))?;
-                let y = self.y.as_deref().ok_or_else(|| VerifyError::BadFormat("EC JWK missing y".into()))?;
+                let x = self
+                    .x
+                    .as_deref()
+                    .ok_or_else(|| VerifyError::BadFormat("EC JWK missing x".into()))?;
+                let y = self
+                    .y
+                    .as_deref()
+                    .ok_or_else(|| VerifyError::BadFormat("EC JWK missing y".into()))?;
                 DecodingKey::from_ec_components(x, y)
                     .map_err(|e| VerifyError::BadFormat(format!("EC key: {}", e)))
             }
@@ -268,26 +291,42 @@ impl Jwk {
 
 /// Serde adapter — accepts either `"aud"` string or `["aud1", "aud2"]` array.
 mod audience {
-    use serde::{Deserializer, Serializer};
     use serde::de::{self, SeqAccess, Visitor};
+    use serde::{Deserializer, Serializer};
     use std::fmt;
 
     pub fn serialize<S>(aud: &Vec<String>, s: S) -> Result<S::Ok, S::Error>
-    where S: Serializer {
-        if aud.len() == 1 { s.serialize_str(&aud[0]) } else { s.collect_seq(aud) }
+    where
+        S: Serializer,
+    {
+        if aud.len() == 1 {
+            s.serialize_str(&aud[0])
+        } else {
+            s.collect_seq(aud)
+        }
     }
 
     pub fn deserialize<'de, D>(d: D) -> Result<Vec<String>, D::Error>
-    where D: Deserializer<'de> {
+    where
+        D: Deserializer<'de>,
+    {
         struct V;
         impl<'de> Visitor<'de> for V {
             type Value = Vec<String>;
-            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result { f.write_str("aud") }
-            fn visit_str<E: de::Error>(self, s: &str) -> Result<Self::Value, E> { Ok(vec![s.into()]) }
-            fn visit_string<E: de::Error>(self, s: String) -> Result<Self::Value, E> { Ok(vec![s]) }
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("aud")
+            }
+            fn visit_str<E: de::Error>(self, s: &str) -> Result<Self::Value, E> {
+                Ok(vec![s.into()])
+            }
+            fn visit_string<E: de::Error>(self, s: String) -> Result<Self::Value, E> {
+                Ok(vec![s])
+            }
             fn visit_seq<A: SeqAccess<'de>>(self, mut a: A) -> Result<Self::Value, A::Error> {
                 let mut v = Vec::new();
-                while let Some(s) = a.next_element::<String>()? { v.push(s); }
+                while let Some(s) = a.next_element::<String>()? {
+                    v.push(s);
+                }
                 Ok(v)
             }
         }
@@ -320,7 +359,8 @@ mod tests {
     fn aud_single_string_deserializes_to_vec() {
         let claims: IdTokenClaims = serde_json::from_value(serde_json::json!({
             "sub": "u1", "iss": "x", "aud": "client-1", "exp": 0u64, "iat": 0u64,
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(claims.aud, vec!["client-1"]);
     }
 
@@ -328,7 +368,8 @@ mod tests {
     fn aud_array_deserializes_to_vec() {
         let claims: IdTokenClaims = serde_json::from_value(serde_json::json!({
             "sub": "u1", "iss": "x", "aud": ["a", "b"], "exp": 0u64, "iat": 0u64,
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(claims.aud, vec!["a", "b"]);
     }
 

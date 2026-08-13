@@ -24,12 +24,20 @@ pub enum LoginChallengeState {
 }
 
 impl FlowState for LoginChallengeState {
-    fn is_terminal(&self) -> bool { matches!(self, Self::LoginGranted | Self::LoginDenied) }
-    fn is_initial(&self) -> bool { matches!(self, Self::PasswordAccepted) }
+    fn is_terminal(&self) -> bool {
+        matches!(self, Self::LoginGranted | Self::LoginDenied)
+    }
+    fn is_initial(&self) -> bool {
+        matches!(self, Self::PasswordAccepted)
+    }
     fn all_states() -> &'static [Self] {
         &[
-            Self::PasswordAccepted, Self::MfaRequired, Self::ChallengeSent,
-            Self::ChallengeVerified, Self::LoginGranted, Self::LoginDenied,
+            Self::PasswordAccepted,
+            Self::MfaRequired,
+            Self::ChallengeSent,
+            Self::ChallengeVerified,
+            Self::LoginGranted,
+            Self::LoginDenied,
         ]
     }
 }
@@ -54,8 +62,12 @@ pub struct ChallengeProof {
 
 struct MfaRequiredBranch;
 impl BranchProcessor<LoginChallengeState> for MfaRequiredBranch {
-    fn name(&self) -> &str { "LcMfaRequiredBranch" }
-    fn requires(&self) -> Vec<TypeId> { requires!(LoginChallengeInit) }
+    fn name(&self) -> &str {
+        "LcMfaRequiredBranch"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        requires!(LoginChallengeInit)
+    }
     fn decide(&self, ctx: &FlowContext) -> String {
         match ctx.find::<LoginChallengeInit>() {
             Some(i) if i.mfa_required => "mfa".to_string(),
@@ -66,22 +78,36 @@ impl BranchProcessor<LoginChallengeState> for MfaRequiredBranch {
 
 struct SendChallengeProcessor;
 impl StateProcessor<LoginChallengeState> for SendChallengeProcessor {
-    fn name(&self) -> &str { "LcSendChallenge" }
-    fn requires(&self) -> Vec<TypeId> { requires!(LoginChallengeInit) }
-    fn produces(&self) -> Vec<TypeId> { data_types!(ChallengeSentData) }
+    fn name(&self) -> &str {
+        "LcSendChallenge"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        requires!(LoginChallengeInit)
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        data_types!(ChallengeSentData)
+    }
     fn process(&self, ctx: &mut FlowContext) -> Result<(), FlowError> {
         let init = ctx.get::<LoginChallengeInit>()?;
         // Phase 5: for EMAIL/SMS/LINE OTP enqueue a notification; TOTP sends nothing.
-        ctx.put(ChallengeSentData { method: init.method.clone() });
+        ctx.put(ChallengeSentData {
+            method: init.method.clone(),
+        });
         Ok(())
     }
 }
 
 struct VerifyChallengeGuard;
 impl TransitionGuard<LoginChallengeState> for VerifyChallengeGuard {
-    fn name(&self) -> &str { "LcVerifyChallengeGuard" }
-    fn requires(&self) -> Vec<TypeId> { vec![] }
-    fn produces(&self) -> Vec<TypeId> { data_types!(ChallengeProof) }
+    fn name(&self) -> &str {
+        "LcVerifyChallengeGuard"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        vec![]
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        data_types!(ChallengeProof)
+    }
     fn validate(&self, ctx: &FlowContext) -> GuardOutput {
         match ctx.find::<ChallengeProof>() {
             Some(p) if p.verified => GuardOutput::accept_with(p.clone()),
@@ -93,9 +119,15 @@ impl TransitionGuard<LoginChallengeState> for VerifyChallengeGuard {
 
 struct GrantProcessor;
 impl StateProcessor<LoginChallengeState> for GrantProcessor {
-    fn name(&self) -> &str { "LcGrant" }
-    fn requires(&self) -> Vec<TypeId> { requires!(ChallengeProof) }
-    fn produces(&self) -> Vec<TypeId> { vec![] }
+    fn name(&self) -> &str {
+        "LcGrant"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        requires!(ChallengeProof)
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        vec![]
+    }
     fn process(&self, ctx: &mut FlowContext) -> Result<(), FlowError> {
         let _ = ctx.get::<ChallengeProof>()?;
         Ok(())

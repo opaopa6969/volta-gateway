@@ -20,7 +20,8 @@ use serde::Deserialize;
 
 use crate::error::{no_cache_headers, ApiError};
 use crate::helpers::{
-    clear_session_cookie, extract_session_id, read_accounts, set_accounts_cookie, set_session_cookie,
+    clear_session_cookie, extract_session_id, read_accounts, set_accounts_cookie,
+    set_session_cookie,
 };
 use crate::state::AppState;
 use volta_auth_core::record::SessionRecord;
@@ -34,23 +35,33 @@ fn now_epoch() -> u64 {
 }
 
 fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
-        .replace('"', "&quot;").replace('\'', "&#39;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 /// Resolve every remembered account to a valid session record, in cookie order
 /// with the active session ensured present. Invalid/expired ids are dropped.
-async fn resolve_accounts(s: &AppState, jar: &axum_extra::extract::CookieJar) -> (Vec<SessionRecord>, Option<String>) {
+async fn resolve_accounts(
+    s: &AppState,
+    jar: &axum_extra::extract::CookieJar,
+) -> (Vec<SessionRecord>, Option<String>) {
     let active = extract_session_id(jar);
     let mut ids = read_accounts(jar);
     if let Some(a) = &active {
-        if !ids.contains(a) { ids.insert(0, a.clone()); }
+        if !ids.contains(a) {
+            ids.insert(0, a.clone());
+        }
     }
     let now = now_epoch();
     let mut valid = Vec::new();
     for id in ids {
         if let Ok(Some(rec)) = SessionStore::find(&s.db, &id).await {
-            if rec.is_valid_at(now) { valid.push(rec); }
+            if rec.is_valid_at(now) {
+                valid.push(rec);
+            }
         }
     }
     (valid, active)
@@ -58,7 +69,10 @@ async fn resolve_accounts(s: &AppState, jar: &axum_extra::extract::CookieJar) ->
 
 // ─── GET /accounts ─────────────────────────────────────────
 
-pub async fn accounts_page(State(s): State<AppState>, jar: axum_extra::extract::CookieJar) -> Response {
+pub async fn accounts_page(
+    State(s): State<AppState>,
+    jar: axum_extra::extract::CookieJar,
+) -> Response {
     let (valid, active) = resolve_accounts(&s, &jar).await;
     if valid.is_empty() {
         let mut resp = Redirect::to(&format!("{}/login", s.base_url)).into_response();
@@ -108,18 +122,33 @@ pub struct AccountRef {
     pub session_id: String,
 }
 
-pub async fn use_account(State(s): State<AppState>, jar: axum_extra::extract::CookieJar, Form(b): Form<AccountRef>) -> Result<Response, ApiError> {
+pub async fn use_account(
+    State(s): State<AppState>,
+    jar: axum_extra::extract::CookieJar,
+    Form(b): Form<AccountRef>,
+) -> Result<Response, ApiError> {
     // The requested account must be one this browser remembers, and still valid.
     let mut ids = read_accounts(&jar);
-    if let Some(a) = extract_session_id(&jar) { if !ids.contains(&a) { ids.push(a); } }
-    if !ids.contains(&b.session_id) {
-        return Err(ApiError::forbidden("UNKNOWN_ACCOUNT", "このアカウントはこのブラウザに登録されていません"));
+    if let Some(a) = extract_session_id(&jar) {
+        if !ids.contains(&a) {
+            ids.push(a);
+        }
     }
-    let valid = SessionStore::find(&s.db, &b.session_id).await
+    if !ids.contains(&b.session_id) {
+        return Err(ApiError::forbidden(
+            "UNKNOWN_ACCOUNT",
+            "このアカウントはこのブラウザに登録されていません",
+        ));
+    }
+    let valid = SessionStore::find(&s.db, &b.session_id)
+        .await
         .map_err(|e| ApiError::internal(&e.to_string()))?
         .filter(|r| r.is_valid_at(now_epoch()));
     if valid.is_none() {
-        return Err(ApiError::bad_request("SESSION_INVALID", "このアカウントのセッションは無効です。再ログインしてください。"));
+        return Err(ApiError::bad_request(
+            "SESSION_INVALID",
+            "このアカウントのセッションは無効です。再ログインしてください。",
+        ));
     }
     let mut resp = Redirect::to(&format!("{}/", s.base_url)).into_response();
     set_session_cookie(&mut resp, &b.session_id, &s);
@@ -129,7 +158,11 @@ pub async fn use_account(State(s): State<AppState>, jar: axum_extra::extract::Co
 
 // ─── POST /accounts/signout ────────────────────────────────
 
-pub async fn signout_account(State(s): State<AppState>, jar: axum_extra::extract::CookieJar, Form(b): Form<AccountRef>) -> Result<Response, ApiError> {
+pub async fn signout_account(
+    State(s): State<AppState>,
+    jar: axum_extra::extract::CookieJar,
+    Form(b): Form<AccountRef>,
+) -> Result<Response, ApiError> {
     let active = extract_session_id(&jar);
     // Revoke the chosen session server-side (idempotent if already gone).
     let _ = SessionStore::revoke(&s.db, &b.session_id).await;
@@ -138,9 +171,13 @@ pub async fn signout_account(State(s): State<AppState>, jar: axum_extra::extract
     let now = now_epoch();
     let mut remaining = Vec::new();
     for id in read_accounts(&jar) {
-        if id == b.session_id { continue; }
+        if id == b.session_id {
+            continue;
+        }
         if let Ok(Some(r)) = SessionStore::find(&s.db, &id).await {
-            if r.is_valid_at(now) { remaining.push(id); }
+            if r.is_valid_at(now) {
+                remaining.push(id);
+            }
         }
     }
 
@@ -164,9 +201,16 @@ pub async fn signout_account(State(s): State<AppState>, jar: axum_extra::extract
 
 // ─── POST /accounts/signout-all ────────────────────────────
 
-pub async fn signout_all(State(s): State<AppState>, jar: axum_extra::extract::CookieJar) -> Response {
+pub async fn signout_all(
+    State(s): State<AppState>,
+    jar: axum_extra::extract::CookieJar,
+) -> Response {
     let mut ids = read_accounts(&jar);
-    if let Some(a) = extract_session_id(&jar) { if !ids.contains(&a) { ids.push(a); } }
+    if let Some(a) = extract_session_id(&jar) {
+        if !ids.contains(&a) {
+            ids.push(a);
+        }
+    }
     for id in &ids {
         let _ = SessionStore::revoke(&s.db, id).await;
     }

@@ -23,7 +23,8 @@ impl PasskeyService {
     pub fn new(rp_id: &str, rp_origin: &Url) -> Result<Self, AuthError> {
         let builder = WebauthnBuilder::new(rp_id, rp_origin)
             .map_err(|e| AuthError::Internal(format!("webauthn builder: {}", e)))?;
-        let webauthn = builder.build()
+        let webauthn = builder
+            .build()
             .map_err(|e| AuthError::Internal(format!("webauthn build: {}", e)))?;
         Ok(Self { webauthn })
     }

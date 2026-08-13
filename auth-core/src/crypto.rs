@@ -164,17 +164,25 @@ mod tests {
         let c = fixture();
         let ct = c.encrypt(b"payload");
         // Flip a bit in the middle of the blob.
-        let mut blob = base64::engine::general_purpose::STANDARD.decode(&ct).unwrap();
+        let mut blob = base64::engine::general_purpose::STANDARD
+            .decode(&ct)
+            .unwrap();
         let mid = blob.len() / 2;
         blob[mid] ^= 0x01;
         let tampered = base64::engine::general_purpose::STANDARD.encode(&blob);
-        assert!(matches!(c.decrypt(&tampered), Err(CipherError::Authentication)));
+        assert!(matches!(
+            c.decrypt(&tampered),
+            Err(CipherError::Authentication)
+        ));
     }
 
     #[test]
     fn invalid_base64_is_error() {
         let c = fixture();
-        assert!(matches!(c.decrypt("not-base64!!!"), Err(CipherError::InvalidBase64)));
+        assert!(matches!(
+            c.decrypt("not-base64!!!"),
+            Err(CipherError::InvalidBase64)
+        ));
     }
 
     #[test]
@@ -182,7 +190,10 @@ mod tests {
         let c = fixture();
         // Base64 of 8 zero bytes — shorter than the 12-byte nonce.
         let short = base64::engine::general_purpose::STANDARD.encode([0u8; 8]);
-        assert!(matches!(c.decrypt(&short), Err(CipherError::MalformedInput)));
+        assert!(matches!(
+            c.decrypt(&short),
+            Err(CipherError::MalformedInput)
+        ));
     }
 
     #[test]
@@ -204,7 +215,9 @@ mod tests {
         assert_eq!(code.len(), 9);
         assert_eq!(code.as_bytes()[4], b'-');
         for (i, c) in code.chars().enumerate() {
-            if i == 4 { continue; }
+            if i == 4 {
+                continue;
+            }
             assert!(ALPHABET.contains(c), "unexpected char {c:?} in {code}");
         }
         assert_ne!(super::random_user_code(), super::random_user_code());

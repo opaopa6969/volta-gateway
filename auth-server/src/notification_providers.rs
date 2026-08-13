@@ -74,13 +74,19 @@ impl SmtpEmailSender {
     /// Build from env. `mailpit` selects the plain-text localhost dev path.
     pub fn from_env(mailpit: bool) -> Result<Self, String> {
         let from = env("NOTIFICATION_EMAIL_FROM", "no-reply@localhost");
-        let host = env("NOTIFICATION_SMTP_HOST", if mailpit { "localhost" } else { "" });
+        let host = env(
+            "NOTIFICATION_SMTP_HOST",
+            if mailpit { "localhost" } else { "" },
+        );
         if host.is_empty() {
             return Err("NOTIFICATION_SMTP_HOST is required for SMTP".into());
         }
-        let port: u16 = env("NOTIFICATION_SMTP_PORT", if mailpit { "1025" } else { "587" })
-            .parse()
-            .map_err(|_| "invalid NOTIFICATION_SMTP_PORT".to_string())?;
+        let port: u16 = env(
+            "NOTIFICATION_SMTP_PORT",
+            if mailpit { "1025" } else { "587" },
+        )
+        .parse()
+        .map_err(|_| "invalid NOTIFICATION_SMTP_PORT".to_string())?;
 
         let transport = if mailpit {
             // Mailpit: plain SMTP, no TLS, no auth.
@@ -106,7 +112,11 @@ impl SmtpEmailSender {
         };
 
         Ok(Self {
-            provider: if mailpit { NotificationProvider::Mailpit } else { NotificationProvider::Smtp },
+            provider: if mailpit {
+                NotificationProvider::Mailpit
+            } else {
+                NotificationProvider::Smtp
+            },
             transport,
             from,
         })
@@ -121,20 +131,36 @@ impl NotificationSender for SmtpEmailSender {
     fn provider(&self) -> NotificationProvider {
         self.provider
     }
-    async fn send(&self, msg: &NotificationMessage) -> Result<NotificationReceipt, NotificationError> {
+    async fn send(
+        &self,
+        msg: &NotificationMessage,
+    ) -> Result<NotificationReceipt, NotificationError> {
         let (subject, body) = render(&msg.template);
         let email = Message::builder()
-            .from(self.from.parse().map_err(|e| NotificationError::InvalidConfig(format!("from: {e}")))?)
-            .to(msg.to.parse().map_err(|e| NotificationError::SendFailed { retryable: false, reason: format!("to: {e}") })?)
+            .from(
+                self.from
+                    .parse()
+                    .map_err(|e| NotificationError::InvalidConfig(format!("from: {e}")))?,
+            )
+            .to(msg.to.parse().map_err(|e| NotificationError::SendFailed {
+                retryable: false,
+                reason: format!("to: {e}"),
+            })?)
             .subject(subject)
             .body(body)
-            .map_err(|e| NotificationError::SendFailed { retryable: false, reason: format!("build: {e}") })?;
+            .map_err(|e| NotificationError::SendFailed {
+                retryable: false,
+                reason: format!("build: {e}"),
+            })?;
 
         self.transport
             .send(email)
             .await
             // SMTP failures are generally transient → retryable.
-            .map_err(|e| NotificationError::SendFailed { retryable: true, reason: e.to_string() })?;
+            .map_err(|e| NotificationError::SendFailed {
+                retryable: true,
+                reason: e.to_string(),
+            })?;
 
         Ok(NotificationReceipt {
             channel: NotificationChannel::Email,
@@ -147,7 +173,9 @@ impl NotificationSender for SmtpEmailSender {
 /// Select the EMAIL sender from config. Never panics — on misconfig it falls
 /// back to the LOG sink (no external send) so the server still boots.
 pub fn build_email_sender() -> Arc<dyn NotificationSender> {
-    let provider = env("NOTIFICATION_EMAIL_PROVIDER", "LOG").trim().to_ascii_uppercase();
+    let provider = env("NOTIFICATION_EMAIL_PROVIDER", "LOG")
+        .trim()
+        .to_ascii_uppercase();
     match provider.as_str() {
         "SMTP" | "MAILPIT" => {
             let mailpit = provider == "MAILPIT";
@@ -218,7 +246,10 @@ mod tests {
         assert_eq!(build_sms_sender().provider(), NotificationProvider::Log);
         assert_eq!(build_sms_sender().channel(), NotificationChannel::Sms);
         std::env::set_var("NOTIFICATION_SMS_PROVIDER", "DUMMY");
-        assert_eq!(build_sms_sender().provider(), NotificationProvider::DummySms);
+        assert_eq!(
+            build_sms_sender().provider(),
+            NotificationProvider::DummySms
+        );
         std::env::remove_var("NOTIFICATION_SMS_PROVIDER");
     }
 
@@ -228,7 +259,10 @@ mod tests {
         assert_eq!(build_line_sender().provider(), NotificationProvider::Log);
         assert_eq!(build_line_sender().channel(), NotificationChannel::Line);
         std::env::set_var("NOTIFICATION_LINE_PROVIDER", "DUMMY");
-        assert_eq!(build_line_sender().provider(), NotificationProvider::DummyLine);
+        assert_eq!(
+            build_line_sender().provider(),
+            NotificationProvider::DummyLine
+        );
         std::env::remove_var("NOTIFICATION_LINE_PROVIDER");
     }
 
@@ -282,23 +316,49 @@ impl TwilioSmsSender {
 
 #[async_trait]
 impl NotificationSender for TwilioSmsSender {
-    fn channel(&self) -> NotificationChannel { NotificationChannel::Sms }
-    fn provider(&self) -> NotificationProvider { P::Twilio }
-    async fn send(&self, msg: &NotificationMessage) -> Result<NotificationReceipt, NotificationError> {
+    fn channel(&self) -> NotificationChannel {
+        NotificationChannel::Sms
+    }
+    fn provider(&self) -> NotificationProvider {
+        P::Twilio
+    }
+    async fn send(
+        &self,
+        msg: &NotificationMessage,
+    ) -> Result<NotificationReceipt, NotificationError> {
         let body = render_text(&msg.template);
-        let url = format!("https://api.twilio.com/2010-04-01/Accounts/{}/Messages.json", self.sid);
-        let params = [("From", self.from.as_str()), ("To", msg.to.as_str()), ("Body", body.as_str())];
-        let resp = self.http.post(&url)
+        let url = format!(
+            "https://api.twilio.com/2010-04-01/Accounts/{}/Messages.json",
+            self.sid
+        );
+        let params = [
+            ("From", self.from.as_str()),
+            ("To", msg.to.as_str()),
+            ("Body", body.as_str()),
+        ];
+        let resp = self
+            .http
+            .post(&url)
             .basic_auth(&self.sid, Some(&self.token))
             .form(&params)
             .send()
             .await
-            .map_err(|e| NotificationError::SendFailed { retryable: true, reason: e.to_string() })?;
+            .map_err(|e| NotificationError::SendFailed {
+                retryable: true,
+                reason: e.to_string(),
+            })?;
         let status = resp.status();
         if status.is_success() {
-            Ok(NotificationReceipt { channel: NotificationChannel::Sms, provider: P::Twilio, message_id: msg.correlation_id.clone() })
+            Ok(NotificationReceipt {
+                channel: NotificationChannel::Sms,
+                provider: P::Twilio,
+                message_id: msg.correlation_id.clone(),
+            })
         } else {
-            Err(NotificationError::SendFailed { retryable: status.is_server_error(), reason: format!("twilio status {}", status) })
+            Err(NotificationError::SendFailed {
+                retryable: status.is_server_error(),
+                reason: format!("twilio status {}", status),
+            })
         }
     }
 }
@@ -327,9 +387,16 @@ impl LineSender {
 
 #[async_trait]
 impl NotificationSender for LineSender {
-    fn channel(&self) -> NotificationChannel { NotificationChannel::Line }
-    fn provider(&self) -> NotificationProvider { P::LineMessagingApi }
-    async fn send(&self, msg: &NotificationMessage) -> Result<NotificationReceipt, NotificationError> {
+    fn channel(&self) -> NotificationChannel {
+        NotificationChannel::Line
+    }
+    fn provider(&self) -> NotificationProvider {
+        P::LineMessagingApi
+    }
+    async fn send(
+        &self,
+        msg: &NotificationMessage,
+    ) -> Result<NotificationReceipt, NotificationError> {
         let body = render_text(&msg.template);
         let resp = self.http.post("https://api.line.me/v2/bot/message/push")
             .bearer_auth(&self.token)
@@ -339,32 +406,62 @@ impl NotificationSender for LineSender {
             .map_err(|e| NotificationError::SendFailed { retryable: true, reason: e.to_string() })?;
         let status = resp.status();
         if status.is_success() {
-            Ok(NotificationReceipt { channel: NotificationChannel::Line, provider: P::LineMessagingApi, message_id: msg.correlation_id.clone() })
+            Ok(NotificationReceipt {
+                channel: NotificationChannel::Line,
+                provider: P::LineMessagingApi,
+                message_id: msg.correlation_id.clone(),
+            })
         } else {
-            Err(NotificationError::SendFailed { retryable: status.is_server_error(), reason: format!("line status {}", status) })
+            Err(NotificationError::SendFailed {
+                retryable: status.is_server_error(),
+                reason: format!("line status {}", status),
+            })
         }
     }
 }
 
 /// Select the SMS sender from `NOTIFICATION_SMS_PROVIDER` (TWILIO/DUMMY/SNS→LOG/else→LOG).
 pub fn build_sms_sender() -> Arc<dyn NotificationSender> {
-    match env("NOTIFICATION_SMS_PROVIDER", "LOG").trim().to_ascii_uppercase().as_str() {
+    match env("NOTIFICATION_SMS_PROVIDER", "LOG")
+        .trim()
+        .to_ascii_uppercase()
+        .as_str()
+    {
         "TWILIO" => match TwilioSmsSender::from_env() {
-            Ok(s) => { info!("SMS via Twilio"); Arc::new(s) }
-            Err(e) => { warn!(error=%e, "Twilio unavailable — LOG sink"); Arc::new(LogSender::new(NotificationChannel::Sms)) }
+            Ok(s) => {
+                info!("SMS via Twilio");
+                Arc::new(s)
+            }
+            Err(e) => {
+                warn!(error=%e, "Twilio unavailable — LOG sink");
+                Arc::new(LogSender::new(NotificationChannel::Sms))
+            }
         },
         "DUMMY" => Arc::new(DummySender::new(NotificationChannel::Sms)),
-        "SNS" => { warn!("NOTIFICATION_SMS_PROVIDER=SNS not yet implemented — using LOG sink"); Arc::new(LogSender::new(NotificationChannel::Sms)) }
+        "SNS" => {
+            warn!("NOTIFICATION_SMS_PROVIDER=SNS not yet implemented — using LOG sink");
+            Arc::new(LogSender::new(NotificationChannel::Sms))
+        }
         _ => Arc::new(LogSender::new(NotificationChannel::Sms)),
     }
 }
 
 /// Select the LINE sender from `NOTIFICATION_LINE_PROVIDER` (LINE_MESSAGING_API/DUMMY/else→LOG).
 pub fn build_line_sender() -> Arc<dyn NotificationSender> {
-    match env("NOTIFICATION_LINE_PROVIDER", "LOG").trim().to_ascii_uppercase().as_str() {
+    match env("NOTIFICATION_LINE_PROVIDER", "LOG")
+        .trim()
+        .to_ascii_uppercase()
+        .as_str()
+    {
         "LINE_MESSAGING_API" => match LineSender::from_env() {
-            Ok(s) => { info!("LINE via Messaging API"); Arc::new(s) }
-            Err(e) => { warn!(error=%e, "LINE unavailable — LOG sink"); Arc::new(LogSender::new(NotificationChannel::Line)) }
+            Ok(s) => {
+                info!("LINE via Messaging API");
+                Arc::new(s)
+            }
+            Err(e) => {
+                warn!(error=%e, "LINE unavailable — LOG sink");
+                Arc::new(LogSender::new(NotificationChannel::Line))
+            }
         },
         "DUMMY" => Arc::new(DummySender::new(NotificationChannel::Line)),
         _ => Arc::new(LogSender::new(NotificationChannel::Line)),

@@ -12,8 +12,14 @@ use tokio::net::TcpListener;
 
 #[tokio::main]
 async fn main() {
-    let port = std::env::args().nth(1).unwrap_or("7070".into()).parse::<u16>().unwrap();
-    let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await.unwrap();
+    let port = std::env::args()
+        .nth(1)
+        .unwrap_or("7070".into())
+        .parse::<u16>()
+        .unwrap();
+    let listener = TcpListener::bind(format!("0.0.0.0:{}", port))
+        .await
+        .unwrap();
     eprintln!("mock auth listening on 127.0.0.1:{}", port);
 
     loop {
@@ -25,7 +31,7 @@ async fn main() {
                         Response::builder()
                             .status(200)
                             .body(Full::new(Bytes::from(r#"{"status":"ok"}"#)))
-                            .unwrap()
+                            .unwrap(),
                     );
                 }
                 Ok::<_, hyper::Error>(
@@ -35,7 +41,7 @@ async fn main() {
                         .header("x-volta-email", "bench@example.com")
                         .header("x-volta-tenant-id", "tenant-001")
                         .body(Full::new(Bytes::new()))
-                        .unwrap()
+                        .unwrap(),
                 )
             });
             let _ = auto::Builder::new(TokioExecutor::new())
