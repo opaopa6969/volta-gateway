@@ -90,8 +90,60 @@ ssh prod 'ss -ltnp | grep :80'
 気になるなら drain 開始時に listener を閉じる（新規接続をカーネルが残りの
 プロセスへ回す）ようにすれば 503 も出なくなる。**未実装**。
 
-## 残り: BT-HA-1（Docker healthcheck）
+## BT-HA-1: hang したインスタンスを置き換える
 
-`/healthz` を叩く healthcheck を compose に入れて、**hang したインスタンスを
-Docker に置き換えさせる**話は未対応。crash は `restart: always` で戻るが、
-無応答は拾えない。`#74` に残す。
+`restart: always` は**プロセスが死んだとき**しか効かない。**応答しないが生きている
+（hang）状態は拾えない。** 実際 2026-08-06 に gateway が 10時間 502 を返し続けた間、
+コンテナは Running のままだった。
+
+### `--health-check`
+
+```bash
+volta-gateway --health-check 80    # 2xx なら exit 0、それ以外は exit 1
+```
+
+`http://127.0.0.1:<port>/healthz` を叩く。**curl / wget を使わない**のは、本番
+イメージが `debian:bookworm-slim` で**どちらも入っていない**ため。パッケージを
+足すとイメージが変わるので、既にマウントされているバイナリ自身で叩く。
+
+Host ヘッダには routing に載っていない値（`127.0.0.1`）を送る。routing にある
+Host を送ると backend へ proxy されてしまい、**gateway 自身ではなく backend の
+健康を見てしまう**（`dc4b098` で直した挙動そのもの）。
+
+### compose に入れる
+
+```yaml
+services:
+  gateway:
+    # ... 既存の設定 ...
+    healthcheck:
+      test: ["CMD", "./volta-gateway", "--health-check", "80"]
+      interval: 30s
+      timeout: 5s
+      # drain 中は /healthz が 503 を返す。ローリング更新の最中に殺されないよう
+      # retries を積む（30s × 3 = 90s 応答が無ければ unhealthy）。
+      retries: 3
+      start_period: 10s
+```
+
+`restart: always` と組み合わせると、unhealthy になったコンテナを Docker が
+再起動する。
+
+### 適用手順（prod）
+
+```bash
+# 1. 新バイナリを配置（--health-check を含むもの）
+scp target/release/volta-gateway prod:/home/opa/volta-gateway/volta-gateway
+
+# 2. compose に healthcheck を追記
+
+# 3. 反映（この時点では一度落ちる。reuse_port のローリングを使うなら上の手順で）
+ssh prod 'cd /home/opa/volta-gateway && docker compose up -d'
+
+# 4. 効いているか確認
+ssh prod 'docker inspect --format "{{.State.Health.Status}}" volta-gateway'
+```
+
+**3 で一度落ちる**点に注意。compose の設定変更はコンテナの再作成を伴うので、
+無停止でやりたければ先に `reuse_port` のローリング（上記）で新プロセスを立てて
+おくこと。
