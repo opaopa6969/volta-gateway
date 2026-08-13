@@ -1,6 +1,6 @@
 [package]
 name = "volta-auth-core"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 description = "Auth core library — session verification, JWT, policy engine, OIDC/MFA/Passkey flows"
 

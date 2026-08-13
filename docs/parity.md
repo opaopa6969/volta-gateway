@@ -17,6 +17,23 @@
 > (the `5/min` / `10/min` cells below are pre-cutover values). Passkey
 > `signCount = 0` authenticators are accepted (not treated as clones).
 
+> **Rust-only additions since the cutover (#92).** The table below compares the
+> Java surface; these have **no Java counterpart** — they are areas where Rust
+> went past parity. Listed here so the table is not read as "the full feature
+> set".
+>
+> | Feature | Where | Notes |
+> |---|---|---|
+> | **OpenID Provider** (discovery / authorize / token / userinfo / introspect / revoke / end_session) | `handlers/op.rs` | volta acts as an IdP for downstream apps. Mandatory PKCE S256, refresh rotation with reuse detection |
+> | **DPoP** (RFC 9449) | `auth-core::dpop` | Sender-constrained access tokens (`cnf.jkt`, `token_type: DPoP`) |
+> | **Token exchange** (RFC 8693) | `handlers/op.rs` | Down-scoped delegation only; widening → `invalid_scope` |
+> | **Device Authorization Grant** (RFC 8628) | `auth-core::flow/device_grant` | Cross-device / QR sign-in |
+> | **Front/back-channel logout** | `handlers/op.rs` | RP-registered `backchannel_logout_uri` / `frontchannel_logout_uri` (migration 031) |
+> | **Account linking** (multiple IdPs → one user) | `user_identities` (migration 032) | Auto-links only on a **verified** matching email (takeover guard) |
+> | **Risk engine + step-up** | `auth-core::risk`, migrations 030/033 | New-device / IP-change scoring → Allow / StepUp / Block. Fail-open |
+> | **Multi-account sessions** | `handlers/accounts.rs` | Google-style account chooser (`__volta_accounts`) |
+> | **Discoverable-credential passkey login** | `/auth/passkey/discover/{start,finish}` | Username-less login (see #96) |
+
 Legend:
 
 | Symbol | Meaning                                                           |

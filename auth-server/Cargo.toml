@@ -1,6 +1,6 @@
 [package]
 name = "volta-auth-server"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 description = "volta auth server — HTTP API layer for auth-core (100% Java volta-auth-proxy compatible)"
 
