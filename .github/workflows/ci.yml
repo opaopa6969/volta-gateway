@@ -35,3 +35,42 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+      # ── SPEC §12.8 の要件 (#83) ────────────────────────────────────
+      #
+      # 以前は build + test だけで、SPEC が要求する5項目が1つも無かった。
+      # うち3項目をここで入れる。残る2項目は前提作業が要るので別途:
+      #
+      #   - `cargo fmt --check`: 現状 118 ファイル / 1758 箇所に差分がある。
+      #     整形だけの巨大な diff になるので、単独の PR に分けてから有効化する。
+      #   - `cargo clippy -D warnings`: 現状 85 件の警告がある。潰してから
+      #     `-D warnings` に上げる。下の clippy ステップは**可視化のため**に
+      #     置いてあり、警告では落とさない。
+      #
+      # `--ignored` の Postgres 統合テストは DB サービスの用意が要るので別途。
+
+      - name: Clippy (visibility only — not gating yet, see #83)
+        continue-on-error: true
+        run: cargo clippy --workspace --all-targets
+
+      # 設定ファイルが壊れた状態で main に入るのを止める。
+      # 終了コードは SPEC §11.8 の 0-5（#95 で実装）。
+      - name: Validate sample configs
+        run: |
+          cargo build --release -p volta-gateway
+          for f in volta-gateway.minimal.yaml volta-gateway.yaml; do
+            echo "--- $f"
+            ./target/release/volta-gateway --validate "$f"
+          done
+
+      # SPEC / README / parity.md が書いているルート数と実装のずれを止める (#82 の再発防止)。
+      - name: Route count matches the docs
+        run: |
+          actual=$(grep -c '\.route(' auth-server/src/app.rs)
+          echo "actual routes: $actual"
+          documented=$(grep -oE '[0-9]+-route' spec/SPEC.md | head -1 | cut -d- -f1)
+          echo "documented in SPEC: $documented"
+          if [ "$actual" != "$documented" ]; then
+            echo "::error::route count drift: app.rs has $actual, SPEC says $documented. Update both (see #82)."
+            exit 1
+          fi
