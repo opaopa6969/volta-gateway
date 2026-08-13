@@ -75,6 +75,46 @@ pub async fn verify(
             _ => return redirect_to_login(),
         };
 
+        // AUTH-010 step 4: tenant suspension (#94)
+        //
+        // SPEC §5.5 はこのステップを規定しているが実装が無く、**テナントを停止しても
+        // 既存セッションはそのまま通り続けていた**（新規ログインだけが止まる）。
+        // 停止の意味が「今すぐ使わせない」なら、既に持っているセッションも止める
+        // 必要がある。
+        //
+        // SPEC は `suspended_at IS NOT NULL` と書いているが、実スキーマ
+        // (`002_create_tenants.sql`) にその列は無く `is_active BOOLEAN` が正。
+        // console の suspend/activate もこの列を反転する。SPEC 側を実態に合わせた。
+        //
+        // 403 を返すのは、ログインし直しても解決しない（テナントが停止している）
+        // ため。302 で /login に送ると無限ループになる。
+        // fail-open: テナントを引けなかった場合は通す。DB の一時障害で全ユーザーを
+        // 締め出すより、停止テナントが一時的に通る方がまだ軽い。
+        if let Ok(tenant_uuid) = session.tenant_id.parse::<uuid::Uuid>() {
+            match TenantStore::find_by_id(&state.db, tenant_uuid).await {
+                Ok(Some(tenant)) if !tenant.is_active => {
+                    tracing::warn!(
+                        tenant_id = %session.tenant_id,
+                        user_id = %session.user_id,
+                        "verify denied: tenant is suspended (is_active = false)"
+                    );
+                    let mut resp = StatusCode::FORBIDDEN.into_response();
+                    resp.headers_mut()
+                        .insert("x-volta-auth-reason", "tenant_suspended".parse().unwrap());
+                    no_cache_headers(&mut resp);
+                    return resp;
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        tenant_id = %session.tenant_id,
+                        error = %e,
+                        "tenant suspension check failed — allowing (fail-open)"
+                    );
+                }
+            }
+        }
+
         // P1.1 AUTH-010: MFA pending → send user to challenge (only if they are
         // not already navigating to the MFA page, to avoid redirect loops).
         // Only enforce when the user actually has an *active* second factor —

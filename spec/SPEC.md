@@ -704,7 +704,13 @@ resolve these checks in a specific order, independently of the Java side:
 3. **MFA-pending** — if the session requires MFA and `mfa_verified_at IS NULL`,
    redirect to `/mfa/challenge` (302).
 4. **Tenant suspension** — if the user's current tenant has
-   `suspended_at IS NOT NULL`, return 403.
+   **`is_active = false`**, return 403 with `X-Volta-Auth-Reason:
+   tenant_suspended`. (#94: implemented in `handlers/auth.rs`. The column is
+   `is_active BOOLEAN` — `002_create_tenants.sql` — not `suspended_at`; this
+   SPEC said the latter, which does not exist. `403` rather than a redirect
+   because logging in again cannot fix a suspended tenant. **Fail-open**: if the
+   tenant row cannot be read, the request is allowed — a DB hiccup should not
+   lock every user out.)
 5. **Success** — emit `X-Volta-{User-Id, Tenant-Id, Roles, Scopes}` headers.
 
 ### 5.6 Outbox-pattern webhooks
