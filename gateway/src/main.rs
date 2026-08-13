@@ -413,8 +413,25 @@ async fn main() {
                         return Ok::<_, hyper::Error>(lifecycle::healthz_response(status));
                     }
 
-                    // PROD-2/3: Admin API (localhost only)
-                    if req.uri().path().starts_with("/admin/") {
+                    // PROD-2/3: Admin API (localhost only)。ただしルーティング表に
+                    // 載っている Host 宛の /admin/* はバックエンド自身の管理ページ
+                    // (例: auth.unlaxer.org/admin/tenants) なので横取りせず proxy に
+                    // 落とす。gateway 自身の管理 API は未ルート Host(localhost/生IP)
+                    // のみが対象で、従来どおり loopback 限定。
+                    let admin_for_gateway = req.uri().path().starts_with("/admin/") && {
+                        let host = req.headers()
+                            .get(hyper::header::HOST)
+                            .and_then(|v| v.to_str().ok())
+                            .map(proxy::normalize_host)
+                            .unwrap_or_default();
+                        let hot = hot_admin.load();
+                        let host_routed = hot.routing.contains_key(&host)
+                            || host.splitn(2, '.').nth(1)
+                                .map(|d| hot.routing.contains_key(&format!("*.{d}")))
+                                .unwrap_or(false);
+                        lifecycle::admin_is_gateway_admin(host_routed)
+                    };
+                    if admin_for_gateway {
                         if !lifecycle::admin_loopback_allowed(addr.ip().is_loopback()) {
                             return Ok::<_, hyper::Error>(lifecycle::admin_loopback_denied_response());
                         }

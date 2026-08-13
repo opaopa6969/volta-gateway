@@ -90,12 +90,11 @@ stateDiagram-v2
 > [`gateway/src/proxy.rs`](gateway/src/proxy.rs). So code and diagram are **not**
 > guaranteed to stay in sync.
 >
-> **Known issue (status mismatch).** IP-allowlist rejection is raised inside
-> `RequestValidator` as `FlowError("DENIED")` (semantically 403), but it fires
-> during the synchronous `start_flow` auto-chain, and `handle()` maps *any*
-> `start_flow` error to `400 Bad Request`. An allowlist rejection therefore
-> currently returns **400, not 403**. (The 403 edge in the chart is the separate
-> *auth-check* denial — `AuthResult::Denied` — which is unaffected.)
+> **IP-allowlist rejection.** `RequestValidator` raises a `FlowError("DENIED")`
+> and the flow routes it to the `Denied` terminal. The gateway therefore returns
+> **403 Forbidden** for a client outside the route's allowlist. (The 403 edge in
+> the chart is the separate *auth-check* denial — `AuthResult::Denied` — which
+> is also 403.)
 
 Every state transition is logged. You can see **exactly** where time was spent:
 
