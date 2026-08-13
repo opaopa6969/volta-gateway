@@ -1,7 +1,7 @@
-use async_trait::async_trait;
-use uuid::Uuid;
 use crate::error::AuthError;
 use crate::record::InvitationRecord;
+use async_trait::async_trait;
+use uuid::Uuid;
 
 /// Invitation data access trait.
 #[async_trait]

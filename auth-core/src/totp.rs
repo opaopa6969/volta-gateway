@@ -55,7 +55,9 @@ mod tests {
     fn generate_secret_is_base32() {
         let secret = generate_secret();
         assert!(secret.len() >= 16);
-        assert!(secret.chars().all(|c| c.is_ascii_uppercase() || ('2'..='7').contains(&c)));
+        assert!(secret
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || ('2'..='7').contains(&c)));
     }
 
     #[test]
@@ -130,8 +132,10 @@ mod tests {
             .unwrap()
             .as_secs();
         let time = now / 30;
-        let code_a = totp_lite::totp_custom::<totp_lite::Sha1>(30, 6, b"secret-AAAAAAAAAAAAA", time);
-        let code_b = totp_lite::totp_custom::<totp_lite::Sha1>(30, 6, b"secret-BBBBBBBBBBBBB", time);
+        let code_a =
+            totp_lite::totp_custom::<totp_lite::Sha1>(30, 6, b"secret-AAAAAAAAAAAAA", time);
+        let code_b =
+            totp_lite::totp_custom::<totp_lite::Sha1>(30, 6, b"secret-BBBBBBBBBBBBB", time);
         // Codes are different with overwhelming probability (1/10^6 chance of collision).
         // Only assert that secret-A code is rejected by secret-B verifier.
         assert!(!verify_totp(b"secret-BBBBBBBBBBBBB", &code_a, 30));
@@ -151,6 +155,8 @@ mod tests {
     #[test]
     fn base32_encode_only_valid_chars() {
         let encoded = base32_encode(b"Hello, World!");
-        assert!(encoded.chars().all(|c| c.is_ascii_uppercase() || ('2'..='7').contains(&c)));
+        assert!(encoded
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || ('2'..='7').contains(&c)));
     }
 }

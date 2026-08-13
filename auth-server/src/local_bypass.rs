@@ -21,8 +21,7 @@ use std::net::IpAddr;
 use axum::http::HeaderMap;
 use ipnet::IpNet;
 
-const DEFAULT_CIDRS: &str =
-    "192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,100.64.0.0/10,127.0.0.1/32";
+const DEFAULT_CIDRS: &str = "192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,100.64.0.0/10,127.0.0.1/32";
 
 #[derive(Clone, Debug, Default)]
 pub struct LocalNetworkBypass {

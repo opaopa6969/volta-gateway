@@ -19,7 +19,10 @@ async fn setup() -> (
     let port = container.get_host_port_ipv4(5432).await.unwrap();
     let url = format!("postgres://postgres:postgres@127.0.0.1:{}/postgres", port);
     let pool = PgPool::connect(&url).await.unwrap();
-    sqlx::raw_sql("CREATE EXTENSION IF NOT EXISTS pgcrypto;").execute(&pool).await.unwrap();
+    sqlx::raw_sql("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
+        .execute(&pool)
+        .await
+        .unwrap();
     for m in [
         include_str!("../migrations/006_create_auth_flows.sql"),
         include_str!("../migrations/007_create_auth_flow_transitions.sql"),
@@ -41,11 +44,18 @@ async fn happy_path_start_verify_completes_and_enqueues_dummy_notification() {
         .await
         .unwrap();
     assert_eq!(started.outcome.state, "EmailVerificationPending");
-    assert_eq!(started.outcome.next_actions, vec!["VERIFY_EMAIL", "RESEND_VERIFICATION"]);
+    assert_eq!(
+        started.outcome.next_actions,
+        vec!["VERIFY_EMAIL", "RESEND_VERIFICATION"]
+    );
     let raw = started.dev_token.expect("dev token available in test");
 
     let jobs = store.claim_pending(10).await.unwrap();
-    assert_eq!(jobs.len(), 1, "exactly one verification notification enqueued");
+    assert_eq!(
+        jobs.len(),
+        1,
+        "exactly one verification notification enqueued"
+    );
     assert_eq!(jobs[0].channel, "DUMMY", "no external channel used");
     assert_eq!(jobs[0].template_id, "email-verification");
     assert_eq!(jobs[0].recipient, "alice@example.com");
@@ -69,17 +79,27 @@ async fn verification_disabled_skips_token_and_notification() {
         .await
         .unwrap();
     assert_eq!(started.outcome.state, "EmailVerified");
-    assert!(started.dev_token.is_none(), "no token when verification disabled");
-    assert!(store.claim_pending(10).await.unwrap().is_empty(), "no notification enqueued");
+    assert!(
+        started.dev_token.is_none(),
+        "no token when verification disabled"
+    );
+    assert!(
+        store.claim_pending(10).await.unwrap().is_empty(),
+        "no notification enqueued"
+    );
 }
 
 #[tokio::test]
 #[ignore]
 async fn wrong_token_is_rejected() {
     let (store, _c) = setup().await;
-    runtime::start_registration(&store, "carol@example.com", true, "DUMMY").await.unwrap();
+    runtime::start_registration(&store, "carol@example.com", true, "DUMMY")
+        .await
+        .unwrap();
     assert!(
-        runtime::verify_email(&store, "deadbeef-not-a-real-token").await.is_err(),
+        runtime::verify_email(&store, "deadbeef-not-a-real-token")
+            .await
+            .is_err(),
         "unknown token must be rejected"
     );
 }
@@ -88,12 +108,26 @@ async fn wrong_token_is_rejected() {
 #[ignore]
 async fn resend_is_throttled_then_allowed() {
     let (store, _c) = setup().await;
-    runtime::start_registration(&store, "dave@example.com", true, "DUMMY").await.unwrap();
+    runtime::start_registration(&store, "dave@example.com", true, "DUMMY")
+        .await
+        .unwrap();
 
     // Within the 60s window → throttled.
-    assert!(!runtime::resend_verification(&store, "dave@example.com", "DUMMY", 60).await.unwrap());
+    assert!(
+        !runtime::resend_verification(&store, "dave@example.com", "DUMMY", 60)
+            .await
+            .unwrap()
+    );
     // 0s interval → allowed, and a fresh job is enqueued.
-    assert!(runtime::resend_verification(&store, "dave@example.com", "DUMMY", 0).await.unwrap());
+    assert!(
+        runtime::resend_verification(&store, "dave@example.com", "DUMMY", 0)
+            .await
+            .unwrap()
+    );
     // Unknown email → nothing pending → not allowed.
-    assert!(!runtime::resend_verification(&store, "nobody@example.com", "DUMMY", 0).await.unwrap());
+    assert!(
+        !runtime::resend_verification(&store, "nobody@example.com", "DUMMY", 0)
+            .await
+            .unwrap()
+    );
 }

@@ -77,20 +77,35 @@ impl Metrics {
     pub fn record_status(&self, status: u16) {
         self.requests_total.fetch_add(1, Ordering::Relaxed);
         match status {
-            200..=299 => { self.requests_200.fetch_add(1, Ordering::Relaxed); }
-            302 => { self.requests_302.fetch_add(1, Ordering::Relaxed); }
-            400 => { self.requests_400.fetch_add(1, Ordering::Relaxed); }
-            403 => { self.requests_403.fetch_add(1, Ordering::Relaxed); }
-            429 => { self.requests_429.fetch_add(1, Ordering::Relaxed); }
-            502 => { self.requests_502.fetch_add(1, Ordering::Relaxed); }
-            504 => { self.requests_504.fetch_add(1, Ordering::Relaxed); }
+            200..=299 => {
+                self.requests_200.fetch_add(1, Ordering::Relaxed);
+            }
+            302 => {
+                self.requests_302.fetch_add(1, Ordering::Relaxed);
+            }
+            400 => {
+                self.requests_400.fetch_add(1, Ordering::Relaxed);
+            }
+            403 => {
+                self.requests_403.fetch_add(1, Ordering::Relaxed);
+            }
+            429 => {
+                self.requests_429.fetch_add(1, Ordering::Relaxed);
+            }
+            502 => {
+                self.requests_502.fetch_add(1, Ordering::Relaxed);
+            }
+            504 => {
+                self.requests_504.fetch_add(1, Ordering::Relaxed);
+            }
             _ => {}
         }
     }
 
     pub fn record_duration(&self, start: Instant) {
         let us = start.elapsed().as_micros() as u64;
-        self.request_duration_us_sum.fetch_add(us, Ordering::Relaxed);
+        self.request_duration_us_sum
+            .fetch_add(us, Ordering::Relaxed);
 
         // PROD-5: Histogram bucket
         let ms = us / 1000;
@@ -110,7 +125,11 @@ impl Metrics {
     pub fn render(&self) -> String {
         let total = self.requests_total.load(Ordering::Relaxed);
         let dur_sum = self.request_duration_us_sum.load(Ordering::Relaxed);
-        let avg_ms = if total > 0 { dur_sum as f64 / total as f64 / 1000.0 } else { 0.0 };
+        let avg_ms = if total > 0 {
+            dur_sum as f64 / total as f64 / 1000.0
+        } else {
+            0.0
+        };
 
         // Histogram bucket loads
         let b1 = self.latency_bucket_1ms.load(Ordering::Relaxed);

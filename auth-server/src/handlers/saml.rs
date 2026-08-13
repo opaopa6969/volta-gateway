@@ -25,22 +25,32 @@ pub async fn saml_login(
     State(s): State<AppState>,
     Query(q): Query<SamlLoginQuery>,
 ) -> Result<Response, ApiError> {
-    let tenant_id_str = q.tenant_id
+    let tenant_id_str = q
+        .tenant_id
         .ok_or_else(|| ApiError::bad_request("BAD_REQUEST", "tenant_id is required"))?;
-    let tenant_id: Uuid = tenant_id_str.parse()
+    let tenant_id: Uuid = tenant_id_str
+        .parse()
         .map_err(|_| ApiError::bad_request("BAD_REQUEST", "invalid tenant_id"))?;
 
     // Load SAML IdP config
-    let idp = IdpConfigStore::find(&s.db, tenant_id, "SAML").await
+    let idp = IdpConfigStore::find(&s.db, tenant_id, "SAML")
+        .await
         .map_err(|e| ApiError::internal(&e.to_string()))?
         .ok_or_else(|| ApiError::bad_request("IDP_NOT_FOUND", "SAML IdP 設定が見つかりません。"))?;
 
-    let entry = idp.metadata_url.as_deref()
+    let entry = idp
+        .metadata_url
+        .as_deref()
         .or(idp.issuer.as_deref())
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| ApiError::bad_request("IDP_INVALID", "SAML エントリーポイントが未設定です。"))?;
+        .ok_or_else(|| {
+            ApiError::bad_request("IDP_INVALID", "SAML エントリーポイントが未設定です。")
+        })?;
 
-    let request_id = format!("_{}", Uuid::new_v4().to_string().replace('-', "")[..16].to_string());
+    let request_id = format!(
+        "_{}",
+        Uuid::new_v4().to_string().replace('-', "")[..16].to_string()
+    );
     let relay = saml::encode_relay_state(&saml::RelayState {
         tenant_id: Some(tenant_id_str),
         return_to: q.return_to,
@@ -48,7 +58,12 @@ pub async fn saml_login(
     });
 
     let separator = if entry.contains('?') { "&" } else { "?" };
-    let redirect_url = format!("{}{}RelayState={}", entry, separator, urlencoding::encode(&relay));
+    let redirect_url = format!(
+        "{}{}RelayState={}",
+        entry,
+        separator,
+        urlencoding::encode(&relay)
+    );
 
     let mut resp = Redirect::to(&redirect_url).into_response();
     no_cache_headers(&mut resp);
@@ -63,13 +78,16 @@ pub async fn saml_callback(
 ) -> Result<Response, ApiError> {
     let relay = saml::decode_relay_state(form.relay_state.as_deref());
 
-    let tenant_id_str = relay.tenant_id
-        .ok_or_else(|| ApiError::bad_request("BAD_REQUEST", "tenant_id is required in RelayState"))?;
-    let tenant_id: Uuid = tenant_id_str.parse()
+    let tenant_id_str = relay.tenant_id.ok_or_else(|| {
+        ApiError::bad_request("BAD_REQUEST", "tenant_id is required in RelayState")
+    })?;
+    let tenant_id: Uuid = tenant_id_str
+        .parse()
         .map_err(|_| ApiError::bad_request("BAD_REQUEST", "invalid tenant_id"))?;
 
     // Load SAML IdP config
-    let idp = IdpConfigStore::find(&s.db, tenant_id, "SAML").await
+    let idp = IdpConfigStore::find(&s.db, tenant_id, "SAML")
+        .await
         .map_err(|e| ApiError::internal(&e.to_string()))?
         .ok_or_else(|| ApiError::bad_request("IDP_NOT_FOUND", "SAML IdP 設定が見つかりません。"))?;
 
@@ -93,57 +111,83 @@ pub async fn saml_callback(
     )?;
 
     // Upsert user
-    let provider_sub = format!("saml:{}", sha256_hex(&format!(
-        "{}|{}", identity.issuer, identity.email.to_lowercase()
-    )));
-    let user = UserStore::upsert(&s.db, volta_auth_core::record::UserRecord {
-        id: Uuid::new_v4(),
-        email: identity.email.clone(),
-        display_name: Some(identity.display_name.clone()),
-        google_sub: Some(provider_sub),
-        created_at: chrono::Utc::now(),
-        is_active: true,
-        locale: None,
-        deleted_at: None,
-    }).await.map_err(|e| ApiError::internal(&e.to_string()))?;
+    let provider_sub = format!(
+        "saml:{}",
+        sha256_hex(&format!(
+            "{}|{}",
+            identity.issuer,
+            identity.email.to_lowercase()
+        ))
+    );
+    let user = UserStore::upsert(
+        &s.db,
+        volta_auth_core::record::UserRecord {
+            id: Uuid::new_v4(),
+            email: identity.email.clone(),
+            display_name: Some(identity.display_name.clone()),
+            google_sub: Some(provider_sub),
+            created_at: chrono::Utc::now(),
+            is_active: true,
+            locale: None,
+            deleted_at: None,
+        },
+    )
+    .await
+    .map_err(|e| ApiError::internal(&e.to_string()))?;
 
     // Verify tenant membership
-    let tenant = TenantStore::find_by_id(&s.db, tenant_id).await
+    let tenant = TenantStore::find_by_id(&s.db, tenant_id)
+        .await
         .map_err(|e| ApiError::internal(&e.to_string()))?
         .ok_or_else(|| ApiError::bad_request("TENANT_NOT_FOUND", "テナントが見つかりません。"))?;
 
-    let membership = MembershipStore::find(&s.db, user.id, tenant.id).await
+    let membership = MembershipStore::find(&s.db, user.id, tenant.id)
+        .await
         .map_err(|e| ApiError::internal(&e.to_string()))?
-        .ok_or_else(|| ApiError::forbidden("TENANT_ACCESS_DENIED", "Tenant membership not found"))?;
+        .ok_or_else(|| {
+            ApiError::forbidden("TENANT_ACCESS_DENIED", "Tenant membership not found")
+        })?;
 
     if !membership.is_active {
-        return Err(ApiError::forbidden("TENANT_ACCESS_DENIED", "Tenant membership not active"));
+        return Err(ApiError::forbidden(
+            "TENANT_ACCESS_DENIED",
+            "Tenant membership not active",
+        ));
     }
 
     // Create session
     let session_id = Uuid::new_v4().to_string();
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
 
-    SessionStore::create(&s.db, volta_auth_core::record::SessionRecord {
-        session_id: session_id.clone(),
-        user_id: user.id.to_string(),
-        tenant_id: tenant.id.to_string(),
-        return_to: relay.return_to.clone(),
-        created_at: now,
-        last_active_at: now,
-        expires_at: now + s.session_ttl_secs,
-        invalidated_at: None,
-        mfa_verified_at: None,
-        ip_address: None,
-        user_agent: None,
-        csrf_token: None,
-        email: Some(identity.email),
-        tenant_slug: Some(tenant.slug),
-        roles: vec![membership.role],
-        display_name: Some(identity.display_name),
-    }).await.map_err(|e| ApiError::internal(&e.to_string()))?;
+    SessionStore::create(
+        &s.db,
+        volta_auth_core::record::SessionRecord {
+            session_id: session_id.clone(),
+            user_id: user.id.to_string(),
+            tenant_id: tenant.id.to_string(),
+            return_to: relay.return_to.clone(),
+            created_at: now,
+            last_active_at: now,
+            expires_at: now + s.session_ttl_secs,
+            invalidated_at: None,
+            mfa_verified_at: None,
+            ip_address: None,
+            user_agent: None,
+            csrf_token: None,
+            email: Some(identity.email),
+            tenant_slug: Some(tenant.slug),
+            roles: vec![membership.role],
+            display_name: Some(identity.display_name),
+        },
+    )
+    .await
+    .map_err(|e| ApiError::internal(&e.to_string()))?;
 
-    let redirect_to = relay.return_to
+    let redirect_to = relay
+        .return_to
         .filter(|r| !r.is_empty())
         .unwrap_or_else(|| "/select-tenant".to_string());
 
@@ -169,6 +213,6 @@ pub struct SamlCallbackForm {
 }
 
 fn sha256_hex(input: &str) -> String {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
     hex::encode(Sha256::digest(input.as_bytes()))
 }

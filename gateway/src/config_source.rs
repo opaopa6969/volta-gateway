@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
 use crate::config::RouteEntry;
 
@@ -45,7 +45,9 @@ pub struct ConfigSourceEntry {
     pub docker_socket: Option<String>,
 }
 
-fn default_poll_interval() -> u64 { 30 }
+fn default_poll_interval() -> u64 {
+    30
+}
 
 // ─── #16: services.json Source ──────────────────────────
 
@@ -199,7 +201,11 @@ impl ServicesJsonSource {
 
     /// Convert one console service into a route.
     /// `Ok(None)` = deliberately skipped (disabled); `Err` = could not convert.
-    fn console_to_route(&self, key: &str, svc: &ConsoleService) -> Result<Option<RouteEntry>, String> {
+    fn console_to_route(
+        &self,
+        key: &str,
+        svc: &ConsoleService,
+    ) -> Result<Option<RouteEntry>, String> {
         let cf = svc.cloudflare.as_ref();
 
         // cloudflare.enabled == false → not exposed through the gateway.
@@ -212,7 +218,9 @@ impl ServicesJsonSource {
         }
 
         // prod environment: required for a backend.
-        let env = svc.environments.get(&self.prod_env)
+        let env = svc
+            .environments
+            .get(&self.prod_env)
             .ok_or_else(|| format!("no '{}' environment", self.prod_env))?;
 
         if env.enabled == Some(false) {
@@ -221,12 +229,15 @@ impl ServicesJsonSource {
             return Ok(None);
         }
 
-        let port = env.port.ok_or_else(|| "no port in environment".to_string())?;
+        let port = env
+            .port
+            .ok_or_else(|| "no port in environment".to_string())?;
 
         // Route host: cloudflare.hostnames[env] > cloudflare.hostname.
         let host = cf
             .and_then(|cf| {
-                cf.hostnames.as_ref()
+                cf.hostnames
+                    .as_ref()
                     .and_then(|m| m.get(&self.prod_env).cloned())
                     .or_else(|| cf.hostname.clone())
             })
@@ -239,24 +250,28 @@ impl ServicesJsonSource {
         // public: top-level `public` OR access.visibility == "public" OR access.public.
         let public = svc.public == Some(true)
             || svc.access.as_ref().is_some_and(|a| {
-                a.public == Some(true)
-                    || a.visibility.as_deref() == Some("public")
+                a.public == Some(true) || a.visibility.as_deref() == Some("public")
             });
 
         // app_id (X-Volta-App-Id for ForwardAuth): set the service key when the
         // service is authenticated and not public.
-        let authenticated = cf.is_some_and(|cf| {
-            cf.authentication.is_some() || cf.auth_required == Some(true)
-        });
+        let authenticated =
+            cf.is_some_and(|cf| cf.authentication.is_some() || cf.auth_required == Some(true));
         let app_id = if authenticated && !public {
             Some(key.to_string())
         } else {
             None
         };
 
-        let bypass_paths = svc.auth_bypass_paths.clone().unwrap_or_default()
+        let bypass_paths = svc
+            .auth_bypass_paths
+            .clone()
+            .unwrap_or_default()
             .into_iter()
-            .map(|p| crate::config::BypassPath { prefix: p, backend: None })
+            .map(|p| crate::config::BypassPath {
+                prefix: p,
+                backend: None,
+            })
             .collect();
 
         Ok(Some(RouteEntry {
@@ -296,9 +311,14 @@ impl ServicesJsonSource {
             let port = svc.port.unwrap_or(3000);
             let backend = format!("http://{}:{}", self.prod_host, port);
 
-            let bypass_paths = svc.auth_bypass_paths.unwrap_or_default()
+            let bypass_paths = svc
+                .auth_bypass_paths
+                .unwrap_or_default()
                 .into_iter()
-                .map(|p| crate::config::BypassPath { prefix: p, backend: None })
+                .map(|p| crate::config::BypassPath {
+                    prefix: p,
+                    backend: None,
+                })
                 .collect();
 
             routes.push(RouteEntry {
@@ -329,7 +349,9 @@ impl ServicesJsonSource {
 
 #[async_trait::async_trait]
 impl ConfigSource for ServicesJsonSource {
-    fn name(&self) -> &str { "services-json" }
+    fn name(&self) -> &str {
+        "services-json"
+    }
 
     fn load(&self) -> Result<Vec<RouteEntry>, String> {
         let content = std::fs::read_to_string(&self.path)
@@ -342,8 +364,14 @@ impl ConfigSource for ServicesJsonSource {
         // file-watching is disabled.
         match self.load() {
             Ok(routes) => {
-                info!(source = "services-json", routes = routes.len(), "initial load");
-                if tx.send(routes).await.is_err() { return; }
+                info!(
+                    source = "services-json",
+                    routes = routes.len(),
+                    "initial load"
+                );
+                if tx.send(routes).await.is_err() {
+                    return;
+                }
             }
             Err(e) => warn!(source = "services-json", error = %e, "initial load failed"),
         }
@@ -358,7 +386,8 @@ impl ConfigSource for ServicesJsonSource {
         let path = self.path.clone();
         let prod_host = self.prod_host.clone();
         let prod_env = self.prod_env.clone();
-        let mut last_modified = std::fs::metadata(&path).ok()
+        let mut last_modified = std::fs::metadata(&path)
+            .ok()
             .and_then(|m| m.modified().ok());
 
         info!(source = "services-json", path = %path, "watching for changes (poll)");
@@ -366,7 +395,8 @@ impl ConfigSource for ServicesJsonSource {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-            let current = std::fs::metadata(&path).ok()
+            let current = std::fs::metadata(&path)
+                .ok()
                 .and_then(|m| m.modified().ok());
 
             if current != last_modified {
@@ -374,8 +404,14 @@ impl ConfigSource for ServicesJsonSource {
                 let source = ServicesJsonSource::with_env(&path, &prod_host, &prod_env);
                 match source.load() {
                     Ok(routes) => {
-                        info!(source = "services-json", routes = routes.len(), "config changed");
-                        if tx.send(routes).await.is_err() { break; }
+                        info!(
+                            source = "services-json",
+                            routes = routes.len(),
+                            "config changed"
+                        );
+                        if tx.send(routes).await.is_err() {
+                            break;
+                        }
                     }
                     Err(e) => warn!(source = "services-json", error = %e, "reload failed"),
                 }
@@ -392,29 +428,43 @@ pub struct DockerLabelsSource {
 
 impl DockerLabelsSource {
     pub fn new(socket: &str) -> Self {
-        Self { socket: socket.to_string() }
+        Self {
+            socket: socket.to_string(),
+        }
     }
 
     /// Parse Docker container labels into RouteEntry.
     /// Expected labels: volta.host, volta.port, volta.public, etc.
-    pub fn parse_labels(labels: &HashMap<String, String>, container_ip: &str) -> Option<RouteEntry> {
+    pub fn parse_labels(
+        labels: &HashMap<String, String>,
+        container_ip: &str,
+    ) -> Option<RouteEntry> {
         let host = labels.get("volta.host")?;
-        let port = labels.get("volta.port")
+        let port = labels
+            .get("volta.port")
             .and_then(|p| p.parse::<u16>().ok())
             .unwrap_or(3000);
 
-        let public = labels.get("volta.public")
+        let public = labels
+            .get("volta.public")
             .map(|v| v == "true")
             .unwrap_or(false);
 
-        let cors: Vec<String> = labels.get("volta.cors_origins")
+        let cors: Vec<String> = labels
+            .get("volta.cors_origins")
             .map(|s| s.split(',').map(|s| s.trim().to_string()).collect())
             .unwrap_or_default();
 
-        let bypass: Vec<crate::config::BypassPath> = labels.get("volta.auth_bypass")
-            .map(|s| s.split(',').map(|p| crate::config::BypassPath {
-                prefix: p.trim().to_string(), backend: None,
-            }).collect())
+        let bypass: Vec<crate::config::BypassPath> = labels
+            .get("volta.auth_bypass")
+            .map(|s| {
+                s.split(',')
+                    .map(|p| crate::config::BypassPath {
+                        prefix: p.trim().to_string(),
+                        backend: None,
+                    })
+                    .collect()
+            })
             .unwrap_or_default();
 
         Some(RouteEntry {
@@ -443,7 +493,9 @@ impl DockerLabelsSource {
 
 #[async_trait::async_trait]
 impl ConfigSource for DockerLabelsSource {
-    fn name(&self) -> &str { "docker-labels" }
+    fn name(&self) -> &str {
+        "docker-labels"
+    }
 
     fn load(&self) -> Result<Vec<RouteEntry>, String> {
         // Synchronous initial load — use tokio block_on for Docker API call.
@@ -454,8 +506,12 @@ impl ConfigSource for DockerLabelsSource {
             Ok(handle) => {
                 // We're already in a tokio context — spawn blocking to avoid nested runtime.
                 let routes = std::thread::scope(|_| {
-                    let docker = bollard::Docker::connect_with_socket(&socket, 120, bollard::API_DEFAULT_VERSION)
-                        .map_err(|e| format!("docker connect: {}", e))?;
+                    let docker = bollard::Docker::connect_with_socket(
+                        &socket,
+                        120,
+                        bollard::API_DEFAULT_VERSION,
+                    )
+                    .map_err(|e| format!("docker connect: {}", e))?;
                     handle.block_on(Self::load_from_docker(&docker))
                 });
                 routes
@@ -471,7 +527,11 @@ impl ConfigSource for DockerLabelsSource {
         use bollard::system::EventsOptions;
         use futures::StreamExt;
 
-        let docker = match bollard::Docker::connect_with_socket(&self.socket, 120, bollard::API_DEFAULT_VERSION) {
+        let docker = match bollard::Docker::connect_with_socket(
+            &self.socket,
+            120,
+            bollard::API_DEFAULT_VERSION,
+        ) {
             Ok(d) => d,
             Err(e) => {
                 error!(source = "docker-labels", error = %e, "failed to connect to Docker");
@@ -485,7 +545,10 @@ impl ConfigSource for DockerLabelsSource {
         let mut filters = HashMap::new();
         filters.insert("type", vec!["container"]);
         filters.insert("event", vec!["start", "stop", "die"]);
-        let options = EventsOptions { filters, ..Default::default() };
+        let options = EventsOptions {
+            filters,
+            ..Default::default()
+        };
 
         let mut stream = docker.events(Some(options));
 
@@ -499,7 +562,9 @@ impl ConfigSource for DockerLabelsSource {
                     );
                     match Self::load_from_docker(&docker).await {
                         Ok(routes) => {
-                            if tx.send(routes).await.is_err() { break; }
+                            if tx.send(routes).await.is_err() {
+                                break;
+                            }
                         }
                         Err(e) => warn!(source = "docker-labels", error = %e, "reload failed"),
                     }
@@ -523,9 +588,14 @@ impl DockerLabelsSource {
         filters.insert("status", vec!["running"]);
         filters.insert("label", vec!["volta.host"]);
 
-        let options = ListContainersOptions { filters, ..Default::default() };
+        let options = ListContainersOptions {
+            filters,
+            ..Default::default()
+        };
 
-        let containers = docker.list_containers(Some(options)).await
+        let containers = docker
+            .list_containers(Some(options))
+            .await
             .map_err(|e| format!("docker list: {}", e))?;
 
         let mut routes = Vec::new();
@@ -536,7 +606,9 @@ impl DockerLabelsSource {
             };
 
             // Get container IP from first network, or fall back to container name
-            let ip = c.network_settings.as_ref()
+            let ip = c
+                .network_settings
+                .as_ref()
                 .and_then(|ns| ns.networks.as_ref())
                 .and_then(|nets| nets.values().next())
                 .and_then(|net| net.ip_address.as_deref())
@@ -553,7 +625,11 @@ impl DockerLabelsSource {
             }
         }
 
-        info!(source = "docker-labels", count = routes.len(), "loaded routes from Docker");
+        info!(
+            source = "docker-labels",
+            count = routes.len(),
+            "loaded routes from Docker"
+        );
         Ok(routes)
     }
 }
@@ -567,13 +643,18 @@ pub struct HttpPollingSource {
 
 impl HttpPollingSource {
     pub fn new(url: &str, interval_secs: u64) -> Self {
-        Self { url: url.to_string(), interval_secs }
+        Self {
+            url: url.to_string(),
+            interval_secs,
+        }
     }
 }
 
 #[async_trait::async_trait]
 impl ConfigSource for HttpPollingSource {
-    fn name(&self) -> &str { "http-polling" }
+    fn name(&self) -> &str {
+        "http-polling"
+    }
 
     fn load(&self) -> Result<Vec<RouteEntry>, String> {
         // Sync HTTP fetch for initial load
@@ -584,9 +665,8 @@ impl ConfigSource for HttpPollingSource {
 
     async fn watch(&self, tx: mpsc::Sender<Vec<RouteEntry>>) {
         let client: hyper_util::client::legacy::Client<_, http_body_util::Empty<bytes::Bytes>> =
-            hyper_util::client::legacy::Client::builder(
-                hyper_util::rt::TokioExecutor::new()
-            ).build_http();
+            hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+                .build_http();
 
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(self.interval_secs)).await;
@@ -596,13 +676,15 @@ impl ConfigSource for HttpPollingSource {
                 .body(http_body_util::Empty::<bytes::Bytes>::new())
             {
                 Ok(r) => r,
-                Err(e) => { warn!(source = "http", error = %e, "build request failed"); continue; }
+                Err(e) => {
+                    warn!(source = "http", error = %e, "build request failed");
+                    continue;
+                }
             };
 
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                client.request(req),
-            ).await {
+            match tokio::time::timeout(std::time::Duration::from_secs(10), client.request(req))
+                .await
+            {
                 Ok(Ok(resp)) if resp.status().is_success() => {
                     match http_body_util::BodyExt::collect(resp.into_body()).await {
                         Ok(body) => {
@@ -612,7 +694,9 @@ impl ConfigSource for HttpPollingSource {
                             match source.parse_services(&json_str) {
                                 Ok(routes) => {
                                     info!(source = "http", routes = routes.len(), "config polled");
-                                    if tx.send(routes).await.is_err() { break; }
+                                    if tx.send(routes).await.is_err() {
+                                        break;
+                                    }
                                 }
                                 Err(e) => warn!(source = "http", error = %e, "parse failed"),
                             }
@@ -649,7 +733,10 @@ pub fn spawn_watchers(
     let static_routing = Arc::new(config.routing_table());
     let static_allowlists = config.ip_allowlist_table();
     let static_cors = config.cors_table();
-    let trusted_proxies: Vec<ipnet::IpNet> = config.server.trusted_proxies.iter()
+    let trusted_proxies: Vec<ipnet::IpNet> = config
+        .server
+        .trusted_proxies
+        .iter()
         .filter_map(|s| s.parse().ok())
         .collect();
     let error_pages_dir = config.error_pages_dir.clone();
@@ -750,18 +837,41 @@ pub fn create_sources(entries: &[ConfigSourceEntry]) -> Vec<Box<dyn ConfigSource
                 sources.push(Box::new(
                     ServicesJsonSource::with_env(path, host, env).with_watch(entry.watch),
                 ));
-                info!(source = "services-json", path = path, prod_env = env,
-                    watch = entry.watch, "config source registered");
+                info!(
+                    source = "services-json",
+                    path = path,
+                    prod_env = env,
+                    watch = entry.watch,
+                    "config source registered"
+                );
             }
             "docker-labels" => {
-                let socket = entry.docker_socket.as_deref().unwrap_or("/var/run/docker.sock");
+                let socket = entry
+                    .docker_socket
+                    .as_deref()
+                    .unwrap_or("/var/run/docker.sock");
                 sources.push(Box::new(DockerLabelsSource::new(socket)));
-                info!(source = "docker-labels", socket = socket, "config source registered");
+                info!(
+                    source = "docker-labels",
+                    socket = socket,
+                    "config source registered"
+                );
             }
             "http" => {
-                let url = entry.url.as_deref().unwrap_or("http://localhost:5000/api/services");
-                sources.push(Box::new(HttpPollingSource::new(url, entry.poll_interval_secs)));
-                info!(source = "http", url = url, interval = entry.poll_interval_secs, "config source registered");
+                let url = entry
+                    .url
+                    .as_deref()
+                    .unwrap_or("http://localhost:5000/api/services");
+                sources.push(Box::new(HttpPollingSource::new(
+                    url,
+                    entry.poll_interval_secs,
+                )));
+                info!(
+                    source = "http",
+                    url = url,
+                    interval = entry.poll_interval_secs,
+                    "config source registered"
+                );
             }
             other => {
                 warn!(source = other, "unknown config source type, skipping");

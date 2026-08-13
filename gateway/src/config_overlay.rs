@@ -51,7 +51,10 @@ pub struct ConfigStore {
 impl ConfigStore {
     /// Load base YAML + overlay file and return the store plus the effective
     /// (merged) config. A missing/empty overlay file is treated as `{}`.
-    pub fn load(base_yaml_path: &Path, overlay_path: PathBuf) -> Result<(Self, GatewayConfig), String> {
+    pub fn load(
+        base_yaml_path: &Path,
+        overlay_path: PathBuf,
+    ) -> Result<(Self, GatewayConfig), String> {
         let base = read_base(base_yaml_path)?;
         let overlay: Value = match std::fs::read_to_string(&overlay_path) {
             Ok(s) if !s.trim().is_empty() => serde_json::from_str(&s)
@@ -127,7 +130,8 @@ impl ConfigStore {
                 .map_err(|e| format!("create overlay tmp {}: {}", tmp.display(), e))?;
             f.write_all(body.as_bytes())
                 .map_err(|e| format!("write overlay tmp: {}", e))?;
-            f.sync_all().map_err(|e| format!("fsync overlay tmp: {}", e))?;
+            f.sync_all()
+                .map_err(|e| format!("fsync overlay tmp: {}", e))?;
         }
         std::fs::rename(&tmp, &self.overlay_path)
             .map_err(|e| format!("rename overlay into place: {}", e))
@@ -179,7 +183,8 @@ fn classify_patch(patch: &Value) -> ApplyResult {
                 // Within `server`, only trusted_proxies is picked up by a HotState
                 // rebuild; port/timeouts/force_https bind at startup.
                 "server" => {
-                    let only_trusted = v.as_object()
+                    let only_trusted = v
+                        .as_object()
                         .map(|m| !m.is_empty() && m.keys().all(|sk| sk == "trusted_proxies"))
                         .unwrap_or(false);
                     if only_trusted {
@@ -249,7 +254,10 @@ fn rebuild_hot_inner(
     let routing = Arc::new(routing);
     let allowlists = cfg.ip_allowlist_table();
     let cors = cfg.cors_table();
-    let trusted_proxies: Vec<ipnet::IpNet> = cfg.server.trusted_proxies.iter()
+    let trusted_proxies: Vec<ipnet::IpNet> = cfg
+        .server
+        .trusted_proxies
+        .iter()
         .filter_map(|s| s.parse().ok())
         .collect();
     hot.store(Arc::new(HotState::new_full(
@@ -265,7 +273,9 @@ fn rebuild_hot_inner(
 pub fn default_overlay_path(base_yaml_path: &str) -> PathBuf {
     let p = Path::new(base_yaml_path);
     let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("config");
-    p.parent().unwrap_or_else(|| Path::new(".")).join(format!("{}.overlay.json", stem))
+    p.parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!("{}.overlay.json", stem))
 }
 
 #[cfg(test)]
@@ -306,7 +316,10 @@ routing:
         let mut base = serde_json::json!({"a": 1, "nested": {"x": 1, "y": 2}});
         let patch = serde_json::json!({"b": 2, "nested": {"y": 9, "z": 3}});
         deep_merge(&mut base, &patch);
-        assert_eq!(base, serde_json::json!({"a": 1, "b": 2, "nested": {"x": 1, "y": 9, "z": 3}}));
+        assert_eq!(
+            base,
+            serde_json::json!({"a": 1, "b": 2, "nested": {"x": 1, "y": 9, "z": 3}})
+        );
     }
 
     #[test]
@@ -370,12 +383,14 @@ routing:
     fn clear_overlay_reverts_to_base() {
         let dir = tmp_dir();
         let store = store_in(&dir);
-        store.apply_patch(serde_json::json!({
-            "routing": [
-                {"host": "example.com", "backend": "http://127.0.0.1:3000"},
-                {"host": "extra.com", "backend": "http://127.0.0.1:4000"}
-            ]
-        })).unwrap();
+        store
+            .apply_patch(serde_json::json!({
+                "routing": [
+                    {"host": "example.com", "backend": "http://127.0.0.1:3000"},
+                    {"host": "extra.com", "backend": "http://127.0.0.1:4000"}
+                ]
+            }))
+            .unwrap();
         assert_eq!(store.effective_config().unwrap().routing.len(), 2);
 
         let reverted = store.clear_overlay().unwrap();
@@ -434,14 +449,19 @@ routing:
         // Demonstrates the OLD (buggy) behavior: a plain rebuild keeps only the
         // static routes — services.json-derived routes vanish.
         let cfg = base_config();
-        let hot: Arc<ArcSwap<HotState>> = Arc::new(ArcSwap::from_pointee(
-            HotState::new(Arc::new(dynamic_table("svc.example.com", "http://127.0.0.1:9100"))),
-        ));
+        let hot: Arc<ArcSwap<HotState>> = Arc::new(ArcSwap::from_pointee(HotState::new(Arc::new(
+            dynamic_table("svc.example.com", "http://127.0.0.1:9100"),
+        ))));
         rebuild_hot(&cfg, &hot);
         let snap = hot.load();
-        assert!(snap.routing.contains_key("example.com"), "static route present");
-        assert!(!snap.routing.contains_key("svc.example.com"),
-            "plain rebuild_hot drops dynamic route (the bug)");
+        assert!(
+            snap.routing.contains_key("example.com"),
+            "static route present"
+        );
+        assert!(
+            !snap.routing.contains_key("svc.example.com"),
+            "plain rebuild_hot drops dynamic route (the bug)"
+        );
     }
 
     #[test]
@@ -449,21 +469,28 @@ routing:
         // ROOT-CAUSE FIX: after a SIGHUP-equivalent rebuild, services.json routes
         // published into the shared snapshot survive alongside the static routes.
         let cfg = base_config();
-        let hot: Arc<ArcSwap<HotState>> = Arc::new(ArcSwap::from_pointee(
-            HotState::new(Arc::new(RoutingTable::new())),
-        ));
+        let hot: Arc<ArcSwap<HotState>> = Arc::new(ArcSwap::from_pointee(HotState::new(Arc::new(
+            RoutingTable::new(),
+        ))));
 
         // Config-source watcher publishes its routes here.
         let dynamic = new_dynamic_routes();
-        dynamic.store(Arc::new(dynamic_table("svc.example.com", "http://127.0.0.1:9100")));
+        dynamic.store(Arc::new(dynamic_table(
+            "svc.example.com",
+            "http://127.0.0.1:9100",
+        )));
 
         rebuild_hot_with_dynamic(&cfg, &hot, &dynamic);
 
         let snap = hot.load();
-        assert!(snap.routing.contains_key("example.com"),
-            "static YAML route survives SIGHUP rebuild");
-        assert!(snap.routing.contains_key("svc.example.com"),
-            "services.json route survives SIGHUP rebuild (root-cause fix)");
+        assert!(
+            snap.routing.contains_key("example.com"),
+            "static YAML route survives SIGHUP rebuild"
+        );
+        assert!(
+            snap.routing.contains_key("svc.example.com"),
+            "services.json route survives SIGHUP rebuild (root-cause fix)"
+        );
     }
 
     #[test]
@@ -471,26 +498,32 @@ routing:
         // Dynamic (config-source) route overrides the static one on host conflict,
         // matching config_source::spawn_watchers merge precedence.
         let cfg = base_config(); // static example.com → http://127.0.0.1:3000
-        let hot: Arc<ArcSwap<HotState>> = Arc::new(ArcSwap::from_pointee(
-            HotState::new(Arc::new(RoutingTable::new())),
-        ));
+        let hot: Arc<ArcSwap<HotState>> = Arc::new(ArcSwap::from_pointee(HotState::new(Arc::new(
+            RoutingTable::new(),
+        ))));
         let dynamic = new_dynamic_routes();
-        dynamic.store(Arc::new(dynamic_table("example.com", "http://127.0.0.1:9999")));
+        dynamic.store(Arc::new(dynamic_table(
+            "example.com",
+            "http://127.0.0.1:9999",
+        )));
 
         rebuild_hot_with_dynamic(&cfg, &hot, &dynamic);
 
         let snap = hot.load();
         let info = snap.routing.get("example.com").expect("route present");
-        assert!(info.backends.iter().any(|b| b.contains("9999")),
-            "dynamic backend wins on host conflict, got {:?}", info.backends);
+        assert!(
+            info.backends.iter().any(|b| b.contains("9999")),
+            "dynamic backend wins on host conflict, got {:?}",
+            info.backends
+        );
     }
 
     #[test]
     fn rebuild_hot_with_empty_dynamic_keeps_static_only() {
         let cfg = base_config();
-        let hot: Arc<ArcSwap<HotState>> = Arc::new(ArcSwap::from_pointee(
-            HotState::new(Arc::new(RoutingTable::new())),
-        ));
+        let hot: Arc<ArcSwap<HotState>> = Arc::new(ArcSwap::from_pointee(HotState::new(Arc::new(
+            RoutingTable::new(),
+        ))));
         let dynamic = new_dynamic_routes(); // empty
         rebuild_hot_with_dynamic(&cfg, &hot, &dynamic);
         let snap = hot.load();

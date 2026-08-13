@@ -4,11 +4,11 @@
 //! Retries with exponential backoff (30s * attempt_count).
 
 use std::time::Duration;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use volta_auth_core::store::pg::PgStore;
-use volta_auth_core::store::{OutboxStore, WebhookStore, WebhookDeliveryStore};
+use volta_auth_core::store::{OutboxStore, WebhookDeliveryStore, WebhookStore};
 
 /// Spawn the outbox worker as a background task.
 pub fn spawn(db: PgStore, poll_interval: Duration) {
@@ -18,7 +18,10 @@ pub fn spawn(db: PgStore, poll_interval: Duration) {
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
 
-        info!(interval_secs = poll_interval.as_secs(), "outbox worker started");
+        info!(
+            interval_secs = poll_interval.as_secs(),
+            "outbox worker started"
+        );
 
         loop {
             if let Err(e) = poll_and_deliver(&db, &http).await {
@@ -30,7 +33,8 @@ pub fn spawn(db: PgStore, poll_interval: Duration) {
 }
 
 async fn poll_and_deliver(db: &PgStore, http: &reqwest::Client) -> Result<(), String> {
-    let events = OutboxStore::claim_pending(db, 20).await
+    let events = OutboxStore::claim_pending(db, 20)
+        .await
         .map_err(|e| format!("claim: {}", e))?;
 
     if events.is_empty() {
@@ -44,24 +48,39 @@ async fn poll_and_deliver(db: &PgStore, http: &reqwest::Client) -> Result<(), St
             Some(tid) => tid,
             None => {
                 // No tenant — mark as published (system event)
-                OutboxStore::mark_published(db, event.id).await
+                OutboxStore::mark_published(db, event.id)
+                    .await
                     .map_err(|e| format!("mark: {}", e))?;
                 continue;
             }
         };
 
         // Find webhooks for this tenant that subscribe to this event type
-        let webhooks = WebhookStore::list_by_tenant(db, tenant_id).await
+        let webhooks = WebhookStore::list_by_tenant(db, tenant_id)
+            .await
             .map_err(|e| format!("webhooks: {}", e))?;
 
-        let matching: Vec<_> = webhooks.iter()
-            .filter(|w| w.is_active && w.events.split(',').any(|e| e.trim() == event.event_type || e.trim() == "*"))
+        let matching: Vec<_> = webhooks
+            .iter()
+            .filter(|w| {
+                w.is_active
+                    && w.events
+                        .split(',')
+                        .any(|e| e.trim() == event.event_type || e.trim() == "*")
+            })
             .collect();
 
         let mut all_ok = true;
 
         for wh in &matching {
-            let result = deliver(http, &wh.endpoint_url, &wh.secret, &event.event_type, &event.payload).await;
+            let result = deliver(
+                http,
+                &wh.endpoint_url,
+                &wh.secret,
+                &event.event_type,
+                &event.payload,
+            )
+            .await;
 
             let (status, status_code, response_body) = match &result {
                 Ok((code, body)) => ("success".to_string(), Some(*code), Some(body.clone())),
@@ -69,16 +88,20 @@ async fn poll_and_deliver(db: &PgStore, http: &reqwest::Client) -> Result<(), St
             };
 
             // Record delivery
-            let _ = WebhookDeliveryStore::insert(db, volta_auth_core::record::WebhookDeliveryRecord {
-                id: Uuid::new_v4(),
-                outbox_event_id: event.id,
-                webhook_id: wh.id,
-                event_type: event.event_type.clone(),
-                status: status.clone(),
-                status_code,
-                response_body,
-                created_at: chrono::Utc::now(),
-            }).await;
+            let _ = WebhookDeliveryStore::insert(
+                db,
+                volta_auth_core::record::WebhookDeliveryRecord {
+                    id: Uuid::new_v4(),
+                    outbox_event_id: event.id,
+                    webhook_id: wh.id,
+                    event_type: event.event_type.clone(),
+                    status: status.clone(),
+                    status_code,
+                    response_body,
+                    created_at: chrono::Utc::now(),
+                },
+            )
+            .await;
 
             if result.is_err() {
                 all_ok = false;
@@ -86,17 +109,20 @@ async fn poll_and_deliver(db: &PgStore, http: &reqwest::Client) -> Result<(), St
         }
 
         if all_ok || matching.is_empty() {
-            OutboxStore::mark_published(db, event.id).await
+            OutboxStore::mark_published(db, event.id)
+                .await
                 .map_err(|e| format!("mark: {}", e))?;
         } else {
             let attempt = event.attempt_count + 1;
             if attempt >= 5 {
                 // Give up after 5 attempts
                 warn!(event_id = %event.id, "outbox event exceeded max retries, marking published");
-                OutboxStore::mark_published(db, event.id).await
+                OutboxStore::mark_published(db, event.id)
+                    .await
                     .map_err(|e| format!("mark: {}", e))?;
             } else {
-                OutboxStore::mark_retry(db, event.id, attempt, "delivery failed").await
+                OutboxStore::mark_retry(db, event.id, attempt, "delivery failed")
+                    .await
                     .map_err(|e| format!("retry: {}", e))?;
             }
         }
@@ -119,12 +145,13 @@ async fn deliver(
     let body = serde_json::to_string(payload).unwrap_or_default();
 
     // HMAC-SHA256 signature (same as Java: sha256(secret + body))
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
-        .map_err(|e| format!("hmac: {}", e))?;
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(secret.as_bytes()).map_err(|e| format!("hmac: {}", e))?;
     mac.update(body.as_bytes());
     let signature = hex::encode(mac.finalize().into_bytes());
 
-    let resp = http.post(endpoint_url)
+    let resp = http
+        .post(endpoint_url)
         .header("Content-Type", "application/json")
         .header("X-Volta-Event", event_type)
         .header("X-Volta-Signature", &signature)
@@ -139,6 +166,10 @@ async fn deliver(
     if status >= 200 && status < 300 {
         Ok((status, body))
     } else {
-        Err(format!("status {}: {}", status, &body[..body.len().min(200)]))
+        Err(format!(
+            "status {}: {}",
+            status,
+            &body[..body.len().min(200)]
+        ))
     }
 }

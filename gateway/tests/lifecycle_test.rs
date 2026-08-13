@@ -78,13 +78,21 @@ async fn handle(
             admin_auth::AdminAuth::Unauthorized => {
                 return Ok(Response::builder()
                     .status(401)
-                    .body(Full::new(Bytes::from(r#"{"error":"unauthorized"}"#)).map_err(|e| match e {}).boxed())
+                    .body(
+                        Full::new(Bytes::from(r#"{"error":"unauthorized"}"#))
+                            .map_err(|e| match e {})
+                            .boxed(),
+                    )
                     .unwrap());
             }
             admin_auth::AdminAuth::WriteDisabled => {
                 return Ok(Response::builder()
                     .status(403)
-                    .body(Full::new(Bytes::from(r#"{"error":"write disabled"}"#)).map_err(|e| match e {}).boxed())
+                    .body(
+                        Full::new(Bytes::from(r#"{"error":"write disabled"}"#))
+                            .map_err(|e| match e {})
+                            .boxed(),
+                    )
                     .unwrap());
             }
         }
@@ -93,13 +101,21 @@ async fn handle(
         }
         return Ok(Response::builder()
             .status(200)
-            .body(Full::new(Bytes::from(r#"{"status":"ok"}"#)).map_err(|e| match e {}).boxed())
+            .body(
+                Full::new(Bytes::from(r#"{"status":"ok"}"#))
+                    .map_err(|e| match e {})
+                    .boxed(),
+            )
             .unwrap());
     }
 
     Ok(Response::builder()
         .status(404)
-        .body(Full::new(Bytes::from("not found")).map_err(|e| match e {}).boxed())
+        .body(
+            Full::new(Bytes::from("not found"))
+                .map_err(|e| match e {})
+                .boxed(),
+        )
         .unwrap())
 }
 
@@ -133,7 +149,12 @@ async fn spawn_server(ctx: Arc<Ctx>) -> SocketAddr {
 
 /// Send a raw HTTP/1.1 request over a fresh TCP connection and return
 /// `(status_line, full_response_text)`.
-async fn raw_request(addr: SocketAddr, method: &str, path: &str, extra_headers: &str) -> (u16, String) {
+async fn raw_request(
+    addr: SocketAddr,
+    method: &str,
+    path: &str,
+    extra_headers: &str,
+) -> (u16, String) {
     raw_request_with_host(addr, method, path, "127.0.0.1", extra_headers).await
 }
 
@@ -244,15 +265,24 @@ async fn routed_host_admin_passes_through_to_backend() {
     // request falls through to the proxy (the replica's 404 branch).
     let (code, body) =
         raw_request_with_host(addr, "GET", "/admin/tenants", "auth.example.org", "").await;
-    assert_eq!(code, 404, "routed-host /admin/* must be proxied, not claimed: {body}");
+    assert_eq!(
+        code, 404,
+        "routed-host /admin/* must be proxied, not claimed: {body}"
+    );
     assert!(body.contains("not found"), "body: {body}");
 
     // Host normalization: port and case must not defeat the route match.
     let (code, _) =
         raw_request_with_host(addr, "GET", "/admin/tenants", "AUTH.example.org:8080", "").await;
-    assert_eq!(code, 404, "host with port/upper-case must still match the route");
+    assert_eq!(
+        code, 404,
+        "host with port/upper-case must still match the route"
+    );
 
     // An unrouted Host is still the gateway's own admin API (401 without token).
     let (code, _) = raw_request(addr, "GET", "/admin/tenants", "").await;
-    assert_eq!(code, 401, "unrouted host must still hit the gateway admin auth");
+    assert_eq!(
+        code, 401,
+        "unrouted host must still hit the gateway admin auth"
+    );
 }

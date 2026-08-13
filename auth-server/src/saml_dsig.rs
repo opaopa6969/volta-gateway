@@ -39,10 +39,8 @@ use x509_cert::{der::Decode, Certificate};
 
 const ALG_RSA_SHA256: &str = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256";
 const ALG_SHA256: &str = "http://www.w3.org/2001/04/xmlenc#sha256";
-const TRANSFORM_ENVELOPED: &str =
-    "http://www.w3.org/2000/09/xmldsig#enveloped-signature";
-const TRANSFORM_EXC_C14N: &str =
-    "http://www.w3.org/2001/10/xml-exc-c14n#";
+const TRANSFORM_ENVELOPED: &str = "http://www.w3.org/2000/09/xmldsig#enveloped-signature";
+const TRANSFORM_EXC_C14N: &str = "http://www.w3.org/2001/10/xml-exc-c14n#";
 const TRANSFORM_EXC_C14N_WITH_COMMENTS: &str =
     "http://www.w3.org/2001/10/xml-exc-c14n#WithComments";
 
@@ -73,10 +71,17 @@ impl std::fmt::Display for DsigError {
             Self::MissingReference => write!(f, "missing <Reference>"),
             Self::MissingDigestValue => write!(f, "missing <DigestValue>"),
             Self::MissingDigestMethod => write!(f, "missing <DigestMethod>"),
-            Self::UnsupportedSignatureAlgorithm(a) => write!(f, "unsupported SignatureMethod {}", a),
+            Self::UnsupportedSignatureAlgorithm(a) => {
+                write!(f, "unsupported SignatureMethod {}", a)
+            }
             Self::UnsupportedDigestAlgorithm(a) => write!(f, "unsupported DigestMethod {}", a),
-            Self::ReferencedElementNotFound(id) => write!(f, "Reference URI #{} not found in document", id),
-            Self::DigestMismatch => write!(f, "digest mismatch — referenced element has been tampered with"),
+            Self::ReferencedElementNotFound(id) => {
+                write!(f, "Reference URI #{} not found in document", id)
+            }
+            Self::DigestMismatch => write!(
+                f,
+                "digest mismatch — referenced element has been tampered with"
+            ),
             Self::SignatureInvalid(m) => write!(f, "RSA signature verification failed: {}", m),
             Self::CertificateInvalid(m) => write!(f, "invalid X.509 certificate: {}", m),
             Self::Base64(m) => write!(f, "base64 decode failed: {}", m),
@@ -106,19 +111,18 @@ pub fn verify(xml: &str, pem_cert: &str) -> Result<(), DsigError> {
     let xml_bytes = xml.as_bytes();
 
     // 1. Locate the SignedInfo byte span.
-    let signed_info = locate_element(xml_bytes, "SignedInfo")
-        .ok_or(DsigError::MissingSignedInfo)?;
+    let signed_info =
+        locate_element(xml_bytes, "SignedInfo").ok_or(DsigError::MissingSignedInfo)?;
 
     // 2. Reject unsupported signature algorithm.
-    let sig_alg = extract_algorithm(xml, "SignatureMethod")
-        .ok_or(DsigError::MissingSignedInfo)?;
+    let sig_alg = extract_algorithm(xml, "SignatureMethod").ok_or(DsigError::MissingSignedInfo)?;
     if sig_alg != ALG_RSA_SHA256 {
         return Err(DsigError::UnsupportedSignatureAlgorithm(sig_alg));
     }
 
     // 3. Digest algorithm.
-    let digest_alg = extract_algorithm(xml, "DigestMethod")
-        .ok_or(DsigError::MissingDigestMethod)?;
+    let digest_alg =
+        extract_algorithm(xml, "DigestMethod").ok_or(DsigError::MissingDigestMethod)?;
     if digest_alg != ALG_SHA256 {
         return Err(DsigError::UnsupportedDigestAlgorithm(digest_alg));
     }
@@ -141,7 +145,9 @@ pub fn verify(xml: &str, pem_cert: &str) -> Result<(), DsigError> {
     //    b. Exc-c14n: exclusive canonicalization.
     let referenced_bytes = &xml_bytes[referenced_span.start..referenced_span.end];
     let transforms_has_enveloped = transforms.iter().any(|t| t == TRANSFORM_ENVELOPED);
-    let transforms_has_exc_c14n_comments = transforms.iter().any(|t| t == TRANSFORM_EXC_C14N_WITH_COMMENTS);
+    let transforms_has_exc_c14n_comments = transforms
+        .iter()
+        .any(|t| t == TRANSFORM_EXC_C14N_WITH_COMMENTS);
     let transforms_has_exc_c14n = transforms.iter().any(|t| t == TRANSFORM_EXC_C14N);
 
     let stripped = if transforms_has_enveloped || transforms.is_empty() {
@@ -320,12 +326,10 @@ pub fn canonicalize(bytes: &[u8], mode: C14nMode) -> Vec<u8> {
                 rendered_stack.push(current_rendered);
 
                 // Sort namespace declarations: default ("") first, then by prefix.
-                ns_decls.sort_by(|(a, _), (b, _)| {
-                    match (a.as_str(), b.as_str()) {
-                        ("", _) => std::cmp::Ordering::Less,
-                        (_, "") => std::cmp::Ordering::Greater,
-                        _ => a.cmp(b),
-                    }
+                ns_decls.sort_by(|(a, _), (b, _)| match (a.as_str(), b.as_str()) {
+                    ("", _) => std::cmp::Ordering::Less,
+                    (_, "") => std::cmp::Ordering::Greater,
+                    _ => a.cmp(b),
                 });
 
                 // Sort attributes: by namespace URI then local name.
@@ -443,12 +447,10 @@ pub fn canonicalize(bytes: &[u8], mode: C14nMode) -> Vec<u8> {
                         ns_decls.push((pfx.clone(), uri));
                     }
                 }
-                ns_decls.sort_by(|(a, _), (b, _)| {
-                    match (a.as_str(), b.as_str()) {
-                        ("", _) => std::cmp::Ordering::Less,
-                        (_, "") => std::cmp::Ordering::Greater,
-                        _ => a.cmp(b),
-                    }
+                ns_decls.sort_by(|(a, _), (b, _)| match (a.as_str(), b.as_str()) {
+                    ("", _) => std::cmp::Ordering::Less,
+                    (_, "") => std::cmp::Ordering::Greater,
+                    _ => a.cmp(b),
                 });
 
                 attrs.sort_by(|(ns_a, local_a, _, _), (ns_b, local_b, _, _)| {
@@ -541,10 +543,7 @@ fn split_qname(qname: &[u8]) -> (String, String) {
             String::from_utf8_lossy(&qname[..p]).into_owned(),
             String::from_utf8_lossy(&qname[p + 1..]).into_owned(),
         ),
-        None => (
-            String::new(),
-            String::from_utf8_lossy(qname).into_owned(),
-        ),
+        None => (String::new(), String::from_utf8_lossy(qname).into_owned()),
     }
 }
 
@@ -637,7 +636,10 @@ fn locate_element(bytes: &[u8], local_name: &str) -> Option<Span> {
                 if local_eq(e.name().as_ref(), local_name) && start.is_some() {
                     depth -= 1;
                     if depth == 0 {
-                        return Some(Span { start: start.unwrap(), end: pos_after });
+                        return Some(Span {
+                            start: start.unwrap(),
+                            end: pos_after,
+                        });
                     }
                 }
             }
@@ -645,7 +647,10 @@ fn locate_element(bytes: &[u8], local_name: &str) -> Option<Span> {
             Ok(Event::Empty(e)) => {
                 if local_eq(e.name().as_ref(), local_name) && start.is_none() {
                     let s = find_tag_open_from(bytes, pos_before);
-                    return Some(Span { start: s, end: pos_after });
+                    return Some(Span {
+                        start: s,
+                        end: pos_after,
+                    });
                 }
             }
             Ok(_) => {}
@@ -682,7 +687,10 @@ fn locate_element_by_id(bytes: &[u8], id: &str) -> Option<Span> {
                     if e.name().as_ref() == name.as_slice() {
                         depth -= 1;
                         if depth == 0 {
-                            return Some(Span { start, end: pos_after });
+                            return Some(Span {
+                                start,
+                                end: pos_after,
+                            });
                         }
                     }
                 }
@@ -690,7 +698,10 @@ fn locate_element_by_id(bytes: &[u8], id: &str) -> Option<Span> {
             Ok(Event::Empty(e)) => {
                 if attr_matches(&e, "ID", id) && target.is_none() {
                     let s = find_tag_open_from(bytes, pos_before);
-                    return Some(Span { start: s, end: pos_after });
+                    return Some(Span {
+                        start: s,
+                        end: pos_after,
+                    });
                 }
             }
             Ok(Event::Eof) => return None,
@@ -702,9 +713,7 @@ fn locate_element_by_id(bytes: &[u8], id: &str) -> Option<Span> {
 
 fn attr_matches(e: &quick_xml::events::BytesStart, attr_name: &str, value: &str) -> bool {
     for a in e.attributes().flatten() {
-        if a.key.as_ref() == attr_name.as_bytes()
-            && a.value.as_ref() == value.as_bytes()
-        {
+        if a.key.as_ref() == attr_name.as_bytes() && a.value.as_ref() == value.as_bytes() {
             return true;
         }
     }
@@ -868,8 +877,8 @@ fn find_tag_start(xml: &str, local_name: &str) -> Option<usize> {
 
 fn parse_rsa_from_pem(pem: &str) -> Result<RsaPublicKey, DsigError> {
     let der = pem_to_der(pem)?;
-    let cert = Certificate::from_der(&der)
-        .map_err(|e| DsigError::CertificateInvalid(e.to_string()))?;
+    let cert =
+        Certificate::from_der(&der).map_err(|e| DsigError::CertificateInvalid(e.to_string()))?;
     let spki = cert.tbs_certificate.subject_public_key_info;
     let der_bytes = spki
         .subject_public_key
@@ -881,10 +890,7 @@ fn parse_rsa_from_pem(pem: &str) -> Result<RsaPublicKey, DsigError> {
 }
 
 fn pem_to_der(pem: &str) -> Result<Vec<u8>, DsigError> {
-    let body: String = pem
-        .lines()
-        .filter(|l| !l.starts_with("-----"))
-        .collect();
+    let body: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
     base64::engine::general_purpose::STANDARD
         .decode(body.trim())
         .map_err(|e| DsigError::Base64(e.to_string()))
@@ -913,40 +919,60 @@ mod tests {
     fn locate_prefixed_element() {
         let xml = b"<root><saml:Assertion>x</saml:Assertion></root>";
         let span = locate_element(xml, "Assertion").unwrap();
-        assert!(std::str::from_utf8(&xml[span.start..span.end]).unwrap().contains("Assertion"));
+        assert!(std::str::from_utf8(&xml[span.start..span.end])
+            .unwrap()
+            .contains("Assertion"));
     }
 
     #[test]
     fn locate_by_id_picks_right_element() {
         let xml = br#"<root><A ID="_1">one</A><A ID="_2">two</A></root>"#;
         let span = locate_element_by_id(xml, "_2").unwrap();
-        assert!(std::str::from_utf8(&xml[span.start..span.end]).unwrap().contains("two"));
+        assert!(std::str::from_utf8(&xml[span.start..span.end])
+            .unwrap()
+            .contains("two"));
     }
 
     #[test]
     fn strip_signature_removes_subtree() {
         let xml = b"<Assertion>before<Signature>SIG</Signature>after</Assertion>";
         let stripped = strip_signature_subtree(xml);
-        assert_eq!(std::str::from_utf8(&stripped).unwrap(), "<Assertion>beforeafter</Assertion>");
+        assert_eq!(
+            std::str::from_utf8(&stripped).unwrap(),
+            "<Assertion>beforeafter</Assertion>"
+        );
     }
 
     #[test]
     fn extract_algorithm_reads_attribute() {
         let xml = r#"<SignatureMethod Algorithm="http://x/rsa-sha256"/>"#;
-        assert_eq!(extract_algorithm(xml, "SignatureMethod").as_deref(), Some("http://x/rsa-sha256"));
+        assert_eq!(
+            extract_algorithm(xml, "SignatureMethod").as_deref(),
+            Some("http://x/rsa-sha256")
+        );
     }
 
     #[test]
     fn extract_text_reads_element_content() {
         let xml = "<root><SignatureValue>ABC==</SignatureValue></root>";
-        assert_eq!(extract_text(xml, "SignatureValue").as_deref(), Some("ABC=="));
+        assert_eq!(
+            extract_text(xml, "SignatureValue").as_deref(),
+            Some("ABC==")
+        );
     }
 
     #[test]
     fn verify_rejects_missing_signature() {
         let xml = "<Assertion>no signature</Assertion>";
-        let err = verify(xml, "-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----\n").unwrap_err();
-        assert!(matches!(err, DsigError::MissingSignedInfo | DsigError::CertificateInvalid(_) | DsigError::Base64(_)));
+        let err = verify(
+            xml,
+            "-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----\n",
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            DsigError::MissingSignedInfo | DsigError::CertificateInvalid(_) | DsigError::Base64(_)
+        ));
     }
 
     #[test]
@@ -985,10 +1011,14 @@ mod tests {
                 <SignatureValue>AAAA</SignatureValue>
               </Signature>
             </Assertion>"##,
-            alg_sig = ALG_RSA_SHA256, alg_dig = ALG_SHA256,
+            alg_sig = ALG_RSA_SHA256,
+            alg_dig = ALG_SHA256,
         );
         let err = verify(&xml, "").unwrap_err();
-        assert!(matches!(err, DsigError::DigestMismatch | DsigError::CertificateInvalid(_)));
+        assert!(matches!(
+            err,
+            DsigError::DigestMismatch | DsigError::CertificateInvalid(_)
+        ));
     }
 
     // ─── exc-c14n unit tests ──────────────────────────────────
@@ -998,7 +1028,10 @@ mod tests {
         // A simple element with no namespaces should round-trip cleanly.
         let xml = b"<Foo bar=\"baz\">text</Foo>";
         let result = canonicalize(xml, C14nMode::Exclusive);
-        assert_eq!(std::str::from_utf8(&result).unwrap(), "<Foo bar=\"baz\">text</Foo>");
+        assert_eq!(
+            std::str::from_utf8(&result).unwrap(),
+            "<Foo bar=\"baz\">text</Foo>"
+        );
     }
 
     #[test]
@@ -1010,7 +1043,11 @@ mod tests {
         let a_pos = s.find("a=\"2\"").unwrap();
         let m_pos = s.find("m=\"3\"").unwrap();
         let z_pos = s.find("z=\"1\"").unwrap();
-        assert!(a_pos < m_pos && m_pos < z_pos, "expected a < m < z, got: {}", s);
+        assert!(
+            a_pos < m_pos && m_pos < z_pos,
+            "expected a < m < z, got: {}",
+            s
+        );
     }
 
     #[test]
@@ -1026,9 +1063,18 @@ mod tests {
         let xml = b"<Foo>a &amp; b &lt; c</Foo>";
         let result = canonicalize(xml, C14nMode::Exclusive);
         let s = std::str::from_utf8(&result).unwrap();
-        assert!(s.contains("&amp;") || s.contains("a"), "text preserved: {}", s);
+        assert!(
+            s.contains("&amp;") || s.contains("a"),
+            "text preserved: {}",
+            s
+        );
         // The output should not contain raw & or <
-        assert!(!s[5..s.len()-6].contains('&') || s.contains("&amp;") || s.contains("&lt;") || s.contains("&gt;"));
+        assert!(
+            !s[5..s.len() - 6].contains('&')
+                || s.contains("&amp;")
+                || s.contains("&lt;")
+                || s.contains("&gt;")
+        );
     }
 
     #[test]
@@ -1060,9 +1106,17 @@ mod tests {
         // The xmlns:ds should not appear on root.
         let root_end = s.find('>').unwrap();
         let root_tag = &s[..root_end];
-        assert!(!root_tag.contains("xmlns:ds"), "xmlns:ds should not be on root: {}", root_tag);
+        assert!(
+            !root_tag.contains("xmlns:ds"),
+            "xmlns:ds should not be on root: {}",
+            root_tag
+        );
         // But should appear on ds:Foo.
-        assert!(s.contains("xmlns:ds=\"http://dsig\""), "xmlns:ds should be on ds:Foo: {}", s);
+        assert!(
+            s.contains("xmlns:ds=\"http://dsig\""),
+            "xmlns:ds should be on ds:Foo: {}",
+            s
+        );
     }
 
     #[test]
@@ -1079,7 +1133,8 @@ mod tests {
             <Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/>
         </Transforms>"#;
         let transforms = extract_transforms(xml);
-        assert!(transforms.contains(&"http://www.w3.org/2000/09/xmldsig#enveloped-signature".to_string()));
+        assert!(transforms
+            .contains(&"http://www.w3.org/2000/09/xmldsig#enveloped-signature".to_string()));
         assert!(transforms.contains(&"http://www.w3.org/2001/10/xml-exc-c14n#".to_string()));
     }
 

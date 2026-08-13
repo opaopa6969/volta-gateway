@@ -31,7 +31,8 @@ use volta_auth_core::store::*;
 pub const DEVICE_CODE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 
 fn device_ttl_secs(state: &AppState) -> i64 {
-    std::env::var("DEVICE_CODE_TTL_SECONDS").ok()
+    std::env::var("DEVICE_CODE_TTL_SECONDS")
+        .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(600)
         .max(60)
@@ -41,14 +42,21 @@ fn device_ttl_secs(state: &AppState) -> i64 {
 /// RFC 8628 §3.5 error responses are `application/json` with HTTP 400 and an
 /// `error` field. `authorization_pending` / `slow_down` are the polling states.
 fn oauth_error(error: &str) -> Response {
-    let mut resp = (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": error }))).into_response();
+    let mut resp = (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({ "error": error })),
+    )
+        .into_response();
     no_cache_headers(&mut resp);
     resp
 }
 
 fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
-        .replace('"', "&quot;").replace('\'', "&#39;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 // ─── POST /oauth/device_authorization ──────────────────────
@@ -65,7 +73,10 @@ pub async fn device_authorization(
     Form(b): Form<DeviceAuthReq>,
 ) -> Result<Response, ApiError> {
     if b.client_id.trim().is_empty() {
-        return Err(ApiError::bad_request("invalid_request", "client_id is required"));
+        return Err(ApiError::bad_request(
+            "invalid_request",
+            "client_id is required",
+        ));
     }
     let device_code = random_token_hex(32);
     let user_code = random_user_code();
@@ -73,20 +84,25 @@ pub async fn device_authorization(
     let ttl = device_ttl_secs(&s);
     let expires_at = chrono::Utc::now() + chrono::Duration::seconds(ttl);
 
-    DeviceGrantStore::create(&s.db, DeviceGrantRecord {
-        id: Uuid::new_v4(),
-        device_code_hash: sha256_hex(&device_code),
-        user_code: user_code.clone(),
-        client_id: b.client_id,
-        scope: b.scope.filter(|s| !s.is_empty()),
-        status: "pending".into(),
-        user_id: None,
-        tenant_id: None,
-        interval_secs: interval,
-        last_polled_at: None,
-        created_at: chrono::Utc::now(),
-        expires_at,
-    }).await.map_err(|e| ApiError::internal(&e.to_string()))?;
+    DeviceGrantStore::create(
+        &s.db,
+        DeviceGrantRecord {
+            id: Uuid::new_v4(),
+            device_code_hash: sha256_hex(&device_code),
+            user_code: user_code.clone(),
+            client_id: b.client_id,
+            scope: b.scope.filter(|s| !s.is_empty()),
+            status: "pending".into(),
+            user_id: None,
+            tenant_id: None,
+            interval_secs: interval,
+            last_polled_at: None,
+            created_at: chrono::Utc::now(),
+            expires_at,
+        },
+    )
+    .await
+    .map_err(|e| ApiError::internal(&e.to_string()))?;
 
     let verification_uri = format!("{}/device", s.base_url);
     let verification_uri_complete = format!("{}/device?user_code={}", s.base_url, user_code);
@@ -98,7 +114,8 @@ pub async fn device_authorization(
         "verification_uri_complete": verification_uri_complete,
         "expires_in": ttl,
         "interval": interval,
-    })).into_response();
+    }))
+    .into_response();
     no_cache_headers(&mut resp);
     Ok(resp)
 }
@@ -123,20 +140,30 @@ pub async fn device_verification_page(
             None => "/device".to_string(),
         };
         let return_to = urlencode(&raw);
-        let mut resp = Redirect::to(&format!("{}/login?return_to={}", s.base_url, return_to)).into_response();
+        let mut resp =
+            Redirect::to(&format!("{}/login?return_to={}", s.base_url, return_to)).into_response();
         no_cache_headers(&mut resp);
         return resp;
     }
 
     // If a code was supplied, look it up to show the requesting client + scope.
     let (prefill, client_line) = match &q.user_code {
-        Some(code) => match DeviceGrantStore::find_pending_by_user_code(&s.db, &code.to_uppercase()).await {
-            Ok(Some(g)) => {
-                let scope = g.scope.as_deref().map(|s| format!(" — 権限: {}", html_escape(s))).unwrap_or_default();
-                (html_escape(code), format!("<p class=\"client\">アプリ <b>{}</b>{} がサインインを求めています。</p>", html_escape(&g.client_id), scope))
+        Some(code) => {
+            match DeviceGrantStore::find_pending_by_user_code(&s.db, &code.to_uppercase()).await {
+                Ok(Some(g)) => {
+                    let scope = g
+                        .scope
+                        .as_deref()
+                        .map(|s| format!(" — 権限: {}", html_escape(s)))
+                        .unwrap_or_default();
+                    (html_escape(code), format!("<p class=\"client\">アプリ <b>{}</b>{} がサインインを求めています。</p>", html_escape(&g.client_id), scope))
+                }
+                _ => (
+                    html_escape(code),
+                    "<p class=\"client warn\">このコードは無効か、期限切れです。</p>".to_string(),
+                ),
             }
-            _ => (html_escape(code), "<p class=\"client warn\">このコードは無効か、期限切れです。</p>".to_string()),
-        },
+        }
         None => (String::new(), String::new()),
     };
 
@@ -155,29 +182,58 @@ pub struct DeviceDecisionReq {
     pub user_code: String,
 }
 
-async fn decide(s: &AppState, jar: &CookieJar, user_code: &str, approve: bool) -> Result<Response, ApiError> {
+async fn decide(
+    s: &AppState,
+    jar: &CookieJar,
+    user_code: &str,
+    approve: bool,
+) -> Result<Response, ApiError> {
     let session = require_session(s, jar).await?;
-    let user_id: Uuid = session.user_id.parse().map_err(|_| ApiError::internal("bad uid"))?;
-    let tenant_id: Uuid = session.tenant_id.parse().map_err(|_| ApiError::internal("bad tenant id"))?;
+    let user_id: Uuid = session
+        .user_id
+        .parse()
+        .map_err(|_| ApiError::internal("bad uid"))?;
+    let tenant_id: Uuid = session
+        .tenant_id
+        .parse()
+        .map_err(|_| ApiError::internal("bad tenant id"))?;
     let code = user_code.trim().to_uppercase();
 
-    let outcome = DeviceGrantStore::decide(&s.db, &code, approve, user_id, tenant_id).await
+    let outcome = DeviceGrantStore::decide(&s.db, &code, approve, user_id, tenant_id)
+        .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
     match outcome {
         DeviceDecisionOutcome::Ok { .. } => {
             Ok(Json(serde_json::json!({ "ok": true, "approved": approve })).into_response())
         }
-        DeviceDecisionOutcome::NotFound => Err(ApiError::bad_request("invalid_user_code", "コードが見つかりません")),
-        DeviceDecisionOutcome::Expired => Err(ApiError::bad_request("expired_user_code", "コードの期限が切れています")),
-        DeviceDecisionOutcome::AlreadyResolved => Err(ApiError::bad_request("already_resolved", "このコードは既に処理済みです")),
+        DeviceDecisionOutcome::NotFound => Err(ApiError::bad_request(
+            "invalid_user_code",
+            "コードが見つかりません",
+        )),
+        DeviceDecisionOutcome::Expired => Err(ApiError::bad_request(
+            "expired_user_code",
+            "コードの期限が切れています",
+        )),
+        DeviceDecisionOutcome::AlreadyResolved => Err(ApiError::bad_request(
+            "already_resolved",
+            "このコードは既に処理済みです",
+        )),
     }
 }
 
-pub async fn device_approve(State(s): State<AppState>, jar: CookieJar, Form(b): Form<DeviceDecisionReq>) -> Result<Response, ApiError> {
+pub async fn device_approve(
+    State(s): State<AppState>,
+    jar: CookieJar,
+    Form(b): Form<DeviceDecisionReq>,
+) -> Result<Response, ApiError> {
     decide(&s, &jar, &b.user_code, true).await
 }
 
-pub async fn device_deny(State(s): State<AppState>, jar: CookieJar, Form(b): Form<DeviceDecisionReq>) -> Result<Response, ApiError> {
+pub async fn device_deny(
+    State(s): State<AppState>,
+    jar: CookieJar,
+    Form(b): Form<DeviceDecisionReq>,
+) -> Result<Response, ApiError> {
     decide(&s, &jar, &b.user_code, false).await
 }
 
@@ -197,7 +253,11 @@ pub async fn device_token_grant(s: &AppState, device_code: &str) -> Response {
     };
 
     let (user_id, tenant_id, scope) = match outcome {
-        DevicePollOutcome::Approved { user_id, tenant_id, scope } => (user_id, tenant_id, scope),
+        DevicePollOutcome::Approved {
+            user_id,
+            tenant_id,
+            scope,
+        } => (user_id, tenant_id, scope),
         DevicePollOutcome::Pending => return oauth_error("authorization_pending"),
         DevicePollOutcome::SlowDown => return oauth_error("slow_down"),
         DevicePollOutcome::Denied => return oauth_error("access_denied"),
@@ -207,7 +267,11 @@ pub async fn device_token_grant(s: &AppState, device_code: &str) -> Response {
 
     // Resolve claims for the approving identity (email + tenant role).
     let user = UserStore::find_by_id(&s.db, user_id).await.ok().flatten();
-    let role = MembershipStore::find(&s.db, user_id, tenant_id).await.ok().flatten().map(|m| m.role);
+    let role = MembershipStore::find(&s.db, user_id, tenant_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|m| m.role);
 
     let jwt = match s.jwt_issuer.issue(&volta_auth_core::jwt::VoltaClaims {
         sub: user_id.to_string(),
@@ -216,7 +280,9 @@ pub async fn device_token_grant(s: &AppState, device_code: &str) -> Response {
         tenant_slug: None,
         roles: role,
         name: user.as_ref().and_then(|u| u.display_name.clone()),
-        app_id: None, iat: None, exp: None,
+        app_id: None,
+        iat: None,
+        exp: None,
     }) {
         Ok(j) => j,
         Err(e) => {
@@ -234,7 +300,8 @@ pub async fn device_token_grant(s: &AppState, device_code: &str) -> Response {
         "token_type": "Bearer",
         "expires_in": s.session_ttl_secs,
         "scope": scope,
-    })).into_response();
+    }))
+    .into_response();
     no_cache_headers(&mut resp);
     resp
 }
@@ -245,7 +312,9 @@ fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                out.push(b as char)
+            }
             _ => out.push_str(&format!("%{:02X}", b)),
         }
     }

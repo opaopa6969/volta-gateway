@@ -30,7 +30,10 @@ pub async fn serve_tls(
 
     let cache_dir = tls_config.cache_dir.clone();
     let mut acme = AcmeConfig::new(tls_config.domains.clone())
-        .contact(std::iter::once(format!("mailto:{}", tls_config.contact_email)))
+        .contact(std::iter::once(format!(
+            "mailto:{}",
+            tls_config.contact_email
+        )))
         .cache(DirCache::new(cache_dir));
 
     if tls_config.staging {
@@ -73,7 +76,9 @@ pub async fn serve_tls(
         let metrics = metrics.clone();
 
         in_flight.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        metrics.active_connections.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        metrics
+            .active_connections
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         tokio::spawn(async move {
             // TLS handshake
@@ -85,7 +90,9 @@ pub async fn serve_tls(
                         error!(remote = %remote_addr, "TLS handshake error: {msg}");
                     }
                     in_flight.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-                    metrics.active_connections.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                    metrics
+                        .active_connections
+                        .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                     return;
                 }
             };
@@ -150,7 +157,9 @@ pub async fn serve_tls(
             }
 
             in_flight.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-            metrics.active_connections.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            metrics
+                .active_connections
+                .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         });
     }
 }

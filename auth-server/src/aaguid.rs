@@ -58,15 +58,27 @@ mod tests {
 
     #[test]
     fn known_and_unknown_aaguids() {
-        assert_eq!(authenticator_name("fbfc3007-154e-4ecc-8c0b-6e020557d7bd"), Some("iCloud キーチェーン (Apple)"));
+        assert_eq!(
+            authenticator_name("fbfc3007-154e-4ecc-8c0b-6e020557d7bd"),
+            Some("iCloud キーチェーン (Apple)")
+        );
         assert!(authenticator_name("11111111-2222-3333-4444-555555555555").is_none());
     }
 
     #[test]
     fn label_never_empty() {
-        assert_eq!(label_for(Some("ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4")), "Google パスワード マネージャー");
-        assert_eq!(label_for(Some("00000000-0000-0000-0000-000000000000")), "セキュリティキー");
+        assert_eq!(
+            label_for(Some("ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4")),
+            "Google パスワード マネージャー"
+        );
+        assert_eq!(
+            label_for(Some("00000000-0000-0000-0000-000000000000")),
+            "セキュリティキー"
+        );
         assert_eq!(label_for(None), "パスキー認証器");
-        assert_eq!(label_for(Some("deadbeef-0000-0000-0000-000000000000")), "パスキー認証器");
+        assert_eq!(
+            label_for(Some("deadbeef-0000-0000-0000-000000000000")),
+            "パスキー認証器"
+        );
     }
 }

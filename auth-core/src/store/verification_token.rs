@@ -29,11 +29,8 @@ pub trait EmailVerificationTokenStore: Send + Sync {
     /// pending token for `email` and returns `true` iff the previous send was
     /// more than `min_interval_secs` ago (or never). Returns `false` when
     /// throttled or when there is no pending token.
-    async fn try_mark_resent(
-        &self,
-        email: &str,
-        min_interval_secs: i64,
-    ) -> Result<bool, AuthError>;
+    async fn try_mark_resent(&self, email: &str, min_interval_secs: i64)
+        -> Result<bool, AuthError>;
 
     /// Invalidate (mark used) all pending tokens for an email. Call before
     /// issuing a fresh one so only one token is ever live per address.

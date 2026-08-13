@@ -93,13 +93,21 @@ impl Default for AuthEventBus {
 impl AuthEventBus {
     pub fn new() -> Self {
         let (tx, _rx) = broadcast::channel(CAPACITY);
-        Self { tx, origin: random_origin(), redis: None }
+        Self {
+            tx,
+            origin: random_origin(),
+            redis: None,
+        }
     }
 
     /// Returns `true` if this bus will PUBLISH events into Redis.
-    pub fn has_redis_bridge(&self) -> bool { self.redis.is_some() }
+    pub fn has_redis_bridge(&self) -> bool {
+        self.redis.is_some()
+    }
 
-    pub fn origin(&self) -> &str { &self.origin }
+    pub fn origin(&self) -> &str {
+        &self.origin
+    }
 
     /// Attach a Redis publisher. Called once from `main.rs` after the bridge
     /// connects successfully.
@@ -149,7 +157,10 @@ impl AuthEventBus {
             event_type: ev.event_type.clone(),
             actor_id: ev.user_id.as_deref().and_then(|s| Uuid::parse_str(s).ok()),
             actor_ip,
-            tenant_id: ev.tenant_id.as_deref().and_then(|s| Uuid::parse_str(s).ok()),
+            tenant_id: ev
+                .tenant_id
+                .as_deref()
+                .and_then(|s| Uuid::parse_str(s).ok()),
             target_type,
             target_id,
             detail: ev.detail.clone(),
@@ -192,7 +203,10 @@ impl AuthEventBus {
             event_type: ev.event_type.clone(),
             actor_id: ev.user_id.as_deref().and_then(|s| Uuid::parse_str(s).ok()),
             actor_ip,
-            tenant_id: ev.tenant_id.as_deref().and_then(|s| Uuid::parse_str(s).ok()),
+            tenant_id: ev
+                .tenant_id
+                .as_deref()
+                .and_then(|s| Uuid::parse_str(s).ok()),
             target_type,
             target_id,
             detail: ev.detail.clone(),
@@ -204,14 +218,20 @@ impl AuthEventBus {
 
         // Enqueue PII-minimized payload into outbox for webhook fan-out.
         let outbox_event_type = format!("auth.{}", ev.event_type.to_lowercase());
-        let tenant_id_parsed = ev.tenant_id.as_deref().and_then(|s| Uuid::parse_str(s).ok());
+        let tenant_id_parsed = ev
+            .tenant_id
+            .as_deref()
+            .and_then(|s| Uuid::parse_str(s).ok());
         let payload = serde_json::json!({
             "event_type": outbox_event_type,
             "user_id": ev.user_id,
             "tenant_id": ev.tenant_id,
             "timestamp": ev.timestamp,
         });
-        if let Err(e) = outbox.enqueue(tenant_id_parsed, &outbox_event_type, payload).await {
+        if let Err(e) = outbox
+            .enqueue(tenant_id_parsed, &outbox_event_type, payload)
+            .await
+        {
             tracing::warn!(event = %ev.event_type, error = %e, "outbox enqueue failed (non-fatal)");
         }
 
@@ -235,7 +255,9 @@ pub struct RedisPublisher {
 }
 
 impl RedisPublisher {
-    pub fn channel(&self) -> &str { &self.channel }
+    pub fn channel(&self) -> &str {
+        &self.channel
+    }
 
     pub fn publish(&self, ev: AuthEvent) {
         let _ = self.tx.send(ev);
@@ -281,7 +303,10 @@ pub async fn spawn_redis_bridge(
                 }
             }
         }
-        tracing::warn!("redis auth-event subscriber stream ended (channel={})", channel_for_task);
+        tracing::warn!(
+            "redis auth-event subscriber stream ended (channel={})",
+            channel_for_task
+        );
     });
 
     // Publisher channel — decouples hot publish path from Redis IO latency.
@@ -355,13 +380,26 @@ mod tests {
     #[async_trait]
     impl AuditStore for MockAudit {
         async fn insert(&self, r: AuditLogRecord) -> Result<(), AuthError> {
-            if self.fail { return Err(AuthError::Internal("forced".into())); }
+            if self.fail {
+                return Err(AuthError::Internal("forced".into()));
+            }
             self.inserts.lock().unwrap().push(r);
             Ok(())
         }
-        async fn list(&self, _: uuid::Uuid, _: i64, _: i64) -> Result<Vec<AuditLogRecord>, AuthError> { Ok(vec![]) }
-        async fn anonymize(&self, _: uuid::Uuid) -> Result<(), AuthError> { Ok(()) }
-        async fn delete_flow_transitions_by_user(&self, _: uuid::Uuid) -> Result<(), AuthError> { Ok(()) }
+        async fn list(
+            &self,
+            _: uuid::Uuid,
+            _: i64,
+            _: i64,
+        ) -> Result<Vec<AuditLogRecord>, AuthError> {
+            Ok(vec![])
+        }
+        async fn anonymize(&self, _: uuid::Uuid) -> Result<(), AuthError> {
+            Ok(())
+        }
+        async fn delete_flow_transitions_by_user(&self, _: uuid::Uuid) -> Result<(), AuthError> {
+            Ok(())
+        }
     }
 
     #[tokio::test]
@@ -380,7 +418,8 @@ mod tests {
             Some("SESSION".into()),
             Some("sess-abc".into()),
             None,
-        ).await;
+        )
+        .await;
         let rows = inserts.lock().unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].event_type, "LOGIN_SUCCESS");
@@ -396,12 +435,19 @@ mod tests {
         // caller returns normally — matches "best-effort" semantics.
         let bus = AuthEventBus::new();
         let mut rx = bus.subscribe();
-        let audit = MockAudit { fail: true, ..Default::default() };
+        let audit = MockAudit {
+            fail: true,
+            ..Default::default()
+        };
         bus.publish_and_audit(
             AuthEvent::now("LOGOUT").with_session("sess-xyz"),
             &audit,
-            None, None, None, None,
-        ).await;
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
         let got = rx.recv().await.unwrap();
         assert_eq!(got.event_type, "LOGOUT");
     }
@@ -413,7 +459,8 @@ mod tests {
         let inserts = audit.inserts.clone();
         let mut ev = AuthEvent::now("TENANT_SWITCH");
         ev.detail = Some(serde_json::json!({"from": "t1", "to": "t2"}));
-        bus.publish_and_audit(ev, &audit, None, None, None, None).await;
+        bus.publish_and_audit(ev, &audit, None, None, None, None)
+            .await;
         let rows = inserts.lock().unwrap();
         assert_eq!(rows[0].detail.as_ref().unwrap()["to"], "t2");
     }
@@ -443,7 +490,9 @@ mod tests {
             event_type: &str,
             payload: serde_json::Value,
         ) -> Result<Uuid, AuthError> {
-            if self.fail { return Err(AuthError::Internal("forced outbox".into())); }
+            if self.fail {
+                return Err(AuthError::Internal("forced outbox".into()));
+            }
             self.calls.lock().unwrap().push(OutboxCall {
                 tenant_id,
                 event_type: event_type.to_string(),
@@ -451,10 +500,18 @@ mod tests {
             });
             Ok(Uuid::new_v4())
         }
-        async fn claim_pending(&self, _: i64) -> Result<Vec<OutboxRecord>, AuthError> { Ok(vec![]) }
-        async fn mark_published(&self, _: Uuid) -> Result<(), AuthError> { Ok(()) }
-        async fn mark_retry(&self, _: Uuid, _: i32, _: &str) -> Result<(), AuthError> { Ok(()) }
-        async fn delete_by_user(&self, _: Uuid) -> Result<(), AuthError> { Ok(()) }
+        async fn claim_pending(&self, _: i64) -> Result<Vec<OutboxRecord>, AuthError> {
+            Ok(vec![])
+        }
+        async fn mark_published(&self, _: Uuid) -> Result<(), AuthError> {
+            Ok(())
+        }
+        async fn mark_retry(&self, _: Uuid, _: i32, _: &str) -> Result<(), AuthError> {
+            Ok(())
+        }
+        async fn delete_by_user(&self, _: Uuid) -> Result<(), AuthError> {
+            Ok(())
+        }
     }
 
     #[tokio::test]
@@ -474,11 +531,15 @@ mod tests {
         let mut ev = ev;
         ev.detail = Some(serde_json::json!({"ip": "1.2.3.4", "email": "user@example.com"}));
 
-        bus.publish_and_audit_outbox(ev, &audit, &outbox, None, None, None, None).await;
+        bus.publish_and_audit_outbox(ev, &audit, &outbox, None, None, None, None)
+            .await;
 
         let rows = calls.lock().unwrap();
         assert_eq!(rows.len(), 1, "exactly one outbox enqueue");
-        assert_eq!(rows[0].event_type, "auth.login_success", "event_type normalized to auth.* prefix");
+        assert_eq!(
+            rows[0].event_type, "auth.login_success",
+            "event_type normalized to auth.* prefix"
+        );
         assert_eq!(rows[0].tenant_id, Some(tid), "tenant_id forwarded");
 
         let p = &rows[0].payload;
@@ -487,8 +548,14 @@ mod tests {
         assert_eq!(p["tenant_id"].as_str(), Some(tid.to_string().as_str()));
         assert!(p.get("timestamp").is_some(), "timestamp present");
         // PII check: detail/email must NOT be in outbox payload.
-        assert!(p.get("detail").is_none(), "detail must be stripped from outbox payload (PII)");
-        assert!(p.get("session_id").is_none(), "session_id must not be in outbox payload");
+        assert!(
+            p.get("detail").is_none(),
+            "detail must be stripped from outbox payload (PII)"
+        );
+        assert!(
+            p.get("session_id").is_none(),
+            "session_id must not be in outbox payload"
+        );
     }
 
     #[tokio::test]
@@ -500,9 +567,14 @@ mod tests {
 
         bus.publish_and_audit_outbox(
             AuthEvent::now("LOGOUT"),
-            &audit, &outbox,
-            None, None, None, None,
-        ).await;
+            &audit,
+            &outbox,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
 
         let rows = calls.lock().unwrap();
         assert_eq!(rows[0].event_type, "auth.logout");
@@ -513,13 +585,21 @@ mod tests {
         let bus = AuthEventBus::new();
         let mut rx = bus.subscribe();
         let audit = MockAudit::default();
-        let outbox = MockOutbox { fail: true, ..Default::default() };
+        let outbox = MockOutbox {
+            fail: true,
+            ..Default::default()
+        };
 
         bus.publish_and_audit_outbox(
             AuthEvent::now("LOGIN_SUCCESS"),
-            &audit, &outbox,
-            None, None, None, None,
-        ).await;
+            &audit,
+            &outbox,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
 
         // SSE broadcast must still fire despite outbox failure.
         let got = rx.recv().await.unwrap();
@@ -538,12 +618,14 @@ mod tests {
         let uid = Uuid::new_v4();
         bus.publish_and_audit_outbox(
             AuthEvent::now("LOGIN_SUCCESS").with_user(uid.to_string()),
-            &audit, &outbox,
+            &audit,
+            &outbox,
             Some("10.0.0.1".into()),
             Some("SESSION".into()),
             Some("sess-1".into()),
             None,
-        ).await;
+        )
+        .await;
 
         assert_eq!(audit_rows.lock().unwrap().len(), 1, "audit row inserted");
         assert_eq!(outbox_calls.lock().unwrap().len(), 1, "outbox enqueued");

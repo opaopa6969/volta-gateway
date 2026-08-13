@@ -29,13 +29,27 @@ pub enum OidcState {
 
 impl FlowState for OidcState {
     fn is_terminal(&self) -> bool {
-        matches!(self, Self::Complete | Self::CompleteMfaPending | Self::Blocked | Self::TerminalError)
+        matches!(
+            self,
+            Self::Complete | Self::CompleteMfaPending | Self::Blocked | Self::TerminalError
+        )
     }
-    fn is_initial(&self) -> bool { matches!(self, Self::Init) }
+    fn is_initial(&self) -> bool {
+        matches!(self, Self::Init)
+    }
     fn all_states() -> &'static [Self] {
-        &[Self::Init, Self::Redirected, Self::CallbackReceived, Self::TokenExchanged,
-          Self::UserResolved, Self::RiskChecked, Self::Complete, Self::CompleteMfaPending,
-          Self::Blocked, Self::TerminalError]
+        &[
+            Self::Init,
+            Self::Redirected,
+            Self::CallbackReceived,
+            Self::TokenExchanged,
+            Self::UserResolved,
+            Self::RiskChecked,
+            Self::Complete,
+            Self::CompleteMfaPending,
+            Self::Blocked,
+            Self::TerminalError,
+        ]
     }
 }
 
@@ -43,7 +57,7 @@ impl FlowState for OidcState {
 
 #[derive(Debug, Clone)]
 pub struct OidcInitData {
-    pub provider: String,      // google, github, microsoft, etc.
+    pub provider: String, // google, github, microsoft, etc.
     pub redirect_uri: String,
     pub state: String,
     pub nonce: String,
@@ -75,7 +89,7 @@ pub struct OidcUserData {
 
 #[derive(Debug, Clone)]
 pub struct RiskCheckResult {
-    pub risk_level: String,  // low, medium, high
+    pub risk_level: String, // low, medium, high
     pub mfa_required: bool,
     pub blocked: bool,
 }
@@ -84,25 +98,43 @@ pub struct RiskCheckResult {
 
 struct OidcInitProcessor;
 impl StateProcessor<OidcState> for OidcInitProcessor {
-    fn name(&self) -> &str { "OidcInit" }
-    fn requires(&self) -> Vec<TypeId> { requires!(OidcInitData) }
-    fn produces(&self) -> Vec<TypeId> { vec![] }
+    fn name(&self) -> &str {
+        "OidcInit"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        requires!(OidcInitData)
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        vec![]
+    }
     fn process(&self, ctx: &mut FlowContext) -> Result<(), FlowError> {
         let data = ctx.get::<OidcInitData>()?;
-        if data.provider.is_empty() { return Err(FlowError::new("INIT", "provider required")); }
-        if data.redirect_uri.is_empty() { return Err(FlowError::new("INIT", "redirect_uri required")); }
+        if data.provider.is_empty() {
+            return Err(FlowError::new("INIT", "provider required"));
+        }
+        if data.redirect_uri.is_empty() {
+            return Err(FlowError::new("INIT", "redirect_uri required"));
+        }
         Ok(())
     }
 }
 
 struct TokenExchangeProcessor;
 impl StateProcessor<OidcState> for TokenExchangeProcessor {
-    fn name(&self) -> &str { "TokenExchange" }
-    fn requires(&self) -> Vec<TypeId> { requires!(OidcCallbackData) }
-    fn produces(&self) -> Vec<TypeId> { data_types!(OidcTokenData) }
+    fn name(&self) -> &str {
+        "TokenExchange"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        requires!(OidcCallbackData)
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        data_types!(OidcTokenData)
+    }
     fn process(&self, ctx: &mut FlowContext) -> Result<(), FlowError> {
         let cb = ctx.get::<OidcCallbackData>()?;
-        if cb.code.is_empty() { return Err(FlowError::new("CALLBACK", "code required")); }
+        if cb.code.is_empty() {
+            return Err(FlowError::new("CALLBACK", "code required"));
+        }
         // If AuthService pre-filled real token data, validate it.
         // Otherwise produce placeholder (for unit tests / standalone SM runs).
         if let Some(token) = ctx.find::<OidcTokenData>() {
@@ -122,9 +154,15 @@ impl StateProcessor<OidcState> for TokenExchangeProcessor {
 
 struct UserResolveProcessor;
 impl StateProcessor<OidcState> for UserResolveProcessor {
-    fn name(&self) -> &str { "UserResolve" }
-    fn requires(&self) -> Vec<TypeId> { requires!(OidcTokenData) }
-    fn produces(&self) -> Vec<TypeId> { data_types!(OidcUserData) }
+    fn name(&self) -> &str {
+        "UserResolve"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        requires!(OidcTokenData)
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        data_types!(OidcUserData)
+    }
     fn process(&self, ctx: &mut FlowContext) -> Result<(), FlowError> {
         let _token = ctx.get::<OidcTokenData>()?;
         // If AuthService pre-filled real user data, validate it.
@@ -138,8 +176,12 @@ impl StateProcessor<OidcState> for UserResolveProcessor {
             }
         } else {
             ctx.put(OidcUserData {
-                user_id: String::new(), email: String::new(), display_name: String::new(),
-                tenant_id: String::new(), roles: vec![], is_new_user: false,
+                user_id: String::new(),
+                email: String::new(),
+                display_name: String::new(),
+                tenant_id: String::new(),
+                roles: vec![],
+                is_new_user: false,
             });
         }
         Ok(())
@@ -148,13 +190,23 @@ impl StateProcessor<OidcState> for UserResolveProcessor {
 
 struct RiskCheckProcessor;
 impl StateProcessor<OidcState> for RiskCheckProcessor {
-    fn name(&self) -> &str { "RiskCheck" }
-    fn requires(&self) -> Vec<TypeId> { requires!(OidcUserData) }
-    fn produces(&self) -> Vec<TypeId> { data_types!(RiskCheckResult) }
+    fn name(&self) -> &str {
+        "RiskCheck"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        requires!(OidcUserData)
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        data_types!(RiskCheckResult)
+    }
     fn process(&self, ctx: &mut FlowContext) -> Result<(), FlowError> {
         let _user = ctx.get::<OidcUserData>()?;
         // Placeholder — real impl checks FraudAlert, device trust
-        ctx.put(RiskCheckResult { risk_level: "low".into(), mfa_required: false, blocked: false });
+        ctx.put(RiskCheckResult {
+            risk_level: "low".into(),
+            mfa_required: false,
+            blocked: false,
+        });
         Ok(())
     }
 }
@@ -163,13 +215,21 @@ impl StateProcessor<OidcState> for RiskCheckProcessor {
 
 struct RiskBranch;
 impl BranchProcessor<OidcState> for RiskBranch {
-    fn name(&self) -> &str { "RiskBranch" }
-    fn requires(&self) -> Vec<TypeId> { requires!(RiskCheckResult) }
+    fn name(&self) -> &str {
+        "RiskBranch"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        requires!(RiskCheckResult)
+    }
     fn decide(&self, ctx: &FlowContext) -> String {
         match ctx.find::<RiskCheckResult>() {
             Some(risk) => {
-                if risk.blocked { return "blocked".into(); }
-                if risk.mfa_required { return "mfa_pending".into(); }
+                if risk.blocked {
+                    return "blocked".into();
+                }
+                if risk.mfa_required {
+                    return "mfa_pending".into();
+                }
                 "complete".into()
             }
             None => "complete".into(),
@@ -181,9 +241,15 @@ impl BranchProcessor<OidcState> for RiskBranch {
 
 struct CallbackGuard;
 impl TransitionGuard<OidcState> for CallbackGuard {
-    fn name(&self) -> &str { "OidcCallbackGuard" }
-    fn requires(&self) -> Vec<TypeId> { vec![] }
-    fn produces(&self) -> Vec<TypeId> { data_types!(OidcCallbackData) }
+    fn name(&self) -> &str {
+        "OidcCallbackGuard"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        vec![]
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        data_types!(OidcCallbackData)
+    }
     fn validate(&self, ctx: &FlowContext) -> GuardOutput {
         match ctx.find::<OidcCallbackData>() {
             Some(data) => GuardOutput::accept_with(data.clone()),
@@ -202,22 +268,25 @@ pub fn build_oidc_flow() -> Arc<FlowDefinition<OidcState>> {
             .strict_mode()
             .initially_available(requires!(OidcInitData))
             .externally_provided(data_types!(OidcCallbackData))
-
-            .from(Init).auto(Redirected, OidcInitProcessor)
-            .from(Redirected).external(CallbackReceived, CallbackGuard)
-            .from(CallbackReceived).auto(TokenExchanged, TokenExchangeProcessor)
-            .from(TokenExchanged).auto(UserResolved, UserResolveProcessor)
-            .from(UserResolved).auto(RiskChecked, RiskCheckProcessor)
-            .from(RiskChecked).branch(RiskBranch)
-                .to(Complete, "complete")
-                .to(CompleteMfaPending, "mfa_pending")
-                .to(Blocked, "blocked")
-                .end_branch()
-
+            .from(Init)
+            .auto(Redirected, OidcInitProcessor)
+            .from(Redirected)
+            .external(CallbackReceived, CallbackGuard)
+            .from(CallbackReceived)
+            .auto(TokenExchanged, TokenExchangeProcessor)
+            .from(TokenExchanged)
+            .auto(UserResolved, UserResolveProcessor)
+            .from(UserResolved)
+            .auto(RiskChecked, RiskCheckProcessor)
+            .from(RiskChecked)
+            .branch(RiskBranch)
+            .to(Complete, "complete")
+            .to(CompleteMfaPending, "mfa_pending")
+            .to(Blocked, "blocked")
+            .end_branch()
             .on_any_error(TerminalError)
-
             .build()
-            .expect("OIDC flow definition is invalid")
+            .expect("OIDC flow definition is invalid"),
     )
 }
 
@@ -235,12 +304,16 @@ mod tests {
     fn oidc_flow_init_to_redirected() {
         let def = build_oidc_flow();
         let mut engine = FlowEngine::new(InMemoryFlowStore::new());
-        let data: Vec<(TypeId, Box<dyn CloneAny>)> = vec![
-            (TypeId::of::<OidcInitData>(), Box::new(OidcInitData {
-                provider: "google".into(), redirect_uri: "https://app/callback".into(),
-                state: "state123".into(), nonce: "nonce456".into(), app_id: None,
-            })),
-        ];
+        let data: Vec<(TypeId, Box<dyn CloneAny>)> = vec![(
+            TypeId::of::<OidcInitData>(),
+            Box::new(OidcInitData {
+                provider: "google".into(),
+                redirect_uri: "https://app/callback".into(),
+                state: "state123".into(),
+                nonce: "nonce456".into(),
+                app_id: None,
+            }),
+        )];
         let flow_id = engine.start_flow(def, "test", data).unwrap();
         let flow = engine.store.get(&flow_id).unwrap();
         assert_eq!(flow.current_state(), OidcState::Redirected);
@@ -250,20 +323,26 @@ mod tests {
     fn oidc_flow_full_happy_path() {
         let def = build_oidc_flow();
         let mut engine = FlowEngine::new(InMemoryFlowStore::new());
-        let data: Vec<(TypeId, Box<dyn CloneAny>)> = vec![
-            (TypeId::of::<OidcInitData>(), Box::new(OidcInitData {
-                provider: "google".into(), redirect_uri: "https://app/callback".into(),
-                state: "s".into(), nonce: "n".into(), app_id: None,
-            })),
-        ];
+        let data: Vec<(TypeId, Box<dyn CloneAny>)> = vec![(
+            TypeId::of::<OidcInitData>(),
+            Box::new(OidcInitData {
+                provider: "google".into(),
+                redirect_uri: "https://app/callback".into(),
+                state: "s".into(),
+                nonce: "n".into(),
+                app_id: None,
+            }),
+        )];
         let flow_id = engine.start_flow(def, "test", data).unwrap();
 
         // Resume with callback
-        let cb: Vec<(TypeId, Box<dyn CloneAny>)> = vec![
-            (TypeId::of::<OidcCallbackData>(), Box::new(OidcCallbackData {
-                code: "auth-code-123".into(), state: "s".into(),
-            })),
-        ];
+        let cb: Vec<(TypeId, Box<dyn CloneAny>)> = vec![(
+            TypeId::of::<OidcCallbackData>(),
+            Box::new(OidcCallbackData {
+                code: "auth-code-123".into(),
+                state: "s".into(),
+            }),
+        )];
         engine.resume_and_execute(&flow_id, cb).unwrap();
 
         let flow = engine.store.get(&flow_id).unwrap();

@@ -9,8 +9,8 @@
 //!        volta --validate config.yaml
 
 use tramli::FlowState;
-use volta_auth_core::{jwt::JwtVerifier, session::SessionVerifier, policy::PolicyEngine};
-use volta_auth_core::flow::{oidc, mfa, passkey, invite};
+use volta_auth_core::flow::{invite, mfa, oidc, passkey};
+use volta_auth_core::{jwt::JwtVerifier, policy::PolicyEngine, session::SessionVerifier};
 
 fn main() {
     println!("volta unified binary v0.1.0");
@@ -33,10 +33,22 @@ fn main() {
     let _invite = invite::build_invite_flow();
     let _token = volta_auth_core::token::build_token_flow();
 
-    println!("  OIDC flow:        ✓ ({} states)", oidc::OidcState::all_states().len());
-    println!("  MFA flow:         ✓ ({} states)", mfa::MfaState::all_states().len());
-    println!("  Passkey flow:     ✓ ({} states)", passkey::PasskeyState::all_states().len());
-    println!("  Invite flow:      ✓ ({} states)", invite::InviteState::all_states().len());
+    println!(
+        "  OIDC flow:        ✓ ({} states)",
+        oidc::OidcState::all_states().len()
+    );
+    println!(
+        "  MFA flow:         ✓ ({} states)",
+        mfa::MfaState::all_states().len()
+    );
+    println!(
+        "  Passkey flow:     ✓ ({} states)",
+        passkey::PasskeyState::all_states().len()
+    );
+    println!(
+        "  Invite flow:      ✓ ({} states)",
+        invite::InviteState::all_states().len()
+    );
     println!("  Token flow:       ✓");
     println!();
 

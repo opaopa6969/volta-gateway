@@ -38,7 +38,10 @@ pub struct RiskThresholds {
 
 impl Default for RiskThresholds {
     fn default() -> Self {
-        Self { action: 4, block: 5 }
+        Self {
+            action: 4,
+            block: 5,
+        }
     }
 }
 
@@ -60,12 +63,24 @@ pub const MAX_LEVEL: u8 = 6;
 /// the Java fail-open default). `extra` lets a remote fraud service add points.
 pub fn score(signals: &RiskSignals, extra: u8) -> u8 {
     let mut level: u8 = 1;
-    if signals.new_device { level += 2; }
-    if signals.impossible_travel { level += 3; }
-    if signals.asn_or_geo_changed { level += 1; }
-    if signals.ip_changed { level += 1; }
-    if signals.ua_changed { level += 1; }
-    if signals.off_hours { level += 1; }
+    if signals.new_device {
+        level += 2;
+    }
+    if signals.impossible_travel {
+        level += 3;
+    }
+    if signals.asn_or_geo_changed {
+        level += 1;
+    }
+    if signals.ip_changed {
+        level += 1;
+    }
+    if signals.ua_changed {
+        level += 1;
+    }
+    if signals.off_hours {
+        level += 1;
+    }
     level = level.saturating_add(extra);
     level.min(MAX_LEVEL)
 }
@@ -82,7 +97,11 @@ pub fn decide(level: u8, t: &RiskThresholds) -> RiskDecision {
 }
 
 /// Convenience: score + decide in one call.
-pub fn evaluate(signals: &RiskSignals, thresholds: &RiskThresholds, extra: u8) -> (u8, RiskDecision) {
+pub fn evaluate(
+    signals: &RiskSignals,
+    thresholds: &RiskThresholds,
+    extra: u8,
+) -> (u8, RiskDecision) {
     let level = score(signals, extra);
     (level, decide(level, thresholds))
 }
@@ -101,7 +120,11 @@ mod tests {
     #[test]
     fn new_device_off_hours_steps_up() {
         // 1 + 2(new_device) + 1(off_hours) = 4 == action threshold
-        let s = RiskSignals { new_device: true, off_hours: true, ..Default::default() };
+        let s = RiskSignals {
+            new_device: true,
+            off_hours: true,
+            ..Default::default()
+        };
         let (level, d) = evaluate(&s, &RiskThresholds::default(), 0);
         assert_eq!(level, 4);
         assert_eq!(d, RiskDecision::StepUp);
@@ -110,7 +133,11 @@ mod tests {
     #[test]
     fn impossible_travel_plus_new_device_blocks() {
         // 1 + 3 + 2 = 6 >= block(5)
-        let s = RiskSignals { impossible_travel: true, new_device: true, ..Default::default() };
+        let s = RiskSignals {
+            impossible_travel: true,
+            new_device: true,
+            ..Default::default()
+        };
         let (_l, d) = evaluate(&s, &RiskThresholds::default(), 0);
         assert_eq!(d, RiskDecision::Block);
     }
@@ -120,13 +147,19 @@ mod tests {
         // extra points from a remote service still cap at MAX_LEVEL
         assert_eq!(score(&RiskSignals::default(), 100), MAX_LEVEL);
         // custom lenient thresholds never block a base login
-        let lenient = RiskThresholds { action: 5, block: 6 };
+        let lenient = RiskThresholds {
+            action: 5,
+            block: 6,
+        };
         assert_eq!(decide(1, &lenient), RiskDecision::Allow);
     }
 
     #[test]
     fn thresholds_are_inclusive() {
-        let t = RiskThresholds { action: 3, block: 5 };
+        let t = RiskThresholds {
+            action: 3,
+            block: 5,
+        };
         assert_eq!(decide(2, &t), RiskDecision::Allow);
         assert_eq!(decide(3, &t), RiskDecision::StepUp);
         assert_eq!(decide(5, &t), RiskDecision::Block);

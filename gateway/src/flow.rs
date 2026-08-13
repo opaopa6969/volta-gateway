@@ -4,12 +4,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tramli::{
-    Builder, FlowContext, FlowDefinition, FlowError, GuardOutput,
-    StateProcessor, TransitionGuard, requires, data_types,
+    data_types, requires, Builder, FlowContext, FlowDefinition, FlowError, GuardOutput,
+    StateProcessor, TransitionGuard,
 };
 
-use crate::state::ProxyState;
 use crate::proxy::RoutingTable;
+use crate::state::ProxyState;
 
 // ─── FlowData types ─────────────────────────────────────
 
@@ -27,8 +27,8 @@ pub struct RequestData {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct RouteTarget {
-    pub backend_url: String,       // selected by round-robin (or first)
-    pub backends: Vec<String>,     // all available backends
+    pub backend_url: String,   // selected by round-robin (or first)
+    pub backends: Vec<String>, // all available backends
     pub app_id: Option<String>,
 }
 
@@ -52,9 +52,15 @@ pub struct RequestValidator {
 }
 
 impl StateProcessor<ProxyState> for RequestValidator {
-    fn name(&self) -> &str { "RequestValidator" }
-    fn requires(&self) -> Vec<TypeId> { requires!(RequestData) }
-    fn produces(&self) -> Vec<TypeId> { vec![] }
+    fn name(&self) -> &str {
+        "RequestValidator"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        requires!(RequestData)
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        vec![]
+    }
 
     fn process(&self, ctx: &mut FlowContext) -> Result<(), FlowError> {
         let req = ctx.get::<RequestData>()?;
@@ -77,11 +83,16 @@ impl StateProcessor<ProxyState> for RequestValidator {
         // #52: Check URL-decoded variants (%2e%2e, %252e%252e)
         let decoded = urlencoding_decode(&req.path);
         if decoded.contains("..") {
-            return Err(FlowError::new("BAD_REQUEST", "Invalid path (encoded traversal)"));
+            return Err(FlowError::new(
+                "BAD_REQUEST",
+                "Invalid path (encoded traversal)",
+            ));
         }
 
         let known = self.routing.contains_key(&req.host) || {
-            req.host.splitn(2, '.').nth(1)
+            req.host
+                .splitn(2, '.')
+                .nth(1)
                 .map(|domain| self.routing.contains_key(&format!("*.{domain}")))
                 .unwrap_or(false)
         };
@@ -108,27 +119,42 @@ pub struct RoutingResolver {
 }
 
 impl StateProcessor<ProxyState> for RoutingResolver {
-    fn name(&self) -> &str { "RoutingResolver" }
-    fn requires(&self) -> Vec<TypeId> { requires!(RequestData) }
-    fn produces(&self) -> Vec<TypeId> { data_types!(RouteTarget) }
+    fn name(&self) -> &str {
+        "RoutingResolver"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        requires!(RequestData)
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        data_types!(RouteTarget)
+    }
 
     fn process(&self, ctx: &mut FlowContext) -> Result<(), FlowError> {
         let req = ctx.get::<RequestData>()?;
         let host = req.host.clone();
 
-        let route_info = self.routing.get(&host)
+        let route_info = self
+            .routing
+            .get(&host)
             .or_else(|| {
-                host.splitn(2, '.').nth(1)
+                host.splitn(2, '.')
+                    .nth(1)
                     .and_then(|domain| self.routing.get(&format!("*.{domain}")))
             })
             .ok_or_else(|| FlowError::new("BAD_REQUEST", "No route"))?
             .clone();
 
-        let backend = route_info.backends.first()
+        let backend = route_info
+            .backends
+            .first()
             .ok_or_else(|| FlowError::new("BAD_REQUEST", "No backends configured"))?
             .clone();
 
-        ctx.put(RouteTarget { backend_url: backend, backends: route_info.backends, app_id: route_info.app_id });
+        ctx.put(RouteTarget {
+            backend_url: backend,
+            backends: route_info.backends,
+            app_id: route_info.app_id,
+        });
         Ok(())
     }
 }
@@ -136,10 +162,18 @@ impl StateProcessor<ProxyState> for RoutingResolver {
 pub struct CompletionProcessor;
 
 impl StateProcessor<ProxyState> for CompletionProcessor {
-    fn name(&self) -> &str { "CompletionProcessor" }
-    fn requires(&self) -> Vec<TypeId> { requires!(BackendResponse) }
-    fn produces(&self) -> Vec<TypeId> { vec![] }
-    fn process(&self, _ctx: &mut FlowContext) -> Result<(), FlowError> { Ok(()) }
+    fn name(&self) -> &str {
+        "CompletionProcessor"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        requires!(BackendResponse)
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        vec![]
+    }
+    fn process(&self, _ctx: &mut FlowContext) -> Result<(), FlowError> {
+        Ok(())
+    }
 }
 
 // ─── Guards ─────────────────────────────────────────────
@@ -147,9 +181,15 @@ impl StateProcessor<ProxyState> for CompletionProcessor {
 pub struct AuthGuard;
 
 impl TransitionGuard<ProxyState> for AuthGuard {
-    fn name(&self) -> &str { "AuthGuard" }
-    fn requires(&self) -> Vec<TypeId> { vec![] }
-    fn produces(&self) -> Vec<TypeId> { data_types!(AuthData) }
+    fn name(&self) -> &str {
+        "AuthGuard"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        vec![]
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        data_types!(AuthData)
+    }
 
     fn validate(&self, ctx: &FlowContext) -> GuardOutput {
         match ctx.find::<AuthData>() {
@@ -162,9 +202,15 @@ impl TransitionGuard<ProxyState> for AuthGuard {
 pub struct ForwardGuard;
 
 impl TransitionGuard<ProxyState> for ForwardGuard {
-    fn name(&self) -> &str { "ForwardGuard" }
-    fn requires(&self) -> Vec<TypeId> { requires!(RouteTarget) }
-    fn produces(&self) -> Vec<TypeId> { data_types!(BackendResponse) }
+    fn name(&self) -> &str {
+        "ForwardGuard"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        requires!(RouteTarget)
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        data_types!(BackendResponse)
+    }
 
     fn validate(&self, ctx: &FlowContext) -> GuardOutput {
         match ctx.find::<BackendResponse>() {
@@ -190,27 +236,34 @@ pub fn build_proxy_flow_with_allowlist(
     let def = Arc::new(
         Builder::new("proxy")
             .ttl(Duration::from_secs(30))
-            .strict_mode()  // tramli 3.6: definition-level strict (replaces engine-level)
+            .strict_mode() // tramli 3.6: definition-level strict (replaces engine-level)
             .initially_available(requires!(RequestData))
             .externally_provided(data_types!(AuthData, BackendResponse))
-
-            .from(Received).auto(Validated, RequestValidator { routing: routing.clone(), ip_allowlists })
-            .from(Validated).auto(Routed, RoutingResolver { routing })
-            .from(Routed).external(AuthChecked, AuthGuard)
-            .from(AuthChecked).external(Forwarded, ForwardGuard)
-            .from(Forwarded).auto(Completed, CompletionProcessor)
-
+            .from(Received)
+            .auto(
+                Validated,
+                RequestValidator {
+                    routing: routing.clone(),
+                    ip_allowlists,
+                },
+            )
+            .from(Validated)
+            .auto(Routed, RoutingResolver { routing })
+            .from(Routed)
+            .external(AuthChecked, AuthGuard)
+            .from(AuthChecked)
+            .external(Forwarded, ForwardGuard)
+            .from(Forwarded)
+            .auto(Completed, CompletionProcessor)
             // GW-17: an IP-allowlist rejection surfaces as a "DENIED" FlowError
             // from the RequestValidator (which runs on the Received→Validated
             // auto step). Route it to the Denied terminal (403) instead of
             // letting on_any_error collapse it into BadGateway. Checked before
             // on_any_error, so every other error still falls through unchanged.
             .on_step_error(Received, |e| e.code == "DENIED", "ip-denied", Denied)
-
             .on_any_error(BadGateway)
-
             .build()
-            .expect("Proxy flow definition is invalid")
+            .expect("Proxy flow definition is invalid"),
     );
 
     // tramli-plugins 3.2: lint the flow definition at startup
@@ -230,7 +283,9 @@ pub fn build_proxy_flow_with_allowlist(
 
 /// Generate diagram bundle (Mermaid + data-flow JSON + markdown summary).
 #[allow(dead_code)]
-pub fn generate_diagrams(def: &FlowDefinition<ProxyState>) -> tramli_plugins::diagram::DiagramBundle {
+pub fn generate_diagrams(
+    def: &FlowDefinition<ProxyState>,
+) -> tramli_plugins::diagram::DiagramBundle {
     tramli_plugins::diagram::DiagramPlugin::generate(def)
 }
 
@@ -242,7 +297,9 @@ pub fn generate_docs(def: &FlowDefinition<ProxyState>) -> String {
 
 /// Generate BDD test scenarios from flow definition.
 #[allow(dead_code)]
-pub fn generate_test_plan(def: &FlowDefinition<ProxyState>) -> tramli_plugins::testing::FlowTestPlan {
+pub fn generate_test_plan(
+    def: &FlowDefinition<ProxyState>,
+) -> tramli_plugins::testing::FlowTestPlan {
     tramli_plugins::testing::ScenarioTestPlugin::generate(def)
 }
 
@@ -253,10 +310,7 @@ fn urlencoding_decode(input: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let (Some(hi), Some(lo)) = (
-                hex_val(bytes[i + 1]),
-                hex_val(bytes[i + 2]),
-            ) {
+            if let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
                 result.push((hi << 4 | lo) as char);
                 i += 3;
                 continue;
@@ -268,7 +322,9 @@ fn urlencoding_decode(input: &str) -> String {
     // Second pass for double-encoding (%252e → %2e → .)
     if result.contains('%') && result != input {
         let second = urlencoding_decode(&result);
-        if second != result { return second; }
+        if second != result {
+            return second;
+        }
     }
     result
 }

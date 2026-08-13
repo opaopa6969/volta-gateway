@@ -1,7 +1,7 @@
-use async_trait::async_trait;
-use uuid::Uuid;
 use crate::error::AuthError;
 use crate::record::UserRecord;
+use async_trait::async_trait;
+use uuid::Uuid;
 
 /// User data access trait.
 #[async_trait]

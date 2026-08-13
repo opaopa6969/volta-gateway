@@ -19,7 +19,10 @@ pub struct DummySender {
 
 impl DummySender {
     pub fn new(channel: NotificationChannel) -> Self {
-        Self { channel, sent: Mutex::new(Vec::new()) }
+        Self {
+            channel,
+            sent: Mutex::new(Vec::new()),
+        }
     }
 
     /// Snapshot of captured messages.
@@ -56,8 +59,14 @@ impl NotificationSender for DummySender {
         Self::provider_for(self.channel)
     }
 
-    async fn send(&self, msg: &NotificationMessage) -> Result<NotificationReceipt, NotificationError> {
-        self.sent.lock().expect("dummy sender lock").push(msg.clone());
+    async fn send(
+        &self,
+        msg: &NotificationMessage,
+    ) -> Result<NotificationReceipt, NotificationError> {
+        self.sent
+            .lock()
+            .expect("dummy sender lock")
+            .push(msg.clone());
         Ok(NotificationReceipt {
             channel: self.channel,
             provider: self.provider(),
@@ -88,7 +97,10 @@ impl NotificationSender for LogSender {
         NotificationProvider::Log
     }
 
-    async fn send(&self, msg: &NotificationMessage) -> Result<NotificationReceipt, NotificationError> {
+    async fn send(
+        &self,
+        msg: &NotificationMessage,
+    ) -> Result<NotificationReceipt, NotificationError> {
         // Do NOT log template vars (may contain OTPs / tokens). Log routing
         // metadata only.
         tracing::info!(

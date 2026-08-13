@@ -24,10 +24,19 @@ pub enum DeviceGrantState {
 }
 
 impl FlowState for DeviceGrantState {
-    fn is_terminal(&self) -> bool { matches!(self, Self::Completed | Self::Rejected) }
-    fn is_initial(&self) -> bool { matches!(self, Self::Pending) }
+    fn is_terminal(&self) -> bool {
+        matches!(self, Self::Completed | Self::Rejected)
+    }
+    fn is_initial(&self) -> bool {
+        matches!(self, Self::Pending)
+    }
     fn all_states() -> &'static [Self] {
-        &[Self::Pending, Self::Approved, Self::Completed, Self::Rejected]
+        &[
+            Self::Pending,
+            Self::Approved,
+            Self::Completed,
+            Self::Rejected,
+        ]
     }
 }
 
@@ -45,9 +54,15 @@ pub struct DeviceDecisionProof {
 
 struct DecisionGuard;
 impl TransitionGuard<DeviceGrantState> for DecisionGuard {
-    fn name(&self) -> &str { "DeviceDecisionGuard" }
-    fn requires(&self) -> Vec<TypeId> { vec![] }
-    fn produces(&self) -> Vec<TypeId> { data_types!(DeviceDecisionProof) }
+    fn name(&self) -> &str {
+        "DeviceDecisionGuard"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        vec![]
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        data_types!(DeviceDecisionProof)
+    }
     fn validate(&self, ctx: &FlowContext) -> GuardOutput {
         match ctx.find::<DeviceDecisionProof>() {
             Some(p) if p.approved => GuardOutput::accept_with(p.clone()),
@@ -59,9 +74,15 @@ impl TransitionGuard<DeviceGrantState> for DecisionGuard {
 
 struct IssueTokenProcessor;
 impl StateProcessor<DeviceGrantState> for IssueTokenProcessor {
-    fn name(&self) -> &str { "DeviceIssueToken" }
-    fn requires(&self) -> Vec<TypeId> { requires!(DeviceDecisionProof) }
-    fn produces(&self) -> Vec<TypeId> { vec![] }
+    fn name(&self) -> &str {
+        "DeviceIssueToken"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        requires!(DeviceDecisionProof)
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        vec![]
+    }
     fn process(&self, ctx: &mut FlowContext) -> Result<(), FlowError> {
         // Real token issuance happens in the HTTP layer on the device's poll;
         // here we only assert the decision is present.

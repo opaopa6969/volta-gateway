@@ -25,10 +25,12 @@ async fn setup() -> (
         .await
         .unwrap();
 
-    sqlx::raw_sql(include_str!("../migrations/024_create_notification_jobs.sql"))
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::raw_sql(include_str!(
+        "../migrations/024_create_notification_jobs.sql"
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
 
     (PgStore::new(pool), container)
 }
@@ -39,19 +41,40 @@ async fn enqueue_is_idempotent_on_correlation_id() {
     let (store, _c) = setup().await;
 
     let id1 = store
-        .enqueue("EMAIL", "a@b.com", "email-verification", serde_json::json!({"k": "v"}), Some("flow-1:send"))
+        .enqueue(
+            "EMAIL",
+            "a@b.com",
+            "email-verification",
+            serde_json::json!({"k": "v"}),
+            Some("flow-1:send"),
+        )
         .await
         .unwrap();
     // Same correlation_id → same job id (no duplicate).
     let id2 = store
-        .enqueue("EMAIL", "a@b.com", "email-verification", serde_json::json!({}), Some("flow-1:send"))
+        .enqueue(
+            "EMAIL",
+            "a@b.com",
+            "email-verification",
+            serde_json::json!({}),
+            Some("flow-1:send"),
+        )
         .await
         .unwrap();
-    assert_eq!(id1, id2, "duplicate correlation_id must not create a new job");
+    assert_eq!(
+        id1, id2,
+        "duplicate correlation_id must not create a new job"
+    );
 
     // NULL correlation_id always inserts a fresh job.
-    let id3 = store.enqueue("EMAIL", "x@y.com", "mfa-code", serde_json::json!({}), None).await.unwrap();
-    let id4 = store.enqueue("EMAIL", "x@y.com", "mfa-code", serde_json::json!({}), None).await.unwrap();
+    let id3 = store
+        .enqueue("EMAIL", "x@y.com", "mfa-code", serde_json::json!({}), None)
+        .await
+        .unwrap();
+    let id4 = store
+        .enqueue("EMAIL", "x@y.com", "mfa-code", serde_json::json!({}), None)
+        .await
+        .unwrap();
     assert_ne!(id3, id4, "NULL correlation_id should not collapse jobs");
 }
 
@@ -61,7 +84,13 @@ async fn claim_mark_sent_and_retry_lifecycle() {
     let (store, _c) = setup().await;
 
     let id = store
-        .enqueue("EMAIL", "a@b.com", "password-reset", serde_json::json!({}), Some("pr-1:send"))
+        .enqueue(
+            "EMAIL",
+            "a@b.com",
+            "password-reset",
+            serde_json::json!({}),
+            Some("pr-1:send"),
+        )
         .await
         .unwrap();
 
@@ -74,7 +103,10 @@ async fn claim_mark_sent_and_retry_lifecycle() {
     // Retry reschedules into the future → no longer immediately claimable.
     store.mark_retry(id, 1, "smtp timeout").await.unwrap();
     let pending = store.claim_pending(10).await.unwrap();
-    assert!(pending.is_empty(), "retried job must be deferred to a future next_attempt_at");
+    assert!(
+        pending.is_empty(),
+        "retried job must be deferred to a future next_attempt_at"
+    );
 
     // Mark sent → terminal, not claimable.
     store.mark_sent(id).await.unwrap();
@@ -103,7 +135,10 @@ async fn claim_mark_sent_and_retry_lifecycle() {
 #[ignore]
 async fn mark_failed_is_not_claimable() {
     let (store, _c) = setup().await;
-    let id = store.enqueue("SMS", "+100", "mfa-code", serde_json::json!({}), None).await.unwrap();
+    let id = store
+        .enqueue("SMS", "+100", "mfa-code", serde_json::json!({}), None)
+        .await
+        .unwrap();
     store.mark_failed(id, "provider disabled").await.unwrap();
     assert!(store.claim_pending(10).await.unwrap().is_empty());
 }

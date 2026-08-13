@@ -13,12 +13,17 @@ use axum::Json;
 use axum_extra::extract::CookieJar;
 use serde::Deserialize;
 use uuid::Uuid;
-use webauthn_rs::prelude::{DiscoverableKey, Passkey, PublicKeyCredential, RegisterPublicKeyCredential};
+use webauthn_rs::prelude::{
+    DiscoverableKey, Passkey, PublicKeyCredential, RegisterPublicKeyCredential,
+};
 
 use crate::error::{no_cache_headers, ApiError};
 use crate::helpers::{extract_session_id, set_session_cookie};
 use crate::state::AppState;
-use volta_auth_core::store::{MembershipStore, PasskeyChallengeRecord, PasskeyChallengeStore, PasskeyStore, SessionStore, TenantStore, UserStore};
+use volta_auth_core::store::{
+    MembershipStore, PasskeyChallengeRecord, PasskeyChallengeStore, PasskeyStore, SessionStore,
+    TenantStore, UserStore,
+};
 
 /// Challenge TTL — same as OIDC flow TTL. WebAuthn spec suggests ≤5 minutes.
 const CHALLENGE_TTL_SECS: i64 = 300;
@@ -33,11 +38,19 @@ const CHALLENGE_TTL_SECS: i64 = 300;
 async fn session_identity(
     s: &AppState,
     user_id: Uuid,
-) -> (String, Option<String>, Vec<String>, Option<String>, Option<String>) {
+) -> (
+    String,
+    Option<String>,
+    Vec<String>,
+    Option<String>,
+    Option<String>,
+) {
     let user = UserStore::find_by_id(&s.db, user_id).await.ok().flatten();
     let email = user.as_ref().map(|u| u.email.clone());
     let display = user.as_ref().and_then(|u| u.display_name.clone());
-    let tenants = TenantStore::find_by_user(&s.db, user_id).await.unwrap_or_default();
+    let tenants = TenantStore::find_by_user(&s.db, user_id)
+        .await
+        .unwrap_or_default();
     if let Some(t) = tenants.first() {
         let role = MembershipStore::find(&s.db, user_id, t.id)
             .await
@@ -45,7 +58,13 @@ async fn session_identity(
             .flatten()
             .map(|m| m.role)
             .unwrap_or_else(|| "MEMBER".into());
-        (t.id.to_string(), Some(t.slug.clone()), vec![role], email, display)
+        (
+            t.id.to_string(),
+            Some(t.slug.clone()),
+            vec![role],
+            email,
+            display,
+        )
     } else {
         (String::new(), None, vec![], email, display)
     }
@@ -95,7 +114,10 @@ pub async fn auth_start(
         .map_err(|e| ApiError::internal(&e.to_string()))?;
     let credentials = passkeys_from_records(&records)?;
     if credentials.is_empty() {
-        return Err(ApiError::unauthorized("PASSKEY_FAILED", "no matching credential"));
+        return Err(ApiError::unauthorized(
+            "PASSKEY_FAILED",
+            "no matching credential",
+        ));
     }
 
     let (challenge, state) = svc
@@ -129,9 +151,14 @@ pub async fn auth_finish(
     let record = PasskeyChallengeStore::consume(&s.db, req.challenge_id)
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?
-        .ok_or_else(|| ApiError::bad_request("INVALID_CHALLENGE", "unknown or expired challenge"))?;
+        .ok_or_else(|| {
+            ApiError::bad_request("INVALID_CHALLENGE", "unknown or expired challenge")
+        })?;
     if record.kind != "auth" {
-        return Err(ApiError::bad_request("INVALID_CHALLENGE", "wrong ceremony kind"));
+        return Err(ApiError::bad_request(
+            "INVALID_CHALLENGE",
+            "wrong ceremony kind",
+        ));
     }
     let auth_state = decode_state(&record.state)?;
 
@@ -198,16 +225,18 @@ pub async fn auth_finish(
     .await
     .map_err(|e| ApiError::internal(&e.to_string()))?;
 
-    s.auth_events.publish_and_audit(
-        crate::auth_events::AuthEvent::now("LOGIN_SUCCESS")
-            .with_user(passkey_row.user_id.to_string())
-            .with_session(session_id.clone()),
-        &s.db,
-        None,
-        Some("SESSION".into()),
-        Some(session_id.clone()),
-        None,
-    ).await;
+    s.auth_events
+        .publish_and_audit(
+            crate::auth_events::AuthEvent::now("LOGIN_SUCCESS")
+                .with_user(passkey_row.user_id.to_string())
+                .with_session(session_id.clone()),
+            &s.db,
+            None,
+            Some("SESSION".into()),
+            Some(session_id.clone()),
+            None,
+        )
+        .await;
 
     let mut resp = Json(serde_json::json!({"ok": true})).into_response();
     set_session_cookie(&mut resp, &session_id, &s);
@@ -222,9 +251,7 @@ pub async fn auth_finish(
 /// No body required. Returns a challenge with `allowCredentials=[]` and
 /// `userVerification=required`. The authenticator presents all resident keys
 /// it holds for this RP; the user picks one.
-pub async fn discover_start(
-    State(s): State<AppState>,
-) -> Result<Response, ApiError> {
+pub async fn discover_start(State(s): State<AppState>) -> Result<Response, ApiError> {
     let svc = service(&s)?;
 
     let (challenge, state) = svc
@@ -262,16 +289,26 @@ pub async fn discover_finish(
     let record = PasskeyChallengeStore::consume(&s.db, req.challenge_id)
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?
-        .ok_or_else(|| ApiError::bad_request("INVALID_CHALLENGE", "unknown or expired challenge"))?;
+        .ok_or_else(|| {
+            ApiError::bad_request("INVALID_CHALLENGE", "unknown or expired challenge")
+        })?;
     if record.kind != "discover" {
-        return Err(ApiError::bad_request("INVALID_CHALLENGE", "wrong ceremony kind"));
+        return Err(ApiError::bad_request(
+            "INVALID_CHALLENGE",
+            "wrong ceremony kind",
+        ));
     }
     let discover_state = decode_state(&record.state)?;
 
     // Extract the user_unique_id from the credential's userHandle.
     let (user_unique_id, _cred_id_bytes) = svc
         .identify_discoverable_authentication(&req.credential)
-        .map_err(|_| ApiError::unauthorized("PASSKEY_FAILED", "missing or invalid userHandle in credential"))?;
+        .map_err(|_| {
+            ApiError::unauthorized(
+                "PASSKEY_FAILED",
+                "missing or invalid userHandle in credential",
+            )
+        })?;
 
     // Load the user and their passkeys by user_unique_id (== user.id).
     let user = UserStore::find_by_id(&s.db, user_unique_id)
@@ -284,9 +321,13 @@ pub async fn discover_finish(
         .map_err(|e| ApiError::internal(&e.to_string()))?;
     let passkeys = passkeys_from_records(&records)?;
     if passkeys.is_empty() {
-        return Err(ApiError::unauthorized("PASSKEY_FAILED", "no matching credential"));
+        return Err(ApiError::unauthorized(
+            "PASSKEY_FAILED",
+            "no matching credential",
+        ));
     }
-    let discoverable_keys: Vec<DiscoverableKey> = passkeys.iter().map(DiscoverableKey::from).collect();
+    let discoverable_keys: Vec<DiscoverableKey> =
+        passkeys.iter().map(DiscoverableKey::from).collect();
 
     let result = svc
         .finish_discoverable_authentication(&req.credential, discover_state, &discoverable_keys)
@@ -349,16 +390,18 @@ pub async fn discover_finish(
     .await
     .map_err(|e| ApiError::internal(&e.to_string()))?;
 
-    s.auth_events.publish_and_audit(
-        crate::auth_events::AuthEvent::now("LOGIN_SUCCESS")
-            .with_user(passkey_row.user_id.to_string())
-            .with_session(session_id.clone()),
-        &s.db,
-        None,
-        Some("SESSION".into()),
-        Some(session_id.clone()),
-        None,
-    ).await;
+    s.auth_events
+        .publish_and_audit(
+            crate::auth_events::AuthEvent::now("LOGIN_SUCCESS")
+                .with_user(passkey_row.user_id.to_string())
+                .with_session(session_id.clone()),
+            &s.db,
+            None,
+            Some("SESSION".into()),
+            Some(session_id.clone()),
+            None,
+        )
+        .await;
 
     let mut resp = Json(serde_json::json!({"ok": true})).into_response();
     set_session_cookie(&mut resp, &session_id, &s);
@@ -383,7 +426,10 @@ pub async fn register_start(
         .ok_or_else(|| ApiError::unauthorized("SESSION_EXPIRED", "re-login"))?;
     // A user may only register passkeys for themselves.
     if session.user_id != uid.to_string() {
-        return Err(ApiError::forbidden("FORBIDDEN", "cannot register for another user"));
+        return Err(ApiError::forbidden(
+            "FORBIDDEN",
+            "cannot register for another user",
+        ));
     }
 
     let user = UserStore::find_by_id(&s.db, uid)
@@ -404,7 +450,11 @@ pub async fn register_start(
             uid,
             &user.email,
             user.display_name.as_deref().unwrap_or(&user.email),
-            if existing_ids.is_empty() { None } else { Some(existing_ids) },
+            if existing_ids.is_empty() {
+                None
+            } else {
+                Some(existing_ids)
+            },
         )
         .map_err(|e| ApiError::internal(&e.to_string()))?;
 
@@ -441,21 +491,31 @@ pub async fn register_finish(
         .map_err(|e| ApiError::internal(&e.to_string()))?
         .ok_or_else(|| ApiError::unauthorized("SESSION_EXPIRED", "re-login"))?;
     if session.user_id != uid.to_string() {
-        return Err(ApiError::forbidden("FORBIDDEN", "cannot register for another user"));
+        return Err(ApiError::forbidden(
+            "FORBIDDEN",
+            "cannot register for another user",
+        ));
     }
 
     let record = PasskeyChallengeStore::consume(&s.db, req.challenge_id)
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?
-        .ok_or_else(|| ApiError::bad_request("INVALID_CHALLENGE", "unknown or expired challenge"))?;
+        .ok_or_else(|| {
+            ApiError::bad_request("INVALID_CHALLENGE", "unknown or expired challenge")
+        })?;
     if record.kind != "register" || record.user_id != Some(uid) {
-        return Err(ApiError::bad_request("INVALID_CHALLENGE", "mismatched challenge"));
+        return Err(ApiError::bad_request(
+            "INVALID_CHALLENGE",
+            "mismatched challenge",
+        ));
     }
     let reg_state = decode_state(&record.state)?;
 
     let passkey = svc
         .finish_registration(&req.credential, &reg_state)
-        .map_err(|e| ApiError::bad_request("PASSKEY_FAILED", &format!("registration failed: {}", e)))?;
+        .map_err(|e| {
+            ApiError::bad_request("PASSKEY_FAILED", &format!("registration failed: {}", e))
+        })?;
 
     // serde_json, not bincode: webauthn-rs's Passkey uses serde `deserialize_any`
     // (untagged/flatten), which bincode (non-self-describing) cannot read back —
@@ -524,7 +584,9 @@ fn decode_state<T: for<'de> serde::Deserialize<'de>>(bytes: &[u8]) -> Result<T, 
         .map_err(|e| ApiError::internal(&format!("passkey state deserialize: {}", e)))
 }
 
-fn passkeys_from_records(records: &[volta_auth_core::record::PasskeyRecord]) -> Result<Vec<Passkey>, ApiError> {
+fn passkeys_from_records(
+    records: &[volta_auth_core::record::PasskeyRecord],
+) -> Result<Vec<Passkey>, ApiError> {
     // Skip (rather than hard-fail on) any record we can't decode, so one
     // unreadable credential never bricks a user's whole passkey set. Legacy
     // bincode-encoded rows are unreadable as JSON and get dropped here.

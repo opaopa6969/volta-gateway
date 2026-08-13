@@ -25,8 +25,12 @@ pub enum RegistrationState {
 }
 
 impl FlowState for RegistrationState {
-    fn is_terminal(&self) -> bool { matches!(self, Self::Completed | Self::Cancelled) }
-    fn is_initial(&self) -> bool { matches!(self, Self::Start) }
+    fn is_terminal(&self) -> bool {
+        matches!(self, Self::Completed | Self::Cancelled)
+    }
+    fn is_initial(&self) -> bool {
+        matches!(self, Self::Start)
+    }
     fn all_states() -> &'static [Self] {
         &[
             Self::Start,
@@ -68,22 +72,36 @@ pub struct MfaSetupResult {
 // ── processors / guards / branch ────────────────────────
 struct IssueVerificationProcessor;
 impl StateProcessor<RegistrationState> for IssueVerificationProcessor {
-    fn name(&self) -> &str { "RegIssueVerification" }
-    fn requires(&self) -> Vec<TypeId> { requires!(RegistrationInit) }
-    fn produces(&self) -> Vec<TypeId> { data_types!(VerificationIssued) }
+    fn name(&self) -> &str {
+        "RegIssueVerification"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        requires!(RegistrationInit)
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        data_types!(VerificationIssued)
+    }
     fn process(&self, ctx: &mut FlowContext) -> Result<(), FlowError> {
         let init = ctx.get::<RegistrationInit>()?;
         // Phase 2: issue a hashed token row + enqueue an EMAIL notification job.
-        ctx.put(VerificationIssued { token_id: format!("pending:{}", init.correlation_id) });
+        ctx.put(VerificationIssued {
+            token_id: format!("pending:{}", init.correlation_id),
+        });
         Ok(())
     }
 }
 
 struct VerifyEmailGuard;
 impl TransitionGuard<RegistrationState> for VerifyEmailGuard {
-    fn name(&self) -> &str { "RegVerifyEmailGuard" }
-    fn requires(&self) -> Vec<TypeId> { vec![] }
-    fn produces(&self) -> Vec<TypeId> { data_types!(EmailVerifiedData) }
+    fn name(&self) -> &str {
+        "RegVerifyEmailGuard"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        vec![]
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        data_types!(EmailVerifiedData)
+    }
     fn validate(&self, ctx: &FlowContext) -> GuardOutput {
         match ctx.find::<EmailVerifiedData>() {
             Some(d) => GuardOutput::accept_with(d.clone()),
@@ -94,8 +112,12 @@ impl TransitionGuard<RegistrationState> for VerifyEmailGuard {
 
 struct MfaBranch;
 impl BranchProcessor<RegistrationState> for MfaBranch {
-    fn name(&self) -> &str { "RegMfaBranch" }
-    fn requires(&self) -> Vec<TypeId> { vec![] }
+    fn name(&self) -> &str {
+        "RegMfaBranch"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        vec![]
+    }
     fn decide(&self, ctx: &FlowContext) -> String {
         ctx.find::<MfaChoice>()
             .map(|c| c.label.clone())
@@ -105,9 +127,15 @@ impl BranchProcessor<RegistrationState> for MfaBranch {
 
 struct MfaDoneGuard;
 impl TransitionGuard<RegistrationState> for MfaDoneGuard {
-    fn name(&self) -> &str { "RegMfaDoneGuard" }
-    fn requires(&self) -> Vec<TypeId> { vec![] }
-    fn produces(&self) -> Vec<TypeId> { data_types!(MfaSetupResult) }
+    fn name(&self) -> &str {
+        "RegMfaDoneGuard"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        vec![]
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        data_types!(MfaSetupResult)
+    }
     fn validate(&self, ctx: &FlowContext) -> GuardOutput {
         match ctx.find::<MfaSetupResult>() {
             Some(d) => GuardOutput::accept_with(d.clone()),

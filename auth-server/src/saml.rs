@@ -37,14 +37,20 @@ pub fn encode_relay_state(relay: &RelayState) -> String {
 pub fn decode_relay_state(raw: Option<&str>) -> RelayState {
     match raw {
         Some(s) if !s.is_empty() => {
-            let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(s).unwrap_or_default();
+            let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(s)
+                .unwrap_or_default();
             serde_json::from_slice(&bytes).unwrap_or(RelayState {
                 tenant_id: None,
                 return_to: Some(s.to_string()),
                 request_id: None,
             })
         }
-        _ => RelayState { tenant_id: None, return_to: None, request_id: None },
+        _ => RelayState {
+            tenant_id: None,
+            return_to: None,
+            request_id: None,
+        },
     }
 }
 
@@ -61,10 +67,14 @@ pub fn parse_identity(
     expected_request_id: Option<&str>,
 ) -> Result<SamlIdentity, ApiError> {
     if saml_response_b64.is_empty() {
-        return Err(ApiError::bad_request("SAML_INVALID_RESPONSE", "SAMLResponse is required"));
+        return Err(ApiError::bad_request(
+            "SAML_INVALID_RESPONSE",
+            "SAMLResponse is required",
+        ));
     }
 
-    let xml_bytes = base64::engine::general_purpose::STANDARD.decode(saml_response_b64)
+    let xml_bytes = base64::engine::general_purpose::STANDARD
+        .decode(saml_response_b64)
         .map_err(|_| ApiError::bad_request("SAML_INVALID_RESPONSE", "invalid base64"))?;
     let xml = String::from_utf8(xml_bytes)
         .map_err(|_| ApiError::bad_request("SAML_INVALID_RESPONSE", "invalid UTF-8"))?;
@@ -79,7 +89,10 @@ pub fn parse_identity(
     if xml.starts_with("MOCK:") {
         let email = xml.trim_start_matches("MOCK:").trim();
         if email.is_empty() || !email.contains('@') {
-            return Err(ApiError::bad_request("SAML_INVALID_RESPONSE", "mock email is invalid"));
+            return Err(ApiError::bad_request(
+                "SAML_INVALID_RESPONSE",
+                "mock email is invalid",
+            ));
         }
         return Ok(SamlIdentity {
             email: email.to_string(),
@@ -99,9 +112,9 @@ pub fn parse_identity(
     //
     // Canonicalisation is simplified — see `saml_dsig.rs` rationale.
     if !skip_signature {
-        let cert = idp_x509_cert
-            .filter(|c| !c.is_empty())
-            .ok_or_else(|| ApiError::unauthorized("SAML_SIGNATURE_REQUIRED", "IdP certificate is required"))?;
+        let cert = idp_x509_cert.filter(|c| !c.is_empty()).ok_or_else(|| {
+            ApiError::unauthorized("SAML_SIGNATURE_REQUIRED", "IdP certificate is required")
+        })?;
         crate::saml_sig::check_structure(&xml)
             .map_err(|e| ApiError::unauthorized("SAML_SIGNATURE_REJECTED", &e.to_string()))?;
         crate::saml_dsig::verify(&xml, cert)
@@ -114,7 +127,10 @@ pub fn parse_identity(
         if !expected_issuer.is_empty() {
             if let Some(ref actual) = issuer {
                 if actual != expected_issuer {
-                    return Err(ApiError::unauthorized("SAML_INVALID_RESPONSE", "issuer mismatch"));
+                    return Err(ApiError::unauthorized(
+                        "SAML_INVALID_RESPONSE",
+                        "issuer mismatch",
+                    ));
                 }
             }
         }
@@ -124,7 +140,10 @@ pub fn parse_identity(
     let destination = extract_attribute(&xml, "Response", "Destination");
     if let (Some(ref dest), Some(acs)) = (&destination, expected_acs_url) {
         if !dest.is_empty() && !acs.is_empty() && dest != acs {
-            return Err(ApiError::unauthorized("SAML_INVALID_RESPONSE", "destination mismatch"));
+            return Err(ApiError::unauthorized(
+                "SAML_INVALID_RESPONSE",
+                "destination mismatch",
+            ));
         }
     }
 
@@ -132,7 +151,10 @@ pub fn parse_identity(
     let recipient = extract_attribute(&xml, "SubjectConfirmationData", "Recipient");
     if let (Some(ref rcpt), Some(acs)) = (&recipient, expected_acs_url) {
         if !rcpt.is_empty() && !acs.is_empty() && rcpt != acs {
-            return Err(ApiError::unauthorized("SAML_INVALID_RESPONSE", "recipient mismatch"));
+            return Err(ApiError::unauthorized(
+                "SAML_INVALID_RESPONSE",
+                "recipient mismatch",
+            ));
         }
     }
 
@@ -143,7 +165,12 @@ pub fn parse_identity(
         if !expected_req_id.is_empty() {
             match &in_response_to {
                 Some(irt) if irt == expected_req_id => {}
-                _ => return Err(ApiError::unauthorized("SAML_INVALID_RESPONSE", "in_response_to mismatch")),
+                _ => {
+                    return Err(ApiError::unauthorized(
+                        "SAML_INVALID_RESPONSE",
+                        "in_response_to mismatch",
+                    ))
+                }
             }
         }
     }
@@ -154,7 +181,10 @@ pub fn parse_identity(
         if !expected_aud.is_empty() {
             if let Some(ref actual) = audience {
                 if actual != expected_aud {
-                    return Err(ApiError::unauthorized("SAML_INVALID_RESPONSE", "audience mismatch"));
+                    return Err(ApiError::unauthorized(
+                        "SAML_INVALID_RESPONSE",
+                        "audience mismatch",
+                    ));
                 }
             }
         }
@@ -166,10 +196,16 @@ pub fn parse_identity(
         if !expiry_str.is_empty() {
             match chrono::DateTime::parse_from_rfc3339(expiry_str) {
                 Ok(expiry) if expiry < Utc::now() => {
-                    return Err(ApiError::unauthorized("SAML_INVALID_RESPONSE", "assertion expired"));
+                    return Err(ApiError::unauthorized(
+                        "SAML_INVALID_RESPONSE",
+                        "assertion expired",
+                    ));
                 }
                 Err(_) => {
-                    return Err(ApiError::bad_request("SAML_INVALID_RESPONSE", "invalid NotOnOrAfter"));
+                    return Err(ApiError::bad_request(
+                        "SAML_INVALID_RESPONSE",
+                        "invalid NotOnOrAfter",
+                    ));
                 }
                 _ => {}
             }
@@ -182,7 +218,10 @@ pub fn parse_identity(
         email = extract_saml_attribute(&xml, "email");
     }
     if email.as_ref().map(|e| !e.contains('@')).unwrap_or(true) {
-        email = extract_saml_attribute(&xml, "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress");
+        email = extract_saml_attribute(
+            &xml,
+            "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress",
+        );
     }
     // #14: NFC-normalize + lowercase before returning so downstream compares/stores
     // never see a homoglyph of an existing user.
@@ -220,7 +259,7 @@ fn extract_element(xml: &str, local_name: &str) -> Option<String> {
             let content_start = xml[tag_pos..].find('>')? + tag_pos + 1;
             let rest = &xml[content_start..];
             // Find closing tag: </...local_name>
-            let close = format!("{}>" , local_name);
+            let close = format!("{}>", local_name);
             if let Some(close_offset) = rest.find(&close) {
                 if let Some(lt_pos) = rest[..close_offset].rfind("</") {
                     let text = rest[..lt_pos].trim();
@@ -265,7 +304,11 @@ fn extract_attribute(xml: &str, element_name: &str, attr_name: &str) -> Option<S
     let value_end = tag_content[value_start..].find('"')? + value_start;
 
     let value = &tag_content[value_start..value_end];
-    if value.is_empty() { None } else { Some(value.to_string()) }
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
 }
 
 /// Extract SAML Attribute value by Name.
@@ -280,7 +323,11 @@ fn extract_saml_attribute(xml: &str, attr_name: &str) -> Option<String> {
     let av_end = after[av_start..].find('<')? + av_start;
 
     let value = after[av_start..av_end].trim();
-    if value.is_empty() { None } else { Some(value.to_string()) }
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -330,7 +377,8 @@ mod tests {
             true, // skip signature for test
             Some("https://app/acs"),
             None,
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(id.email, "user@example.com");
         assert_eq!(id.issuer, "https://idp.example.com");
@@ -342,7 +390,15 @@ mod tests {
             <Assertion><Subject><NameID>user@example.com</NameID></Subject></Assertion>
         </Response>"#;
         let b64 = base64::engine::general_purpose::STANDARD.encode(xml);
-        let err = parse_identity(&b64, Some("https://idp.example.com"), None, None, true, None, None);
+        let err = parse_identity(
+            &b64,
+            Some("https://idp.example.com"),
+            None,
+            None,
+            true,
+            None,
+            None,
+        );
         assert!(err.is_err());
     }
 

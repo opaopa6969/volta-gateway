@@ -1,15 +1,15 @@
+pub mod aaguid;
 mod app;
+pub mod auth_events;
 mod error;
 mod handlers;
 mod helpers;
-pub mod auth_events;
 pub mod local_bypass;
-mod outbox_worker;
-mod notification_worker;
 mod notification_providers;
-pub mod pagination;
-pub mod aaguid;
+mod notification_worker;
 pub mod op_keys;
+mod outbox_worker;
+pub mod pagination;
 pub mod rate_limit;
 pub mod saml;
 pub mod saml_dsig;
@@ -62,8 +62,10 @@ async fn main() {
     let idp_client_secret = env("IDP_CLIENT_SECRET", "");
 
     // Database
-    let pool = PgPool::connect(&database_url).await
-        .unwrap_or_else(|e| { eprintln!("DB connect failed: {}", e); std::process::exit(1); });
+    let pool = PgPool::connect(&database_url).await.unwrap_or_else(|e| {
+        eprintln!("DB connect failed: {}", e);
+        std::process::exit(1);
+    });
 
     info!("database connected");
 
@@ -90,7 +92,11 @@ async fn main() {
             for err in &errors {
                 tracing::error!(flow = desc.name, "flow validation failed: {:?}", err);
             }
-            eprintln!("flow '{}' failed validation with {} error(s)", desc.name, errors.len());
+            eprintln!(
+                "flow '{}' failed validation with {} error(s)",
+                desc.name,
+                errors.len()
+            );
             std::process::exit(1);
         }
     }
@@ -98,13 +104,15 @@ async fn main() {
     {
         let refs: Vec<&volta_auth_core::flow::validate::FlowDescriptor> =
             descriptors.iter().collect();
-        let alias_errors =
-            volta_auth_core::flow::validate::validate_global_aliases(&refs);
+        let alias_errors = volta_auth_core::flow::validate::validate_global_aliases(&refs);
         if !alias_errors.is_empty() {
             for err in &alias_errors {
                 tracing::error!("cross-flow alias validation failed: {:?}", err);
             }
-            eprintln!("cross-flow alias validation failed with {} error(s)", alias_errors.len());
+            eprintln!(
+                "cross-flow alias validation failed with {} error(s)",
+                alias_errors.len()
+            );
             std::process::exit(1);
         }
     }
@@ -128,7 +136,10 @@ async fn main() {
                 event_bus = event_bus.with_redis(publisher);
             }
             Err(e) => {
-                tracing::warn!("redis auth-event bridge failed, continuing in-process only: {}", e);
+                tracing::warn!(
+                    "redis auth-event bridge failed, continuing in-process only: {}",
+                    e
+                );
             }
         }
     } else {
@@ -166,11 +177,12 @@ async fn main() {
     // SMTP/SES senders are registered in Phase 6 (provider = SMTP/SES/MAILPIT).
     let notify_default = env("NOTIFICATION_DEFAULT_CHANNEL", "DUMMY");
     let notify_enabled = env("NOTIFICATION_ENABLED_CHANNELS", "DUMMY,LOG,EMAIL");
-    let notif_config = volta_auth_core::notification::NotificationConfig::parse(&notify_default, &notify_enabled)
-        .unwrap_or_else(|e| {
-            eprintln!("invalid notification config: {}", e);
-            std::process::exit(1);
-        });
+    let notif_config =
+        volta_auth_core::notification::NotificationConfig::parse(&notify_default, &notify_enabled)
+            .unwrap_or_else(|e| {
+                eprintln!("invalid notification config: {}", e);
+                std::process::exit(1);
+            });
     let notifications = {
         use volta_auth_core::notification::dummy::{DummySender, LogSender};
         use volta_auth_core::notification::{NotificationChannel, NotificationService};
@@ -219,7 +231,10 @@ async fn main() {
 
     // Outbox worker — poll every 5s, deliver webhooks
     let outbox_poll: u64 = env("OUTBOX_POLL_SECS", "5").parse().unwrap_or(5);
-    outbox_worker::spawn(state.db.clone(), std::time::Duration::from_secs(outbox_poll));
+    outbox_worker::spawn(
+        state.db.clone(),
+        std::time::Duration::from_secs(outbox_poll),
+    );
 
     // Notification worker — poll notification_jobs, deliver via NotificationService.
     let notif_poll: u64 = env("NOTIFICATION_POLL_SECS", "5").parse().unwrap_or(5);

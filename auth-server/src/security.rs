@@ -39,7 +39,9 @@ pub fn validate_webhook_url(url_str: &str, allow_http: bool) -> Result<(), Strin
         s => return Err(format!("scheme must be https (got {})", s)),
     }
 
-    let host = parsed.host_str().ok_or_else(|| "URL has no host".to_string())?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| "URL has no host".to_string())?;
 
     if host.eq_ignore_ascii_case("localhost") {
         return Err("localhost is not allowed".into());
@@ -47,7 +49,10 @@ pub fn validate_webhook_url(url_str: &str, allow_http: bool) -> Result<(), Strin
 
     // `url::Url::host_str` keeps brackets on IPv6 literals (e.g. "[::1]"). Strip
     // them before parsing so IpAddr::from_str can succeed.
-    let host_for_ip = host.strip_prefix('[').and_then(|s| s.strip_suffix(']')).unwrap_or(host);
+    let host_for_ip = host
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(host);
     if let Ok(ip) = host_for_ip.parse::<IpAddr>() {
         if is_forbidden_ip(&ip) {
             return Err(format!("IP {} is in a forbidden range", ip));

@@ -19,7 +19,10 @@ async fn setup() -> (
     let port = container.get_host_port_ipv4(5432).await.unwrap();
     let url = format!("postgres://postgres:postgres@127.0.0.1:{}/postgres", port);
     let pool = PgPool::connect(&url).await.unwrap();
-    sqlx::raw_sql("CREATE EXTENSION IF NOT EXISTS pgcrypto;").execute(&pool).await.unwrap();
+    sqlx::raw_sql("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
+        .execute(&pool)
+        .await
+        .unwrap();
     for m in [
         include_str!("../migrations/024_create_notification_jobs.sql"),
         include_str!("../migrations/026_create_login_challenges.sql"),
@@ -50,12 +53,16 @@ async fn otp_issue_enqueues_notification_and_verifies() {
 
     // Correct code verifies once.
     assert_eq!(
-        runtime::verify_login_otp(&store, user, &code).await.unwrap(),
+        runtime::verify_login_otp(&store, user, &code)
+            .await
+            .unwrap(),
         ChallengeVerifyOutcome::Verified
     );
     // Consumed → no active challenge.
     assert_eq!(
-        runtime::verify_login_otp(&store, user, &code).await.unwrap(),
+        runtime::verify_login_otp(&store, user, &code)
+            .await
+            .unwrap(),
         ChallengeVerifyOutcome::NotFound
     );
 }
@@ -65,19 +72,25 @@ async fn otp_issue_enqueues_notification_and_verifies() {
 async fn wrong_code_decrements_then_locks() {
     let (store, _c) = setup().await;
     let user = Uuid::new_v4();
-    runtime::issue_login_otp(&store, user, "EMAIL_OTP", "u@e.com", "DUMMY").await.unwrap();
+    runtime::issue_login_otp(&store, user, "EMAIL_OTP", "u@e.com", "DUMMY")
+        .await
+        .unwrap();
 
     // 5 max attempts: wrong codes decrement, then lock.
     let mut last = ChallengeVerifyOutcome::NotFound;
     for _ in 0..5 {
-        last = runtime::verify_login_otp(&store, user, "000000-wrong").await.unwrap();
+        last = runtime::verify_login_otp(&store, user, "000000-wrong")
+            .await
+            .unwrap();
     }
     // After exhausting attempts → TooManyAttempts.
     assert_eq!(last, ChallengeVerifyOutcome::TooManyAttempts);
     // Even the correct code is now locked out (still TooManyAttempts).
     // (We don't know the real code here; assert the locked state persists.)
     assert!(matches!(
-        runtime::verify_login_otp(&store, user, "111111").await.unwrap(),
+        runtime::verify_login_otp(&store, user, "111111")
+            .await
+            .unwrap(),
         ChallengeVerifyOutcome::TooManyAttempts
     ));
 }
@@ -88,7 +101,9 @@ async fn no_active_challenge_is_not_found() {
     let (store, _c) = setup().await;
     let user = Uuid::new_v4();
     assert_eq!(
-        runtime::verify_login_otp(&store, user, "123456").await.unwrap(),
+        runtime::verify_login_otp(&store, user, "123456")
+            .await
+            .unwrap(),
         ChallengeVerifyOutcome::NotFound
     );
 }
@@ -104,10 +119,14 @@ async fn issuing_again_invalidates_prior_challenge() {
         .dev_code
         .unwrap();
     // Re-issue → prior challenge consumed.
-    let _second = runtime::issue_login_otp(&store, user, "EMAIL_OTP", "u@e.com", "DUMMY").await.unwrap();
+    let _second = runtime::issue_login_otp(&store, user, "EMAIL_OTP", "u@e.com", "DUMMY")
+        .await
+        .unwrap();
     // The first code no longer matches the (new) active challenge.
     assert!(matches!(
-        runtime::verify_login_otp(&store, user, &first).await.unwrap(),
+        runtime::verify_login_otp(&store, user, &first)
+            .await
+            .unwrap(),
         ChallengeVerifyOutcome::WrongCode { .. } | ChallengeVerifyOutcome::NotFound
     ));
 }

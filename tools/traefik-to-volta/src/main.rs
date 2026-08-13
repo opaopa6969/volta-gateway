@@ -14,7 +14,10 @@ use serde::Serialize;
 use std::collections::HashMap;
 
 #[derive(Parser)]
-#[command(name = "traefik-to-volta", about = "Convert Traefik config to volta-gateway YAML")]
+#[command(
+    name = "traefik-to-volta",
+    about = "Convert Traefik config to volta-gateway YAML"
+)]
 struct Cli {
     /// Input format: docker-compose | traefik-yaml
     #[arg(long, default_value = "docker-compose")]
@@ -62,13 +65,14 @@ struct VoltaRoute {
     strip_prefix: Option<String>,
 }
 
-fn is_false(b: &bool) -> bool { !*b }
+fn is_false(b: &bool) -> bool {
+    !*b
+}
 
 // ─── Docker Compose parser ─────────────────────────────
 
 fn parse_docker_compose(content: &str) -> Vec<VoltaRoute> {
-    let doc: serde_yaml::Value = serde_yaml::from_str(content)
-        .expect("invalid YAML");
+    let doc: serde_yaml::Value = serde_yaml::from_str(content).expect("invalid YAML");
 
     let mut routes = Vec::new();
     let services = doc.get("services").and_then(|s| s.as_mapping());
@@ -157,13 +161,21 @@ fn labels_to_route(service_name: &str, labels: &HashMap<String, String>) -> Opti
 // ─── Traefik dynamic YAML parser ───────────────────────
 
 fn parse_traefik_yaml(content: &str) -> Vec<VoltaRoute> {
-    let doc: serde_yaml::Value = serde_yaml::from_str(content)
-        .expect("invalid YAML");
+    let doc: serde_yaml::Value = serde_yaml::from_str(content).expect("invalid YAML");
 
     let mut routes = Vec::new();
-    let routers = doc.get("http").and_then(|h| h.get("routers")).and_then(|r| r.as_mapping());
-    let services = doc.get("http").and_then(|h| h.get("services")).and_then(|s| s.as_mapping());
-    let middlewares = doc.get("http").and_then(|h| h.get("middlewares")).and_then(|m| m.as_mapping());
+    let routers = doc
+        .get("http")
+        .and_then(|h| h.get("routers"))
+        .and_then(|r| r.as_mapping());
+    let services = doc
+        .get("http")
+        .and_then(|h| h.get("services"))
+        .and_then(|s| s.as_mapping());
+    let middlewares = doc
+        .get("http")
+        .and_then(|h| h.get("middlewares"))
+        .and_then(|m| m.as_mapping());
 
     let host_re = Regex::new(r"Host\(`([^`]+)`\)").unwrap();
 
@@ -171,20 +183,31 @@ fn parse_traefik_yaml(content: &str) -> Vec<VoltaRoute> {
         for (name, router) in routers {
             let name = name.as_str().unwrap_or("unknown");
             let rule = router.get("rule").and_then(|r| r.as_str()).unwrap_or("");
-            let service_name = router.get("service").and_then(|s| s.as_str()).unwrap_or(name);
+            let service_name = router
+                .get("service")
+                .and_then(|s| s.as_str())
+                .unwrap_or(name);
 
             let host = host_re.captures(rule).map(|c| c[1].to_string());
-            if host.is_none() { continue; }
+            if host.is_none() {
+                continue;
+            }
             let host = host.unwrap();
 
             // Check if ForwardAuth middleware is used
-            let mw_list: Vec<String> = router.get("middlewares")
+            let mw_list: Vec<String> = router
+                .get("middlewares")
                 .and_then(|m| m.as_sequence())
-                .map(|seq| seq.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .map(|seq| {
+                    seq.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default();
 
             let has_auth = mw_list.iter().any(|m| {
-                middlewares.and_then(|mws| mws.get(serde_yaml::Value::String(m.clone())))
+                middlewares
+                    .and_then(|mws| mws.get(serde_yaml::Value::String(m.clone())))
                     .and_then(|mw| mw.get("forwardAuth"))
                     .is_some()
             });
@@ -219,18 +242,28 @@ fn parse_traefik_yaml(content: &str) -> Vec<VoltaRoute> {
 fn main() {
     let cli = Cli::parse();
 
-    let content = std::fs::read_to_string(&cli.input)
-        .unwrap_or_else(|e| { eprintln!("Error reading {}: {}", cli.input, e); std::process::exit(1); });
+    let content = std::fs::read_to_string(&cli.input).unwrap_or_else(|e| {
+        eprintln!("Error reading {}: {}", cli.input, e);
+        std::process::exit(1);
+    });
 
     let routes = match cli.from.as_str() {
         "docker-compose" => parse_docker_compose(&content),
         "traefik-yaml" => parse_traefik_yaml(&content),
-        other => { eprintln!("Unknown format: {}. Use docker-compose or traefik-yaml.", other); std::process::exit(1); }
+        other => {
+            eprintln!(
+                "Unknown format: {}. Use docker-compose or traefik-yaml.",
+                other
+            );
+            std::process::exit(1);
+        }
     };
 
     let config = VoltaConfig {
         server: VoltaServer { port: 8080 },
-        auth: VoltaAuth { volta_url: "http://localhost:7070".into() },
+        auth: VoltaAuth {
+            volta_url: "http://localhost:7070".into(),
+        },
         routing: routes,
     };
 

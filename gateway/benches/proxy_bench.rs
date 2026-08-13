@@ -3,34 +3,56 @@ use std::any::TypeId;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tramli::{FlowEngine, InMemoryFlowStore, CloneAny};
-use tramli_plugins::observability::{ObservabilityPlugin, NoopTelemetrySink};
+use tramli::{CloneAny, FlowEngine, InMemoryFlowStore};
+use tramli_plugins::observability::{NoopTelemetrySink, ObservabilityPlugin};
 use volta_gateway::flow::{self, RequestData};
 use volta_gateway::proxy::RoutingTable;
 
 fn test_routing() -> Arc<RoutingTable> {
     use volta_gateway::proxy::RouteInfo;
     let mut rt = RoutingTable::new();
-    rt.insert("app.example.com".into(), RouteInfo {
-        weights: vec![], backends: vec!["http://localhost:3000".into()],
-        app_id: Some("app".into()),
-        public: false,
-        bypass_paths: vec![], mirror: None,
-        path_prefix: None, strip_prefix: None, add_prefix: None,
-        request_headers: None, response_headers: None,
-        geo_allowlist: vec![], geo_denylist: vec![],
-        timeout_secs: None, cache: None, backend_tls: None,
-    });
-    rt.insert("*.example.com".into(), RouteInfo {
-        weights: vec![], backends: vec!["http://localhost:3001".into()],
-        app_id: None,
-        public: false,
-        bypass_paths: vec![], mirror: None,
-        path_prefix: None, strip_prefix: None, add_prefix: None,
-        request_headers: None, response_headers: None,
-        geo_allowlist: vec![], geo_denylist: vec![],
-        timeout_secs: None, cache: None, backend_tls: None,
-    });
+    rt.insert(
+        "app.example.com".into(),
+        RouteInfo {
+            weights: vec![],
+            backends: vec!["http://localhost:3000".into()],
+            app_id: Some("app".into()),
+            public: false,
+            bypass_paths: vec![],
+            mirror: None,
+            path_prefix: None,
+            strip_prefix: None,
+            add_prefix: None,
+            request_headers: None,
+            response_headers: None,
+            geo_allowlist: vec![],
+            geo_denylist: vec![],
+            timeout_secs: None,
+            cache: None,
+            backend_tls: None,
+        },
+    );
+    rt.insert(
+        "*.example.com".into(),
+        RouteInfo {
+            weights: vec![],
+            backends: vec!["http://localhost:3001".into()],
+            app_id: None,
+            public: false,
+            bypass_paths: vec![],
+            mirror: None,
+            path_prefix: None,
+            strip_prefix: None,
+            add_prefix: None,
+            request_headers: None,
+            response_headers: None,
+            geo_allowlist: vec![],
+            geo_denylist: vec![],
+            timeout_secs: None,
+            cache: None,
+            backend_tls: None,
+        },
+    );
     Arc::new(rt)
 }
 
@@ -49,10 +71,11 @@ fn bench_sm_start_flow(c: &mut Criterion) {
                 content_length: None,
                 client_ip: Some("127.0.0.1".parse().unwrap()),
             };
-            let data: Vec<(TypeId, Box<dyn CloneAny>)> = vec![
-                (TypeId::of::<RequestData>(), Box::new(req)),
-            ];
-            engine.start_flow(flow_def.clone(), "bench-req", data).unwrap();
+            let data: Vec<(TypeId, Box<dyn CloneAny>)> =
+                vec![(TypeId::of::<RequestData>(), Box::new(req))];
+            engine
+                .start_flow(flow_def.clone(), "bench-req", data)
+                .unwrap();
         })
     });
 }
@@ -72,29 +95,32 @@ fn bench_sm_full_lifecycle(c: &mut Criterion) {
                 content_length: None,
                 client_ip: Some("127.0.0.1".parse().unwrap()),
             };
-            let data: Vec<(TypeId, Box<dyn CloneAny>)> = vec![
-                (TypeId::of::<RequestData>(), Box::new(req)),
-            ];
-            let flow_id = engine.start_flow(flow_def.clone(), "bench-req", data).unwrap();
+            let data: Vec<(TypeId, Box<dyn CloneAny>)> =
+                vec![(TypeId::of::<RequestData>(), Box::new(req))];
+            let flow_id = engine
+                .start_flow(flow_def.clone(), "bench-req", data)
+                .unwrap();
 
             // Resume with auth data
             use volta_gateway::flow::AuthData;
-            let auth_data: Vec<(TypeId, Box<dyn CloneAny>)> = vec![
-                (TypeId::of::<AuthData>(), Box::new(AuthData {
+            let auth_data: Vec<(TypeId, Box<dyn CloneAny>)> = vec![(
+                TypeId::of::<AuthData>(),
+                Box::new(AuthData {
                     volta_headers: {
                         let mut h = HashMap::new();
                         h.insert("x-volta-user-id".into(), "bench-user".into());
                         h
                     },
-                })),
-            ];
+                }),
+            )];
             engine.resume_and_execute(&flow_id, auth_data).unwrap();
 
             // Resume with backend response
             use volta_gateway::flow::BackendResponse;
-            let resp_data: Vec<(TypeId, Box<dyn CloneAny>)> = vec![
-                (TypeId::of::<BackendResponse>(), Box::new(BackendResponse { status: 200 })),
-            ];
+            let resp_data: Vec<(TypeId, Box<dyn CloneAny>)> = vec![(
+                TypeId::of::<BackendResponse>(),
+                Box::new(BackendResponse { status: 200 }),
+            )];
             engine.resume_and_execute(&flow_id, resp_data).unwrap();
         })
     });
@@ -120,27 +146,30 @@ fn bench_sm_with_noop_sink(c: &mut Criterion) {
                 content_length: None,
                 client_ip: Some("127.0.0.1".parse().unwrap()),
             };
-            let data: Vec<(TypeId, Box<dyn CloneAny>)> = vec![
-                (TypeId::of::<RequestData>(), Box::new(req)),
-            ];
-            let flow_id = engine.start_flow(flow_def.clone(), "bench-req", data).unwrap();
+            let data: Vec<(TypeId, Box<dyn CloneAny>)> =
+                vec![(TypeId::of::<RequestData>(), Box::new(req))];
+            let flow_id = engine
+                .start_flow(flow_def.clone(), "bench-req", data)
+                .unwrap();
 
             use volta_gateway::flow::AuthData;
-            let auth_data: Vec<(TypeId, Box<dyn CloneAny>)> = vec![
-                (TypeId::of::<AuthData>(), Box::new(AuthData {
+            let auth_data: Vec<(TypeId, Box<dyn CloneAny>)> = vec![(
+                TypeId::of::<AuthData>(),
+                Box::new(AuthData {
                     volta_headers: {
                         let mut h = HashMap::new();
                         h.insert("x-volta-user-id".into(), "bench-user".into());
                         h
                     },
-                })),
-            ];
+                }),
+            )];
             engine.resume_and_execute(&flow_id, auth_data).unwrap();
 
             use volta_gateway::flow::BackendResponse;
-            let resp_data: Vec<(TypeId, Box<dyn CloneAny>)> = vec![
-                (TypeId::of::<BackendResponse>(), Box::new(BackendResponse { status: 200 })),
-            ];
+            let resp_data: Vec<(TypeId, Box<dyn CloneAny>)> = vec![(
+                TypeId::of::<BackendResponse>(),
+                Box::new(BackendResponse { status: 200 }),
+            )];
             engine.resume_and_execute(&flow_id, resp_data).unwrap();
         })
     });
@@ -150,16 +179,15 @@ fn bench_routing_lookup(c: &mut Criterion) {
     let routing = test_routing();
 
     c.bench_function("routing_lookup_exact", |b| {
-        b.iter(|| {
-            routing.get("app.example.com")
-        })
+        b.iter(|| routing.get("app.example.com"))
     });
 
     c.bench_function("routing_lookup_wildcard", |b| {
         b.iter(|| {
             let host = "sub.example.com";
             routing.get(host).or_else(|| {
-                host.splitn(2, '.').nth(1)
+                host.splitn(2, '.')
+                    .nth(1)
                     .and_then(|d| routing.get(&format!("*.{d}")))
             })
         })
@@ -170,7 +198,10 @@ fn bench_compression_check(c: &mut Criterion) {
     c.bench_function("compression_compressible_check", |b| {
         let ct = "application/json; charset=utf-8";
         b.iter(|| {
-            ct.starts_with("text/") || ct.contains("json") || ct.contains("xml") || ct.contains("javascript")
+            ct.starts_with("text/")
+                || ct.contains("json")
+                || ct.contains("xml")
+                || ct.contains("javascript")
         })
     });
 }
@@ -193,13 +224,21 @@ fn bench_sm_with_noop_telemetry(c: &mut Criterion) {
                 content_length: None,
                 client_ip: Some("127.0.0.1".parse().unwrap()),
             };
-            let data: Vec<(TypeId, Box<dyn CloneAny>)> = vec![
-                (TypeId::of::<RequestData>(), Box::new(req)),
-            ];
-            engine.start_flow(flow_def.clone(), "bench-req", data).unwrap();
+            let data: Vec<(TypeId, Box<dyn CloneAny>)> =
+                vec![(TypeId::of::<RequestData>(), Box::new(req))];
+            engine
+                .start_flow(flow_def.clone(), "bench-req", data)
+                .unwrap();
         })
     });
 }
 
-criterion_group!(benches, bench_sm_start_flow, bench_sm_full_lifecycle, bench_sm_with_noop_sink, bench_routing_lookup, bench_compression_check);
+criterion_group!(
+    benches,
+    bench_sm_start_flow,
+    bench_sm_full_lifecycle,
+    bench_sm_with_noop_sink,
+    bench_routing_lookup,
+    bench_compression_check
+);
 criterion_main!(benches);

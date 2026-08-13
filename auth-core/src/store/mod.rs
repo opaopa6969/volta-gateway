@@ -1,41 +1,44 @@
-mod session;
-mod user;
-mod tenant;
-mod membership;
-mod invitation;
-mod flow;
-mod mfa;
-mod idp_config;
-mod oidc_flow;
-mod notification_job;
-mod verification_token;
-mod login_challenge;
-mod passkey_challenge;
 mod device_grant;
+mod flow;
+mod idp_config;
+mod invitation;
+mod login_challenge;
+mod membership;
+mod mfa;
+mod notification_job;
 mod oauth;
-mod risk_device;
+mod oidc_flow;
+mod passkey_challenge;
 mod platform;
+mod risk_device;
+mod session;
+mod tenant;
+mod user;
+mod verification_token;
 
 #[cfg(feature = "postgres")]
 pub mod pg;
 
-pub use session::{SessionStore, InMemorySessionStore};
-pub use user::UserStore;
-pub use tenant::TenantStore;
-pub use membership::MembershipStore;
-pub use invitation::InvitationStore;
+pub use device_grant::{DeviceDecisionOutcome, DeviceGrantStore, DevicePollOutcome};
 pub use flow::FlowPersistence;
-pub use mfa::{MfaStore, RecoveryCodeStore, MagicLinkStore, SigningKeyStore};
 pub use idp_config::{IdpConfigStore, M2mClientStore, PasskeyStore};
-pub use oidc_flow::OidcFlowStore;
+pub use invitation::InvitationStore;
+pub use login_challenge::{ChallengeVerifyOutcome, LoginChallengeStore};
+pub use membership::MembershipStore;
+pub use mfa::{MagicLinkStore, MfaStore, RecoveryCodeStore, SigningKeyStore};
 pub use notification_job::NotificationJobStore;
-pub use verification_token::EmailVerificationTokenStore;
-pub use login_challenge::{LoginChallengeStore, ChallengeVerifyOutcome};
-pub use passkey_challenge::{PasskeyChallengeRecord, PasskeyChallengeStore};
-pub use device_grant::{DeviceGrantStore, DevicePollOutcome, DeviceDecisionOutcome};
-pub use oauth::{OAuthClientStore, AuthzCodeStore, RefreshTokenStore, OAuthConsentStore, UserIdentityStore, RefreshOutcome};
-pub use risk_device::{RiskDeviceStore, SessionStepUpStore};
-pub use platform::{
-    WebhookStore, OutboxStore, WebhookDeliveryStore,
-    AuditStore, DeviceTrustStore, BillingStore, PolicyStore,
+pub use oauth::{
+    AuthzCodeStore, OAuthClientStore, OAuthConsentStore, RefreshOutcome, RefreshTokenStore,
+    UserIdentityStore,
 };
+pub use oidc_flow::OidcFlowStore;
+pub use passkey_challenge::{PasskeyChallengeRecord, PasskeyChallengeStore};
+pub use platform::{
+    AuditStore, BillingStore, DeviceTrustStore, OutboxStore, PolicyStore, WebhookDeliveryStore,
+    WebhookStore,
+};
+pub use risk_device::{RiskDeviceStore, SessionStepUpStore};
+pub use session::{InMemorySessionStore, SessionStore};
+pub use tenant::TenantStore;
+pub use user::UserStore;
+pub use verification_token::EmailVerificationTokenStore;

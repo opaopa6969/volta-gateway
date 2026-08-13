@@ -4,10 +4,10 @@ use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode, Uri};
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioIo;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use tokio::io::copy_bidirectional;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
 use crate::auth::{AuthResult, VoltaAuthClient};
 use crate::proxy::{BackendSelector, RoutingTable};
@@ -38,12 +38,18 @@ pub async fn handle_websocket(
     // GW-37: WebSocket connection limit
     let current = WS_CONNECTIONS.load(Ordering::Relaxed);
     if current >= MAX_WS_CONNECTIONS {
-        warn!(state = "WS_LIMIT", current = current, max = MAX_WS_CONNECTIONS);
+        warn!(
+            state = "WS_LIMIT",
+            current = current,
+            max = MAX_WS_CONNECTIONS
+        );
         return error_response(StatusCode::SERVICE_UNAVAILABLE, &request_id);
     }
 
     // Extract host (shared normalize_host function)
-    let host = req.headers().get("host")
+    let host = req
+        .headers()
+        .get("host")
         .and_then(|v| v.to_str().ok())
         .map(|h| crate::proxy::normalize_host(h))
         .unwrap_or_default();
@@ -51,7 +57,9 @@ pub async fn handle_websocket(
     let uri_path = req.uri().path().to_string();
 
     // Auth check — WebSocket must be authenticated
-    let cookie = req.headers().get("cookie")
+    let cookie = req
+        .headers()
+        .get("cookie")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
@@ -66,13 +74,20 @@ pub async fn handle_websocket(
     let app_id = route.app_id;
 
     // Public routes skip auth; bypass_paths also skip for matching prefixes
-    let skip_auth = route.public || route.bypass_paths.iter().any(|bp| uri_path.starts_with(&bp.prefix));
+    let skip_auth = route.public
+        || route
+            .bypass_paths
+            .iter()
+            .any(|bp| uri_path.starts_with(&bp.prefix));
 
     if !skip_auth {
         let real_client_ip = if !trusted_proxies.is_empty()
-            && trusted_proxies.iter().any(|net| net.contains(&remote_addr.ip()))
+            && trusted_proxies
+                .iter()
+                .any(|net| net.contains(&remote_addr.ip()))
         {
-            req.headers().get("cf-connecting-ip")
+            req.headers()
+                .get("cf-connecting-ip")
                 .or_else(|| req.headers().get("x-real-ip"))
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.parse::<std::net::IpAddr>().ok())
@@ -81,7 +96,16 @@ pub async fn handle_websocket(
             remote_addr.ip()
         };
         let client_ip_str = real_client_ip.to_string();
-        let auth = volta.check(&host, &uri_path, "https", cookie.as_deref(), app_id.as_deref(), Some(&client_ip_str)).await;
+        let auth = volta
+            .check(
+                &host,
+                &uri_path,
+                "https",
+                cookie.as_deref(),
+                app_id.as_deref(),
+                Some(&client_ip_str),
+            )
+            .await;
         match auth {
             AuthResult::Authenticated(_) => {}
             AuthResult::Redirect(loc) => {
@@ -99,17 +123,29 @@ pub async fn handle_websocket(
     }
 
     // Select backend — check bypass_path backend override first
-    let bypass_backend = route.bypass_paths.iter()
+    let bypass_backend = route
+        .bypass_paths
+        .iter()
         .find(|bp| uri_path.starts_with(&bp.prefix))
         .and_then(|bp| bp.backend.clone());
 
     // Select backend (round-robin, or bypass override)
     let weights = route.weights.as_slice();
-    let backend = bypass_backend.unwrap_or_else(|| backend_selector.select(&host, &backends, weights).to_string());
+    let backend = bypass_backend.unwrap_or_else(|| {
+        backend_selector
+            .select(&host, &backends, weights)
+            .to_string()
+    });
 
     // Build backend upgrade request
-    let backend_uri = format!("{}{}", backend,
-        req.uri().path_and_query().map(|pq| pq.as_str()).unwrap_or("/"));
+    let backend_uri = format!(
+        "{}{}",
+        backend,
+        req.uri()
+            .path_and_query()
+            .map(|pq| pq.as_str())
+            .unwrap_or("/")
+    );
 
     info!(
         state = "WS_UPGRADE",
@@ -126,9 +162,12 @@ pub async fn handle_websocket(
 
     // #50: Resolve real client IP (same as proxy.rs PROD-4)
     let real_client_ip = if !trusted_proxies.is_empty()
-        && trusted_proxies.iter().any(|net| net.contains(&remote_addr.ip()))
+        && trusted_proxies
+            .iter()
+            .any(|net| net.contains(&remote_addr.ip()))
     {
-        req.headers().get("cf-connecting-ip")
+        req.headers()
+            .get("cf-connecting-ip")
             .or_else(|| req.headers().get("x-real-ip"))
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.parse::<std::net::IpAddr>().ok())
@@ -148,9 +187,14 @@ pub async fn handle_websocket(
         match key {
             "host" | ":method" | ":protocol" | ":scheme" | ":path" | ":authority" => {}
             _ if key.starts_with("x-volta-") => {} // #48: strip client X-Volta-*
-            "upgrade" | "connection" | "sec-websocket-key"
-            | "sec-websocket-version" | "sec-websocket-protocol"
-            | "sec-websocket-extensions" | "cookie" | "authorization" => {
+            "upgrade"
+            | "connection"
+            | "sec-websocket-key"
+            | "sec-websocket-version"
+            | "sec-websocket-protocol"
+            | "sec-websocket-extensions"
+            | "cookie"
+            | "authorization" => {
                 backend_req = backend_req.header(name, value);
             }
             _ if key.starts_with("x-") => {
@@ -183,7 +227,9 @@ pub async fn handle_websocket(
     let backend_resp = match tokio::time::timeout(
         std::time::Duration::from_secs(10),
         ws_client.request(backend_req),
-    ).await {
+    )
+    .await
+    {
         Ok(Ok(resp)) => resp,
         Ok(Err(e)) => {
             warn!(state = "WS_BAD_GATEWAY", reason = %e, backend = %backend);
@@ -219,8 +265,11 @@ pub async fn handle_websocket(
     for (name, value) in backend_resp.headers() {
         let key = name.as_str();
         match key {
-            "upgrade" | "connection" | "sec-websocket-accept"
-            | "sec-websocket-protocol" | "sec-websocket-extensions" => {
+            "upgrade"
+            | "connection"
+            | "sec-websocket-accept"
+            | "sec-websocket-protocol"
+            | "sec-websocket-extensions" => {
                 // HTTP/2 CONNECT: Upgrade/Connection are HTTP/1.1 hop-by-hop,
                 // but Sec-WebSocket-* are fine to forward.
                 if is_h2_connect && (key == "upgrade" || key == "connection") {
@@ -300,7 +349,8 @@ pub async fn handle_websocket(
 
 fn resolve_route(routing: &RoutingTable, host: &str) -> Option<crate::proxy::RouteInfo> {
     routing.get(host).cloned().or_else(|| {
-        host.splitn(2, '.').nth(1)
+        host.splitn(2, '.')
+            .nth(1)
             .and_then(|d| routing.get(&format!("*.{d}")).cloned())
     })
 }
@@ -315,7 +365,9 @@ fn error_response(status: StatusCode, request_id: &str) -> Response<BoxBody<Byte
     };
     let body = Full::new(Bytes::from(format!(
         r#"{{"error":{{"code":{},"reason":"{}","request_id":"{}"}}}}"#,
-        status.as_u16(), reason, request_id
+        status.as_u16(),
+        reason,
+        request_id
     )));
     Response::builder()
         .status(status)

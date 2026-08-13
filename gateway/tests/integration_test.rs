@@ -84,14 +84,22 @@ fn make_proxy(auth_addr: SocketAddr, backend_addr: SocketAddr, host: &str) -> Pr
     routing.insert(
         host.to_string(),
         volta_gateway::proxy::RouteInfo {
-            weights: vec![], backends: vec![format!("http://{}", backend_addr)],
+            weights: vec![],
+            backends: vec![format!("http://{}", backend_addr)],
             app_id: Some("test-app".into()),
             public: false,
-            bypass_paths: vec![], mirror: None,
-            path_prefix: None, strip_prefix: None, add_prefix: None,
-            request_headers: None, response_headers: None,
-            geo_allowlist: vec![], geo_denylist: vec![],
-            timeout_secs: None, cache: None, backend_tls: None,
+            bypass_paths: vec![],
+            mirror: None,
+            path_prefix: None,
+            strip_prefix: None,
+            add_prefix: None,
+            request_headers: None,
+            response_headers: None,
+            geo_allowlist: vec![],
+            geo_denylist: vec![],
+            timeout_secs: None,
+            cache: None,
+            backend_tls: None,
         },
     );
 
@@ -101,7 +109,12 @@ fn make_proxy(auth_addr: SocketAddr, backend_addr: SocketAddr, host: &str) -> Pr
     ProxyService::new(volta, hot, metrics, plugins)
 }
 
-fn make_proxy_with_cors(auth_addr: SocketAddr, backend_addr: SocketAddr, host: &str, origins: Vec<String>) -> ProxyService {
+fn make_proxy_with_cors(
+    auth_addr: SocketAddr,
+    backend_addr: SocketAddr,
+    host: &str,
+    origins: Vec<String>,
+) -> ProxyService {
     let auth_config = AuthConfig {
         volta_url: format!("http://{}", auth_addr),
         verify_path: "/auth/verify".into(),
@@ -122,23 +135,34 @@ fn make_proxy_with_cors(auth_addr: SocketAddr, backend_addr: SocketAddr, host: &
     routing.insert(
         host.to_string(),
         volta_gateway::proxy::RouteInfo {
-            weights: vec![], backends: vec![format!("http://{}", backend_addr)],
+            weights: vec![],
+            backends: vec![format!("http://{}", backend_addr)],
             app_id: Some("test-app".into()),
             public: false,
-            bypass_paths: vec![], mirror: None,
-            path_prefix: None, strip_prefix: None, add_prefix: None,
-            request_headers: None, response_headers: None,
-            geo_allowlist: vec![], geo_denylist: vec![],
-            timeout_secs: None, cache: None, backend_tls: None,
+            bypass_paths: vec![],
+            mirror: None,
+            path_prefix: None,
+            strip_prefix: None,
+            add_prefix: None,
+            request_headers: None,
+            response_headers: None,
+            geo_allowlist: vec![],
+            geo_denylist: vec![],
+            timeout_secs: None,
+            cache: None,
+            backend_tls: None,
         },
     );
 
     let mut cors = HashMap::new();
     cors.insert(host.to_string(), origins);
 
-    let hot = Arc::new(ArcSwap::from_pointee(
-        HotState::new_with_config(Arc::new(routing), HashMap::new(), None, cors),
-    ));
+    let hot = Arc::new(ArcSwap::from_pointee(HotState::new_with_config(
+        Arc::new(routing),
+        HashMap::new(),
+        None,
+        cors,
+    )));
     let metrics = Arc::new(volta_gateway::metrics::Metrics::new());
     let plugins = Arc::new(volta_gateway::plugin::PluginManager::new());
     ProxyService::new(volta, hot, metrics, plugins)
@@ -156,7 +180,8 @@ async fn proxy_forwards_to_backend() {
             .header("x-custom", "preserved")
             .body(full_body(Bytes::from(r#"{"ok":true}"#)))
             .unwrap()
-    }).await;
+    })
+    .await;
 
     // Mock volta auth: return 200 + X-Volta-User-Id
     let (auth_addr, _ah) = mock_server(|_req| {
@@ -165,7 +190,8 @@ async fn proxy_forwards_to_backend() {
             .header("x-volta-user-id", "test-user-123")
             .body(empty_body())
             .unwrap()
-    }).await;
+    })
+    .await;
 
     let proxy = make_proxy(auth_addr, backend_addr, "app.test.com");
 
@@ -212,14 +238,12 @@ async fn proxy_forwards_to_backend() {
 
 #[tokio::test]
 async fn proxy_returns_403_on_auth_denied() {
-    let (backend_addr, _bh) = mock_server(|_req| {
-        Response::builder().status(200).body(empty_body()).unwrap()
-    }).await;
+    let (backend_addr, _bh) =
+        mock_server(|_req| Response::builder().status(200).body(empty_body()).unwrap()).await;
 
     // Mock volta auth: 403 denied
-    let (auth_addr, _ah) = mock_server(|_req| {
-        Response::builder().status(403).body(empty_body()).unwrap()
-    }).await;
+    let (auth_addr, _ah) =
+        mock_server(|_req| Response::builder().status(403).body(empty_body()).unwrap()).await;
 
     let proxy = make_proxy(auth_addr, backend_addr, "app.test.com");
 
@@ -267,7 +291,8 @@ async fn proxy_returns_502_on_backend_down() {
             .header("x-volta-user-id", "user")
             .body(empty_body())
             .unwrap()
-    }).await;
+    })
+    .await;
 
     let proxy = make_proxy(auth_addr, dead_backend_addr, "app.test.com");
 
@@ -304,16 +329,16 @@ async fn proxy_returns_502_on_backend_down() {
 
 #[tokio::test]
 async fn proxy_cors_preflight_returns_204() {
-    let (backend_addr, _bh) = mock_server(|_req| {
-        Response::builder().status(200).body(empty_body()).unwrap()
-    }).await;
+    let (backend_addr, _bh) =
+        mock_server(|_req| Response::builder().status(200).body(empty_body()).unwrap()).await;
 
-    let (auth_addr, _ah) = mock_server(|_req| {
-        Response::builder().status(200).body(empty_body()).unwrap()
-    }).await;
+    let (auth_addr, _ah) =
+        mock_server(|_req| Response::builder().status(200).body(empty_body()).unwrap()).await;
 
     let proxy = make_proxy_with_cors(
-        auth_addr, backend_addr, "app.test.com",
+        auth_addr,
+        backend_addr,
+        "app.test.com",
         vec!["https://app.test.com".into()],
     );
 
@@ -357,9 +382,8 @@ async fn proxy_cors_preflight_returns_204() {
 
 #[tokio::test]
 async fn proxy_rate_limit_returns_429() {
-    let (backend_addr, _bh) = mock_server(|_req| {
-        Response::builder().status(200).body(empty_body()).unwrap()
-    }).await;
+    let (backend_addr, _bh) =
+        mock_server(|_req| Response::builder().status(200).body(empty_body()).unwrap()).await;
 
     let (auth_addr, _ah) = mock_server(|_req| {
         Response::builder()
@@ -367,7 +391,8 @@ async fn proxy_rate_limit_returns_429() {
             .header("x-volta-user-id", "user")
             .body(empty_body())
             .unwrap()
-    }).await;
+    })
+    .await;
 
     let proxy = make_proxy(auth_addr, backend_addr, "app.test.com");
 
@@ -441,14 +466,22 @@ fn make_proxy_public(backend_addr: SocketAddr, host: &str) -> ProxyService {
     routing.insert(
         host.to_string(),
         volta_gateway::proxy::RouteInfo {
-            weights: vec![], backends: vec![format!("http://{}", backend_addr)],
+            weights: vec![],
+            backends: vec![format!("http://{}", backend_addr)],
             app_id: Some("public-app".into()),
             public: true,
-            bypass_paths: vec![], mirror: None,
-            path_prefix: None, strip_prefix: None, add_prefix: None,
-            request_headers: None, response_headers: None,
-            geo_allowlist: vec![], geo_denylist: vec![],
-            timeout_secs: None, cache: None, backend_tls: None,
+            bypass_paths: vec![],
+            mirror: None,
+            path_prefix: None,
+            strip_prefix: None,
+            add_prefix: None,
+            request_headers: None,
+            response_headers: None,
+            geo_allowlist: vec![],
+            geo_denylist: vec![],
+            timeout_secs: None,
+            cache: None,
+            backend_tls: None,
         },
     );
 
@@ -458,7 +491,11 @@ fn make_proxy_public(backend_addr: SocketAddr, host: &str) -> ProxyService {
     ProxyService::new(volta, hot, metrics, plugins)
 }
 
-fn make_proxy_with_bypass(auth_addr: SocketAddr, backend_addr: SocketAddr, host: &str) -> ProxyService {
+fn make_proxy_with_bypass(
+    auth_addr: SocketAddr,
+    backend_addr: SocketAddr,
+    host: &str,
+) -> ProxyService {
     let auth_config = AuthConfig {
         volta_url: format!("http://{}", auth_addr),
         verify_path: "/auth/verify".into(),
@@ -479,7 +516,8 @@ fn make_proxy_with_bypass(auth_addr: SocketAddr, backend_addr: SocketAddr, host:
     routing.insert(
         host.to_string(),
         volta_gateway::proxy::RouteInfo {
-            weights: vec![], backends: vec![format!("http://{}", backend_addr)],
+            weights: vec![],
+            backends: vec![format!("http://{}", backend_addr)],
             app_id: Some("bypass-app".into()),
             public: false,
             bypass_paths: vec![volta_gateway::config::BypassPath {
@@ -487,10 +525,16 @@ fn make_proxy_with_bypass(auth_addr: SocketAddr, backend_addr: SocketAddr, host:
                 backend: None,
             }],
             mirror: None,
-            path_prefix: None, strip_prefix: None, add_prefix: None,
-            request_headers: None, response_headers: None,
-            geo_allowlist: vec![], geo_denylist: vec![],
-            timeout_secs: None, cache: None, backend_tls: None,
+            path_prefix: None,
+            strip_prefix: None,
+            add_prefix: None,
+            request_headers: None,
+            response_headers: None,
+            geo_allowlist: vec![],
+            geo_denylist: vec![],
+            timeout_secs: None,
+            cache: None,
+            backend_tls: None,
         },
     );
 
@@ -507,7 +551,8 @@ async fn proxy_public_route_skips_auth() {
             .status(200)
             .body(full_body(Bytes::from(r#"{"public":true}"#)))
             .unwrap()
-    }).await;
+    })
+    .await;
 
     // Auth is unreachable — but public route should skip it
     let proxy = make_proxy_public(backend_addr, "public.test.com");
@@ -548,13 +593,11 @@ async fn proxy_public_route_skips_auth() {
 
 #[tokio::test]
 async fn proxy_unknown_host_returns_error() {
-    let (backend_addr, _bh) = mock_server(|_req| {
-        Response::builder().status(200).body(empty_body()).unwrap()
-    }).await;
+    let (backend_addr, _bh) =
+        mock_server(|_req| Response::builder().status(200).body(empty_body()).unwrap()).await;
 
-    let (auth_addr, _ah) = mock_server(|_req| {
-        Response::builder().status(200).body(empty_body()).unwrap()
-    }).await;
+    let (auth_addr, _ah) =
+        mock_server(|_req| Response::builder().status(200).body(empty_body()).unwrap()).await;
 
     // Proxy is configured for "known.test.com" only
     let proxy = make_proxy(auth_addr, backend_addr, "known.test.com");
@@ -599,12 +642,12 @@ async fn proxy_auth_bypass_path() {
             .status(200)
             .body(full_body(Bytes::from(r#"{"webhook":"received"}"#)))
             .unwrap()
-    }).await;
+    })
+    .await;
 
     // Auth denies everything — but bypass path should skip auth
-    let (auth_addr, _ah) = mock_server(|_req| {
-        Response::builder().status(403).body(empty_body()).unwrap()
-    }).await;
+    let (auth_addr, _ah) =
+        mock_server(|_req| Response::builder().status(403).body(empty_body()).unwrap()).await;
 
     let proxy = make_proxy_with_bypass(auth_addr, backend_addr, "app.test.com");
 

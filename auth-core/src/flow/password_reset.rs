@@ -27,12 +27,22 @@ pub enum PasswordResetState {
 }
 
 impl FlowState for PasswordResetState {
-    fn is_terminal(&self) -> bool { matches!(self, Self::Completed | Self::Cancelled) }
-    fn is_initial(&self) -> bool { matches!(self, Self::Requested) }
+    fn is_terminal(&self) -> bool {
+        matches!(self, Self::Completed | Self::Cancelled)
+    }
+    fn is_initial(&self) -> bool {
+        matches!(self, Self::Requested)
+    }
     fn all_states() -> &'static [Self] {
         &[
-            Self::Requested, Self::TokenIssued, Self::SendRequested, Self::Sent,
-            Self::TokenVerified, Self::PasswordChanged, Self::Completed, Self::Cancelled,
+            Self::Requested,
+            Self::TokenIssued,
+            Self::SendRequested,
+            Self::Sent,
+            Self::TokenVerified,
+            Self::PasswordChanged,
+            Self::Completed,
+            Self::Cancelled,
         ]
     }
 }
@@ -68,35 +78,57 @@ pub struct PasswordChangedData {
 
 struct IssueResetTokenProcessor;
 impl StateProcessor<PasswordResetState> for IssueResetTokenProcessor {
-    fn name(&self) -> &str { "PrIssueResetToken" }
-    fn requires(&self) -> Vec<TypeId> { requires!(PasswordResetInit) }
-    fn produces(&self) -> Vec<TypeId> { data_types!(ResetTokenIssued) }
+    fn name(&self) -> &str {
+        "PrIssueResetToken"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        requires!(PasswordResetInit)
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        data_types!(ResetTokenIssued)
+    }
     fn process(&self, ctx: &mut FlowContext) -> Result<(), FlowError> {
         let init = ctx.get::<PasswordResetInit>()?;
         // Phase 3: issue a hashed reset token row (only if the account exists,
         // but the flow path is identical to avoid enumeration).
-        ctx.put(ResetTokenIssued { token_id: format!("pending:{}", init.correlation_id) });
+        ctx.put(ResetTokenIssued {
+            token_id: format!("pending:{}", init.correlation_id),
+        });
         Ok(())
     }
 }
 
 struct ResetRequestSendProcessor;
 impl StateProcessor<PasswordResetState> for ResetRequestSendProcessor {
-    fn name(&self) -> &str { "PrRequestSend" }
-    fn requires(&self) -> Vec<TypeId> { requires!(ResetTokenIssued, PasswordResetInit) }
-    fn produces(&self) -> Vec<TypeId> { data_types!(ResetSendRequest) }
+    fn name(&self) -> &str {
+        "PrRequestSend"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        requires!(ResetTokenIssued, PasswordResetInit)
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        data_types!(ResetSendRequest)
+    }
     fn process(&self, ctx: &mut FlowContext) -> Result<(), FlowError> {
         let init = ctx.get::<PasswordResetInit>()?;
-        ctx.put(ResetSendRequest { to: init.email.clone() });
+        ctx.put(ResetSendRequest {
+            to: init.email.clone(),
+        });
         Ok(())
     }
 }
 
 struct ResetMarkSentGuard;
 impl TransitionGuard<PasswordResetState> for ResetMarkSentGuard {
-    fn name(&self) -> &str { "PrMarkSentGuard" }
-    fn requires(&self) -> Vec<TypeId> { vec![] }
-    fn produces(&self) -> Vec<TypeId> { data_types!(ResetSendOutcome) }
+    fn name(&self) -> &str {
+        "PrMarkSentGuard"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        vec![]
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        data_types!(ResetSendOutcome)
+    }
     fn validate(&self, ctx: &FlowContext) -> GuardOutput {
         match ctx.find::<ResetSendOutcome>() {
             Some(o) => GuardOutput::accept_with(o.clone()),
@@ -107,9 +139,15 @@ impl TransitionGuard<PasswordResetState> for ResetMarkSentGuard {
 
 struct VerifyResetTokenGuard;
 impl TransitionGuard<PasswordResetState> for VerifyResetTokenGuard {
-    fn name(&self) -> &str { "PrVerifyResetTokenGuard" }
-    fn requires(&self) -> Vec<TypeId> { vec![] }
-    fn produces(&self) -> Vec<TypeId> { data_types!(ResetTokenProof) }
+    fn name(&self) -> &str {
+        "PrVerifyResetTokenGuard"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        vec![]
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        data_types!(ResetTokenProof)
+    }
     fn validate(&self, ctx: &FlowContext) -> GuardOutput {
         match ctx.find::<ResetTokenProof>() {
             Some(p) if p.valid => GuardOutput::accept_with(p.clone()),
@@ -121,9 +159,15 @@ impl TransitionGuard<PasswordResetState> for VerifyResetTokenGuard {
 
 struct ChangePasswordGuard;
 impl TransitionGuard<PasswordResetState> for ChangePasswordGuard {
-    fn name(&self) -> &str { "PrChangePasswordGuard" }
-    fn requires(&self) -> Vec<TypeId> { vec![] }
-    fn produces(&self) -> Vec<TypeId> { data_types!(PasswordChangedData) }
+    fn name(&self) -> &str {
+        "PrChangePasswordGuard"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        vec![]
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        data_types!(PasswordChangedData)
+    }
     fn validate(&self, ctx: &FlowContext) -> GuardOutput {
         match ctx.find::<PasswordChangedData>() {
             Some(d) if d.changed => GuardOutput::accept_with(d.clone()),
@@ -135,9 +179,15 @@ impl TransitionGuard<PasswordResetState> for ChangePasswordGuard {
 
 struct CompleteResetProcessor;
 impl StateProcessor<PasswordResetState> for CompleteResetProcessor {
-    fn name(&self) -> &str { "PrComplete" }
-    fn requires(&self) -> Vec<TypeId> { requires!(PasswordChangedData) }
-    fn produces(&self) -> Vec<TypeId> { vec![] }
+    fn name(&self) -> &str {
+        "PrComplete"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        requires!(PasswordChangedData)
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        vec![]
+    }
     fn process(&self, ctx: &mut FlowContext) -> Result<(), FlowError> {
         let _ = ctx.get::<PasswordChangedData>()?;
         // Phase 3: optionally invalidate existing sessions (config/TODO).
@@ -152,7 +202,11 @@ pub fn build_password_reset_flow() -> Arc<FlowDefinition<PasswordResetState>> {
             .ttl(Duration::from_secs(900))
             .strict_mode()
             .initially_available(requires!(PasswordResetInit))
-            .externally_provided(data_types!(ResetSendOutcome, ResetTokenProof, PasswordChangedData))
+            .externally_provided(data_types!(
+                ResetSendOutcome,
+                ResetTokenProof,
+                PasswordChangedData
+            ))
             .from(Requested)
             .auto(TokenIssued, IssueResetTokenProcessor)
             .from(TokenIssued)

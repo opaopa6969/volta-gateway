@@ -20,10 +20,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use jsonwebtoken::{decode, decode_header, DecodingKey, Validation, Algorithm};
+use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
 
-use crate::jwt::{VoltaClaims, JwtError};
+use crate::jwt::{JwtError, VoltaClaims};
 
 /// Default time-to-live for a fetched JWK set before a refresh is attempted.
 const DEFAULT_JWKS_TTL: Duration = Duration::from_secs(300);
@@ -132,7 +132,11 @@ impl JwksCache {
         let count = keys.len();
         let mut guard = self.inner.lock().expect("jwks cache poisoned");
         let last_forced = guard.as_ref().and_then(|c| c.last_forced);
-        *guard = Some(CachedKeys { keys, fetched: Instant::now(), last_forced });
+        *guard = Some(CachedKeys {
+            keys,
+            fetched: Instant::now(),
+            last_forced,
+        });
         tracing::debug!(url = %self.url, keys = count, "JWKS refreshed");
         Ok(count)
     }
@@ -438,9 +442,13 @@ mod tests {
         VoltaClaims {
             sub: sub.into(),
             email: Some("x@y.z".into()),
-            tenant_id: None, tenant_slug: None,
-            roles: Some("MEMBER".into()), name: None, app_id: None,
-            iat: None, exp: None,
+            tenant_id: None,
+            tenant_slug: None,
+            roles: Some("MEMBER".into()),
+            name: None,
+            app_id: None,
+            iat: None,
+            exp: None,
         }
     }
 
@@ -458,7 +466,9 @@ mod tests {
             aud: Option<String>,
         }
         let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         let body = Full {
             sub: "rs-user".into(),
             email: "x@y.z".into(),
@@ -477,7 +487,9 @@ mod tests {
     #[test]
     fn rs256_pem_verifies_valid_token() {
         let v = MultiVerifier::builder()
-            .rsa_pem(RSA_PUB.as_bytes()).map_err(|(_, e)| e).unwrap()
+            .rsa_pem(RSA_PUB.as_bytes())
+            .map_err(|(_, e)| e)
+            .unwrap()
             .build();
         let token = rs256_token(None, None, None);
         let c = v.verify_sync(&token).expect("should verify");
@@ -487,7 +499,9 @@ mod tests {
     #[test]
     fn rs256_pem_detects_tampering() {
         let v = MultiVerifier::builder()
-            .rsa_pem(RSA_PUB.as_bytes()).map_err(|(_, e)| e).unwrap()
+            .rsa_pem(RSA_PUB.as_bytes())
+            .map_err(|(_, e)| e)
+            .unwrap()
             .build();
         let token = rs256_token(None, None, None);
         // Flip a character in the middle of the signature segment.
@@ -499,13 +513,18 @@ mod tests {
         let tampered_sig: String = bytes.into_iter().collect();
         parts[2] = &tampered_sig;
         let tampered = parts.join(".");
-        assert!(v.verify_sync(&tampered).is_err(), "tampered token must be rejected");
+        assert!(
+            v.verify_sync(&tampered).is_err(),
+            "tampered token must be rejected"
+        );
     }
 
     #[test]
     fn rs256_validates_issuer_and_audience() {
         let v = MultiVerifier::builder()
-            .rsa_pem(RSA_PUB.as_bytes()).map_err(|(_, e)| e).unwrap()
+            .rsa_pem(RSA_PUB.as_bytes())
+            .map_err(|(_, e)| e)
+            .unwrap()
             .issuer("volta-auth")
             .audience("volta-apps")
             .build();
@@ -523,7 +542,9 @@ mod tests {
     #[test]
     fn hs256_fallback_when_no_rs256_match() {
         let v = MultiVerifier::builder()
-            .rsa_pem(RSA_PUB.as_bytes()).map_err(|(_, e)| e).unwrap()
+            .rsa_pem(RSA_PUB.as_bytes())
+            .map_err(|(_, e)| e)
+            .unwrap()
             .hs256(HS_SECRET)
             .build();
         // HS256 token — RS256 path won't match (alg mismatch), HS256 should.
@@ -535,7 +556,9 @@ mod tests {
 
     #[test]
     fn hs256_wrong_secret_rejected() {
-        let v = MultiVerifier::builder().hs256(b"the-correct-secret-key-32-bytes!").build();
+        let v = MultiVerifier::builder()
+            .hs256(b"the-correct-secret-key-32-bytes!")
+            .build();
         let issuer = JwtIssuer::new_hs256(b"a-different-secret-key-is-32bytes", 3600);
         let token = issuer.issue(&claims("u")).unwrap();
         assert!(v.verify_sync(&token).is_err());
@@ -559,7 +582,9 @@ mod tests {
             let dk = DecodingKey::from_rsa_components(&n, &e).unwrap();
             keys.insert("k1".to_string(), Arc::new(dk));
             *cache.inner.lock().unwrap() = Some(CachedKeys {
-                keys, fetched: Instant::now(), last_forced: None,
+                keys,
+                fetched: Instant::now(),
+                last_forced: None,
             });
         }
 
@@ -610,7 +635,8 @@ mod tests {
         let (n, e) = rsa_pub_components();
         let body = serde_json::json!({
             "keys": [ { "kty": "RSA", "kid": "remote-kid", "n": n, "e": e } ]
-        }).to_string();
+        })
+        .to_string();
         let url = serve_jwks_once(body).await;
 
         let cache = JwksCache::new(url);
@@ -619,7 +645,10 @@ mod tests {
 
         let v = MultiVerifier::builder().jwks(cache).build();
         let token = rs256_token(Some("remote-kid"), None, None);
-        assert!(v.verify_sync(&token).is_ok(), "token with fetched kid verifies");
+        assert!(
+            v.verify_sync(&token).is_ok(),
+            "token with fetched kid verifies"
+        );
     }
 
     #[tokio::test]
@@ -627,14 +656,18 @@ mod tests {
         let (n, e) = rsa_pub_components();
         let body = serde_json::json!({
             "keys": [ { "kty": "RSA", "kid": "lazy-kid", "n": n, "e": e } ]
-        }).to_string();
+        })
+        .to_string();
         let url = serve_jwks_once(body).await;
 
         // Cold cache (never refreshed): async verify must fetch on the kid miss.
         let cache = JwksCache::new(url);
         let v = MultiVerifier::builder().jwks(cache).build();
         let token = rs256_token(Some("lazy-kid"), None, None);
-        let c = v.verify_async(&token).await.expect("async should force-refresh and verify");
+        let c = v
+            .verify_async(&token)
+            .await
+            .expect("async should force-refresh and verify");
         assert_eq!(c.sub, "rs-user");
     }
 }

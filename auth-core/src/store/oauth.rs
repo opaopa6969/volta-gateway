@@ -44,7 +44,11 @@ pub trait RefreshTokenStore: Send + Sync {
 #[async_trait]
 pub trait UserIdentityStore: Send + Sync {
     /// Resolve an identity by its IdP (provider, subject).
-    async fn find_by_subject(&self, provider: &str, subject: &str) -> Result<Option<UserIdentityRecord>, AuthError>;
+    async fn find_by_subject(
+        &self,
+        provider: &str,
+        subject: &str,
+    ) -> Result<Option<UserIdentityRecord>, AuthError>;
     /// List all identities linked to a user.
     async fn list_by_user(&self, user_id: Uuid) -> Result<Vec<UserIdentityRecord>, AuthError>;
     /// Link an identity (idempotent on (provider, subject)).
@@ -57,6 +61,16 @@ pub trait UserIdentityStore: Send + Sync {
 #[async_trait]
 pub trait OAuthConsentStore: Send + Sync {
     /// True if the user has already consented to (at least) this scope for the client.
-    async fn has_consent(&self, user_id: Uuid, client_id: &str, scope: &str) -> Result<bool, AuthError>;
-    async fn grant_consent(&self, user_id: Uuid, client_id: &str, scope: &str) -> Result<(), AuthError>;
+    async fn has_consent(
+        &self,
+        user_id: Uuid,
+        client_id: &str,
+        scope: &str,
+    ) -> Result<bool, AuthError>;
+    async fn grant_consent(
+        &self,
+        user_id: Uuid,
+        client_id: &str,
+        scope: &str,
+    ) -> Result<(), AuthError>;
 }

@@ -25,12 +25,21 @@ pub enum MfaSetupState {
 }
 
 impl FlowState for MfaSetupState {
-    fn is_terminal(&self) -> bool { matches!(self, Self::RecoveryCodesIssued | Self::Cancelled) }
-    fn is_initial(&self) -> bool { matches!(self, Self::NotConfigured) }
+    fn is_terminal(&self) -> bool {
+        matches!(self, Self::RecoveryCodesIssued | Self::Cancelled)
+    }
+    fn is_initial(&self) -> bool {
+        matches!(self, Self::NotConfigured)
+    }
     fn all_states() -> &'static [Self] {
         &[
-            Self::NotConfigured, Self::SetupStarted, Self::SecretIssued,
-            Self::ConfirmationPending, Self::Enabled, Self::RecoveryCodesIssued, Self::Cancelled,
+            Self::NotConfigured,
+            Self::SetupStarted,
+            Self::SecretIssued,
+            Self::ConfirmationPending,
+            Self::Enabled,
+            Self::RecoveryCodesIssued,
+            Self::Cancelled,
         ]
     }
 }
@@ -65,9 +74,15 @@ pub struct RecoveryCodesResult {
 
 struct StartSetupGuard;
 impl TransitionGuard<MfaSetupState> for StartSetupGuard {
-    fn name(&self) -> &str { "MfaStartSetupGuard" }
-    fn requires(&self) -> Vec<TypeId> { vec![] }
-    fn produces(&self) -> Vec<TypeId> { data_types!(SetupStart) }
+    fn name(&self) -> &str {
+        "MfaStartSetupGuard"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        vec![]
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        data_types!(SetupStart)
+    }
     fn validate(&self, ctx: &FlowContext) -> GuardOutput {
         match ctx.find::<SetupStart>() {
             Some(s) => GuardOutput::accept_with(s.clone()),
@@ -78,34 +93,56 @@ impl TransitionGuard<MfaSetupState> for StartSetupGuard {
 
 struct IssueSecretProcessor;
 impl StateProcessor<MfaSetupState> for IssueSecretProcessor {
-    fn name(&self) -> &str { "MfaIssueSecret" }
-    fn requires(&self) -> Vec<TypeId> { requires!(MfaSetupInit) }
-    fn produces(&self) -> Vec<TypeId> { data_types!(TotpSecretIssued) }
+    fn name(&self) -> &str {
+        "MfaIssueSecret"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        requires!(MfaSetupInit)
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        data_types!(TotpSecretIssued)
+    }
     fn process(&self, ctx: &mut FlowContext) -> Result<(), FlowError> {
         let _init = ctx.get::<MfaSetupInit>()?;
         // Phase 4: generate TOTP secret, encrypt via KeyCipher, persist (inactive).
-        ctx.put(TotpSecretIssued { secret_ref: "pending".into() });
+        ctx.put(TotpSecretIssued {
+            secret_ref: "pending".into(),
+        });
         Ok(())
     }
 }
 
 struct PresentSecretProcessor;
 impl StateProcessor<MfaSetupState> for PresentSecretProcessor {
-    fn name(&self) -> &str { "MfaPresentSecret" }
-    fn requires(&self) -> Vec<TypeId> { requires!(TotpSecretIssued) }
-    fn produces(&self) -> Vec<TypeId> { data_types!(SecretPresented) }
+    fn name(&self) -> &str {
+        "MfaPresentSecret"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        requires!(TotpSecretIssued)
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        data_types!(SecretPresented)
+    }
     fn process(&self, ctx: &mut FlowContext) -> Result<(), FlowError> {
         let _ = ctx.get::<TotpSecretIssued>()?;
-        ctx.put(SecretPresented { provisioning_uri_ref: "pending".into() });
+        ctx.put(SecretPresented {
+            provisioning_uri_ref: "pending".into(),
+        });
         Ok(())
     }
 }
 
 struct ConfirmCodeGuard;
 impl TransitionGuard<MfaSetupState> for ConfirmCodeGuard {
-    fn name(&self) -> &str { "MfaConfirmCodeGuard" }
-    fn requires(&self) -> Vec<TypeId> { vec![] }
-    fn produces(&self) -> Vec<TypeId> { data_types!(ConfirmResult) }
+    fn name(&self) -> &str {
+        "MfaConfirmCodeGuard"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        vec![]
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        data_types!(ConfirmResult)
+    }
     fn validate(&self, ctx: &FlowContext) -> GuardOutput {
         match ctx.find::<ConfirmResult>() {
             Some(r) if r.confirmed => GuardOutput::accept_with(r.clone()),
@@ -117,9 +154,15 @@ impl TransitionGuard<MfaSetupState> for ConfirmCodeGuard {
 
 struct IssueRecoveryCodesProcessor;
 impl StateProcessor<MfaSetupState> for IssueRecoveryCodesProcessor {
-    fn name(&self) -> &str { "MfaIssueRecoveryCodes" }
-    fn requires(&self) -> Vec<TypeId> { requires!(ConfirmResult) }
-    fn produces(&self) -> Vec<TypeId> { data_types!(RecoveryCodesResult) }
+    fn name(&self) -> &str {
+        "MfaIssueRecoveryCodes"
+    }
+    fn requires(&self) -> Vec<TypeId> {
+        requires!(ConfirmResult)
+    }
+    fn produces(&self) -> Vec<TypeId> {
+        data_types!(RecoveryCodesResult)
+    }
     fn process(&self, ctx: &mut FlowContext) -> Result<(), FlowError> {
         let _ = ctx.get::<ConfirmResult>()?;
         // Phase 4: activate user_mfa + generate & hash recovery codes.
