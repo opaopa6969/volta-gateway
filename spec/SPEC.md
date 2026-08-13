@@ -55,7 +55,7 @@ The workspace ships **two deployable artifacts**:
 |-----------------------|-----------------|----------------------------------------------------------------------|
 | `volta-gateway`       | `volta-gateway` | The proxy itself (HTTP/1.1 + HTTP/2 + WebSocket + L4 TCP/UDP).       |
 | `volta-auth-server`   | `volta-auth-server` | 126-route Axum HTTP API — drop-in replacement for Java `volta-auth-proxy`. |
-| `volta` (unified)     | `volta`         | `volta-bin` — gateway + auth-core linked in-process (no HTTP hop).   |
+| `volta` (unified)     | `volta`         | `volta-bin` — **スタブ (#86)**。auth-core の構築と全 tramli flow の build を確認して終了するだけで、トラフィックは通さない。in-process 化は設計目標。本番は `volta-gateway` + `volta-auth-server` を使う |
 
 ### 1.2 Dual implementation (Rust + Java)
 
@@ -265,7 +265,7 @@ across 17 functional categories. Full table with Java-parity annotations is in
 | 3 | SAML                                    | 2 | `/auth/saml/login`, `/auth/saml/callback` |
 | 4 | MFA (TOTP + challenge)                  | 8 | `/api/v1/users/{userId}/mfa/totp/{setup,verify}`, `/mfa/challenge`, `/auth/mfa/verify` (5/min) |
 | 5 | Magic Link (5/min/IP)                   | 2 | `/auth/magic-link/{send,verify}` |
-| 6 | Passkey (WebAuthn, 30/min/IP for start/finish) | 6 | `/auth/passkey/{start,finish}`, `/api/v1/users/{id}/passkeys[/{pid}]`, register start/finish |
+| 6 | Passkey (WebAuthn, 30/min/IP for start/finish) | 8 | `/auth/passkey/{start,finish}`, **`/auth/passkey/discover/{start,finish}`** (discoverable credential / username-less login — #96), `/api/v1/users/{id}/passkeys[/{pid}]`, register start/finish |
 | 7 | Sessions (user + admin)                 | 7 | `/api/me/sessions`, `/admin/sessions`, `/auth/sessions/revoke-all` |
 | 8 | User profile + admin user ops           | 5 | `/api/v1/users/me`, `/api/v1/users/me/tenants`, PATCH/DELETE users |
 | 9 | Tenant / Member / Invitation (20/min/IP accept) | 11 | `/api/v1/tenants/…`, `/invite/{code}/accept` |
@@ -704,7 +704,13 @@ resolve these checks in a specific order, independently of the Java side:
 3. **MFA-pending** — if the session requires MFA and `mfa_verified_at IS NULL`,
    redirect to `/mfa/challenge` (302).
 4. **Tenant suspension** — if the user's current tenant has
-   `suspended_at IS NOT NULL`, return 403.
+   **`is_active = false`**, return 403 with `X-Volta-Auth-Reason:
+   tenant_suspended`. (#94: implemented in `handlers/auth.rs`. The column is
+   `is_active BOOLEAN` — `002_create_tenants.sql` — not `suspended_at`; this
+   SPEC said the latter, which does not exist. `403` rather than a redirect
+   because logging in again cannot fix a suspended tenant. **Fail-open**: if the
+   tenant row cannot be read, the request is allowed — a DB hiccup should not
+   lock every user out.)
 5. **Success** — emit `X-Volta-{User-Id, Tenant-Id, Roles, Scopes}` headers.
 
 ### 5.6 Outbox-pattern webhooks
@@ -929,7 +935,7 @@ Three canonical files live at the repo root:
 |---------------------------------|-------------------------------------------------------|
 | `volta-gateway.minimal.yaml`    | Smallest viable config for a 2-route SaaS             |
 | `volta-gateway.full.yaml`       | Full reference — every key + its default + a comment  |
-| `volta-gateway.yaml`            | Active workspace config (gitignored in production)    |
+| `volta-gateway.yaml`            | Development sample, tracked in git (no secrets). The **production** file lives outside this repo (e.g. `/home/opa/volta-gateway/volta-gateway.yaml`) and is never committed. API-driven changes land in `<config>.overlay.json`, which `.gitignore` excludes (#93) |
 | `<config>.overlay.json`         | Auto-managed: API-driven changes from `PATCH /admin/config` (RFC 7386 merge patch, re-applied on load). Not hand-edited. |
 
 ### 8.2 Minimal schema
@@ -1003,6 +1009,13 @@ into a minimal `volta-gateway.yaml`. This is the migration on-ramp described
 in `docs/migration-from-traefik.md`.
 
 ### 8.6 volta-bin build modes
+
+> ⚠️ **未実装 (#86)。** 以下はこの crate の**設計目標**であり、現状の
+> `volta-bin/src/main.rs` は 60行のスタートアップ確認（auth-core の構築と
+> tramli flow の build を検証して終了）にとどまる。トラフィックは通さず、
+> gateway の起動も auth-core の結線も入っていない
+> （`// TODO: Launch gateway with auth-core wired in`）。
+> **本番は `volta-gateway` + `volta-auth-server` の2バイナリ構成**を使う。
 
 The `volta-bin` crate exposes a single binary named `volta` that links
 `volta-gateway` + `volta-auth-core` *in process*. There is no HTTP round-trip
@@ -1173,11 +1186,25 @@ started, migration (paired files under `README*.md` and `docs/*-ja.md`).
 
 ### 11.1 Unit tests
 
+> **Counts below are measured, not aspirational (#99).** Last measured
+> 2026-08-13 with `cargo test --workspace`. When you change them, re-run and
+> paste the real number — the previous values (auth-server 44 / auth-core 55 /
+> gateway 8) had drifted far from reality.
+
+| Crate | Tests | Command |
+|---|---:|---|
+| `volta-gateway` | **276** | `cargo test -p volta-gateway` |
+| `volta-auth-core` | **144** | `cargo test -p volta-auth-core` |
+| `volta-auth-server` | **107** | `cargo test -p volta-auth-server` |
+| `volta-bin` | 0 | (stub crate — see #86) |
+| **workspace total** | **527** | `cargo test --workspace` |
+
 - `auth-server` unit tests live under `auth-server/src/*`
-  (`#[cfg(test)] mod tests`). Current pass count: **44 tests** (16 security,
-  4 rate_limit, 7 local_bypass, 8 pagination, 2 auth_events, 5 saml, + scattered).
+  (`#[cfg(test)] mod tests`) — security, rate_limit, local_bypass, pagination,
+  auth_events, saml_sig, op_keys, dpop, and the handler modules.
 - `auth-core` unit tests (per module) cover flow builders, JWT issue/verify,
-  session cookie parsing, policy evaluation, crypto KeyCipher round-trip.
+  session cookie parsing, policy evaluation, crypto KeyCipher round-trip,
+  risk scoring, and the OAuth/OIDC records and stores.
 
 ```bash
 cargo test --workspace
@@ -1303,6 +1330,12 @@ Exit codes:
 | 3    | Backend URL unparsable                                       |
 | 4    | Unknown plugin name in `plugins` array                       |
 | 5    | TLS challenge requested but required credentials missing      |
+
+実装 (#95): コードは `GatewayConfig::EXIT_*` 定数、判定は
+`GatewayConfig::validate_detailed()` と `main.rs` の `--validate` 分岐。
+**複数種類のエラーがある場合は最も小さいコード**（より根本的な問題）を返す。
+2 は `build_proxy_flow` が panic するかで判定する（tramli は Result を返さない）。
+既存の `validate()` は文字列だけを返すラッパとして残してある。
 
 Sample usage in CI:
 
@@ -2261,6 +2294,19 @@ graph TB
 
 | Topic                        | Primary source                                                                   |
 |------------------------------|----------------------------------------------------------------------------------|
+> **固定値は腐る (#82)。** 下の表の数値は 2026-08-13 の実測値で、右列に
+> **測り方**を書いてある。数字を直すときは必ず測り直すこと。
+>
+> | 値 | 2026-08-13 実測 | 測り方 |
+> |---|---:|---|
+> | routes | 126 | `grep -c '\.route(' auth-server/src/app.rs` |
+> | rate-limited merges | 8 | `grep -c '\.merge(' auth-server/src/app.rs` |
+> | migrations | 33 | `ls auth-core/migrations/*.sql \| wc -l` |
+> | flow modules | 13 | `ls auth-core/src/flow/*.rs \| wc -l` |
+> | handler modules | 21 | `ls auth-server/src/handlers/*.rs \| wc -l` |
+> | `proxy.rs` lines | 1537 | `wc -l < gateway/src/proxy.rs` |
+> | tests (workspace) | 527 | `cargo test --workspace` |
+
 | Workspace layout             | repo root `Cargo.toml`; this SPEC §1.3                                           |
 | Per-request SM               | `gateway/src/flow.rs` + §4.1                                                     |
 | Long-lived SMs               | `auth-core/src/flow/{oidc,mfa,passkey,invite}.rs` + §4.2–§4.5                    |

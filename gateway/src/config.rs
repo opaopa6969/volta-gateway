@@ -496,63 +496,127 @@ impl GatewayConfig {
     }
 
     /// PH2-4: Validate config at startup. Returns errors (not warnings).
+    /// SPEC §11.8 の終了コード (#95)。
+    ///
+    /// `--validate` は CI で使われるので、**何が悪かったのか**を終了コードで
+    /// 区別できる必要がある。以前は 0/1 しか返さず、SPEC が定義する 2-5 に
+    /// 相当する検査（flow build / backend URL / 未知 plugin / TLS 資格情報）が
+    /// そもそも存在しなかった。
+    pub const EXIT_SCHEMA: u8 = 1;
+    /// proxy flow の build 失敗（tramli の不変条件違反）。main.rs が使う。
+    pub const EXIT_FLOW_BUILD: u8 = 2;
+    pub const EXIT_BACKEND_URL: u8 = 3;
+    pub const EXIT_UNKNOWN_PLUGIN: u8 = 4;
+    pub const EXIT_TLS_CREDENTIALS: u8 = 5;
+
+    /// 文字列だけのエラー一覧（既存の呼び出し元との互換のため残す）。
     pub fn validate(&self) -> Result<(), Vec<String>> {
-        let mut errors = vec![];
+        self.validate_detailed()
+            .map_err(|errs| errs.into_iter().map(|(_, msg)| msg).collect())
+    }
+
+    /// 終了コード付きの検証 (#95)。`(code, message)` を返す。
+    pub fn validate_detailed(&self) -> Result<(), Vec<(u8, String)>> {
+        let mut errors: Vec<(u8, String)> = vec![];
         if self.routing.is_empty() {
-            errors.push("routing is empty — no requests will be served".into());
+            errors.push((Self::EXIT_SCHEMA, "routing is empty — no requests will be served".into()));
         }
         if self.server.port == 0 {
-            errors.push("server.port must be > 0".into());
+            errors.push((Self::EXIT_SCHEMA, "server.port must be > 0".into()));
         }
         // Duplicate host check
         let mut hosts = std::collections::HashSet::new();
         for r in &self.routing {
             if !hosts.insert(&r.host) {
-                errors.push(format!("duplicate routing host: {} — path_prefix based routing on same host is not yet supported. Use separate hosts or a single route with auth_bypass_paths.", r.host));
+                errors.push((Self::EXIT_SCHEMA, format!("duplicate routing host: {} — path_prefix based routing on same host is not yet supported. Use separate hosts or a single route with auth_bypass_paths.", r.host)));
             }
         }
         // Validate IP allowlist entries are valid CIDR
         for r in &self.routing {
             for cidr in &r.ip_allowlist {
                 if cidr.parse::<ipnet::IpNet>().is_err() {
-                    errors.push(format!("invalid CIDR in ip_allowlist for {}: {}", r.host, cidr));
+                    errors.push((Self::EXIT_SCHEMA, format!("invalid CIDR in ip_allowlist for {}: {}", r.host, cidr)));
                 }
             }
         }
         // Validate TLS config
         if let Some(ref tls) = self.tls {
             if tls.domains.is_empty() {
-                errors.push("tls.domains is empty — no certificates will be issued".into());
+                errors.push((Self::EXIT_SCHEMA, "tls.domains is empty — no certificates will be issued".into()));
             }
             if tls.contact_email.is_empty() {
-                errors.push("tls.contact_email is required for ACME".into());
+                errors.push((Self::EXIT_SCHEMA, "tls.contact_email is required for ACME".into()));
             }
             if tls.port == 0 {
-                errors.push("tls.port must be > 0".into());
+                errors.push((Self::EXIT_SCHEMA, "tls.port must be > 0".into()));
             }
         }
         // Validate force_https requires TLS
         if self.server.force_https && self.tls.is_none() {
-            errors.push("server.force_https requires tls config".into());
+            errors.push((Self::EXIT_SCHEMA, "server.force_https requires tls config".into()));
         }
         // Validate L4 proxy entries
         for (i, entry) in self.l4_proxy.iter().enumerate() {
             if entry.listen_port == 0 {
-                errors.push(format!("l4_proxy[{}].listen_port must be > 0", i));
+                errors.push((Self::EXIT_SCHEMA, format!("l4_proxy[{}].listen_port must be > 0", i)));
             }
             if entry.backend.is_empty() {
-                errors.push(format!("l4_proxy[{}].backend is empty", i));
+                errors.push((Self::EXIT_SCHEMA, format!("l4_proxy[{}].backend is empty", i)));
             }
             if entry.protocol != "tcp" && entry.protocol != "udp" {
-                errors.push(format!("l4_proxy[{}].protocol must be 'tcp' or 'udp', got '{}'", i, entry.protocol));
+                errors.push((Self::EXIT_SCHEMA, format!("l4_proxy[{}].protocol must be 'tcp' or 'udp', got '{}'", i, entry.protocol)));
             }
         }
         // Validate no backend configured
         for r in &self.routing {
             if r.all_backends().is_empty() {
-                errors.push(format!("routing host '{}' has no backends", r.host));
+                errors.push((Self::EXIT_SCHEMA, format!("routing host '{}' has no backends", r.host)));
             }
         }
+        // ── #95: SPEC §11.8 の 3 / 4 / 5 に相当する検査（今まで無かった） ──
+
+        // 3: backend URL がパースできるか。文字列として置かれているだけなので、
+        //    間違っていても起動は成功し、**全リクエストが 502 になって初めて分かる**。
+        for r in &self.routing {
+            for b in r.all_backends() {
+                if b.parse::<hyper::Uri>().is_err() {
+                    errors.push((Self::EXIT_BACKEND_URL,
+                        format!("routing host '{}': backend URL is unparsable: {}", r.host, b)));
+                    continue;
+                }
+                if !b.starts_with("http://") && !b.starts_with("https://") {
+                    errors.push((Self::EXIT_BACKEND_URL,
+                        format!("routing host '{}': backend must start with http:// or https://: {}", r.host, b)));
+                }
+            }
+        }
+
+        // 4: 未知の plugin 名。以前は起動時に warn を出して skip するだけで、
+        //    typo に気付けなかった（設定したつもりの plugin が動いていない）。
+        for pl in &self.plugins {
+            if pl.plugin_type == "native"
+                && !crate::plugin::PluginManager::BUILTIN_PLUGINS.contains(&pl.name.as_str()) {
+                errors.push((Self::EXIT_UNKNOWN_PLUGIN, format!(
+                    "unknown plugin '{}' (built-in: {})",
+                    pl.name, crate::plugin::PluginManager::BUILTIN_PLUGINS.join(", "))));
+            }
+        }
+
+        // 5: TLS challenge に必要な資格情報。dns-01 を指定したのに provider や
+        //    token が無いと、証明書取得の段で初めて失敗する。
+        if let Some(ref tls) = self.tls {
+            if tls.challenge == "dns-01" {
+                if tls.dns_provider.is_none() {
+                    errors.push((Self::EXIT_TLS_CREDENTIALS,
+                        "tls.challenge is dns-01 but tls.dns_provider is not set".into()));
+                }
+                if tls.dns_api_token.is_none() && std::env::var("CF_DNS_API_TOKEN").is_err() {
+                    errors.push((Self::EXIT_TLS_CREDENTIALS,
+                        "tls.challenge is dns-01 but neither tls.dns_api_token nor CF_DNS_API_TOKEN is set".into()));
+                }
+            }
+        }
+
         if errors.is_empty() { Ok(()) } else { Err(errors) }
     }
 
@@ -777,6 +841,102 @@ routing:
     fn validate_passes_for_minimal_valid_config() {
         let cfg = parse_config(&minimal_config_yaml(""));
         assert!(cfg.validate().is_ok());
+    }
+
+    // ── #95: --validate の終了コード分類 ─────────────────────────
+    //
+    // CI が「何が悪かったのか」を終了コードで区別できることを固定する。
+
+    #[test]
+    fn validate_detailed_reports_backend_url_code() {
+        // scheme が無い backend は起動時には気付けず、接続で初めて落ちる
+        let yaml = r#"
+server:
+  port: 8080
+auth:
+  volta_url: "http://localhost:7070"
+routing:
+  - host: example.com
+    backend: "backend:3000"
+"#;
+        let errs = parse_config(yaml).validate_detailed().expect_err("should fail");
+        assert!(errs.iter().any(|(c, _)| *c == GatewayConfig::EXIT_BACKEND_URL),
+                "expected EXIT_BACKEND_URL, got {:?}", errs);
+    }
+
+    #[test]
+    fn validate_detailed_reports_unknown_plugin_code() {
+        let yaml = r#"
+server:
+  port: 8080
+auth:
+  volta_url: "http://localhost:7070"
+routing:
+  - host: example.com
+    backend: "http://backend:3000"
+plugins:
+  - name: no-such-plugin
+"#;
+        let errs = parse_config(yaml).validate_detailed().expect_err("should fail");
+        assert!(errs.iter().any(|(c, _)| *c == GatewayConfig::EXIT_UNKNOWN_PLUGIN),
+                "expected EXIT_UNKNOWN_PLUGIN, got {:?}", errs);
+    }
+
+    #[test]
+    fn validate_detailed_accepts_builtin_plugin() {
+        let yaml = r#"
+server:
+  port: 8080
+auth:
+  volta_url: "http://localhost:7070"
+routing:
+  - host: example.com
+    backend: "http://backend:3000"
+plugins:
+  - name: api-key-auth
+"#;
+        let cfg = parse_config(yaml);
+        assert!(cfg.validate_detailed().is_ok(), "{:?}", cfg.validate_detailed());
+    }
+
+    #[test]
+    fn validate_detailed_reports_tls_credentials_code() {
+        let yaml = r#"
+server:
+  port: 8080
+auth:
+  volta_url: "http://localhost:7070"
+routing:
+  - host: example.com
+    backend: "http://backend:3000"
+tls:
+  enabled: true
+  port: 8443
+  domains: ["example.com"]
+  contact_email: "admin@example.com"
+  challenge: dns-01
+"#;
+        // CF_DNS_API_TOKEN が環境にあると通ってしまうので、その場合はスキップ
+        if std::env::var("CF_DNS_API_TOKEN").is_ok() { return; }
+        let errs = parse_config(yaml).validate_detailed().expect_err("should fail");
+        assert!(errs.iter().any(|(c, _)| *c == GatewayConfig::EXIT_TLS_CREDENTIALS),
+                "expected EXIT_TLS_CREDENTIALS, got {:?}", errs);
+    }
+
+    #[test]
+    fn validate_string_api_still_works() {
+        // 既存の呼び出し元（Vec<String> を期待する側）が壊れていないこと
+        let yaml = r#"
+server:
+  port: 8080
+auth:
+  volta_url: "http://localhost:7070"
+routing:
+  - host: example.com
+    backend: "backend:3000"
+"#;
+        let errs = parse_config(yaml).validate().expect_err("should fail");
+        assert!(errs.iter().any(|m| m.contains("http://")), "{:?}", errs);
     }
 
     #[test]

@@ -1,2 +1,39 @@
 /target
 .DS_Store
+
+# ── 実運用の設定とシークレット (#93) ───────────────────────────────────
+#
+# これまで .gitignore は上の2行だけで、**シークレットが入るファイルが1つも
+# 無視されていなかった**。repo の volta-gateway.yaml はシークレットを含まない
+# 開発用サンプルだが、以下は実運用値（admin token / 共有シークレット / 証明書）が
+# 入るため追跡してはいけない。
+#
+# API 経由の設定変更が書き込まれる overlay（config_overlay::default_overlay_path が
+# `<config>.overlay.json` を作る）。ルートの backend や request_headers が
+# そのまま入るので、実運用のものは絶対にコミットしない。
+*.overlay.json
+
+# ローカル / 環境固有の上書き設定
+*.local.yaml
+*.local.yml
+volta-gateway.*.local.yaml
+config.local.*
+
+# TLS 証明書・秘密鍵（ACME のキャッシュ含む）
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+/acme/
+/certs/
+
+# 環境変数ファイル（VOLTA_ADMIN_TOKEN / CF_DNS_API_TOKEN / DATABASE_URL 等）
+.env
+.env.*
+!.env.example
+
+# ── 開発時に生まれるもの ───────────────────────────────────────────
+node_modules/
+*.log
+*:Zone.Identifier

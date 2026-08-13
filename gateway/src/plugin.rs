@@ -320,6 +320,19 @@ impl PluginManager {
         self.plugins.push((config, PluginState::Active, plugin));
     }
 
+    /// 組み込み plugin の名前。
+    ///
+    /// `load_from_config` の match と**必ず同じ集合**にすること。以前は match の
+    /// default で warn を出して黙って skip していただけで、設定ミス（typo）が
+    /// 起動時に検出されなかった（`--validate` も通ってしまう）。#95 でここを
+    /// 参照して検証する。
+    pub const BUILTIN_PLUGINS: &'static [&'static str] = &[
+        "api-key-auth",
+        "rate-limit-by-user",
+        "monetizer",
+        "header-injector",
+    ];
+
     /// Load built-in plugins from config.
     pub fn load_from_config(configs: &[PluginConfig]) -> Self {
         let mut mgr = Self::new();

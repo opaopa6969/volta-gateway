@@ -427,6 +427,16 @@ cargo test -p volta-auth-core --features postgres -- --ignored
 
 Single binary combining gateway + auth-core (the `volta-bin/` crate, package name `volta`). Auth checks run in-process (~1μs) instead of HTTP roundtrip (~250μs).
 
+> ⚠️ **Status: not functional yet (#86).** `volta-bin/src/main.rs` is a 60-line
+> startup check — it verifies that the auth-core components construct and that
+> every tramli flow builds, prints the state counts, and exits. It does **not**
+> serve traffic. The gateway is not launched and auth-core is not wired into it
+> (`// TODO: Launch gateway with auth-core wired in`).
+>
+> **Use the separate `volta-gateway` + `volta-auth-server` binaries in
+> production.** That is what runs on `auth.unlaxer.org` today. The numbers above
+> are the design target for the in-process mode, not a measurement of this crate.
+
 ```bash
 cargo run -p volta -- config.yaml
 ```
