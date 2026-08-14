@@ -35,6 +35,59 @@ mod websocket;
 use auth::VoltaAuthClient;
 use proxy::{host_is_routed, HotState, ProxyService};
 
+/// `--health-check <port>` の実体 (#74 BT-HA-1)。
+///
+/// `http://127.0.0.1:<port>/healthz` を叩いて、2xx なら 0、それ以外は 1 を返す。
+/// **drain 中は /healthz が 503 を返す**ので、その間 unhealthy と判定される。
+/// これは意図どおり（新規を回してほしくない状態）で、compose 側は `retries` を
+/// 積んでローリング中に殺されないようにする。
+///
+/// tokio ランタイムの外から呼ぶので、std の TcpStream で最小限の HTTP/1.1 を
+/// 手書きする（hyper を持ち込むとランタイムが要る）。
+fn run_health_check(port: u16) -> i32 {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    use std::time::Duration;
+
+    let addr = format!("127.0.0.1:{port}");
+    let mut stream = match TcpStream::connect(&addr) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("health check: connect {addr} failed: {e}");
+            return 1;
+        }
+    };
+    // hang を拾うのが目的なので、必ずタイムアウトを置く
+    let timeout = Duration::from_secs(3);
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(timeout));
+
+    // Host は routing に載っていないものを使う。routing にある Host を送ると
+    // backend へ proxy されてしまい、**gateway 自身ではなく backend の健康を
+    // 見てしまう**（dc4b098 で直した挙動そのもの）。
+    let req = format!("GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    if let Err(e) = stream.write_all(req.as_bytes()) {
+        eprintln!("health check: write failed: {e}");
+        return 1;
+    }
+
+    let mut buf = Vec::new();
+    if let Err(e) = stream.take(4096).read_to_end(&mut buf) {
+        eprintln!("health check: read failed: {e}");
+        return 1;
+    }
+    let head = String::from_utf8_lossy(&buf);
+    let status_line = head.lines().next().unwrap_or("");
+    let code = status_line.split_whitespace().nth(1).unwrap_or("");
+
+    if code.starts_with('2') {
+        0
+    } else {
+        eprintln!("health check: unhealthy ({status_line})");
+        1
+    }
+}
+
 /// リスナーを作る。`reuse_port` が真なら SO_REUSEPORT を立てる（#74 BT-HA-2）。
 ///
 /// SO_REUSEPORT を立てると **同じアドレスに複数プロセスが bind できる**。
@@ -118,6 +171,26 @@ async fn main() {
 
     // #36: --validate dry-run mode
     let args: Vec<String> = std::env::args().collect();
+
+    // #74 BT-HA-1: Docker healthcheck 用の自己診断モード。
+    //
+    // compose の healthcheck から呼ぶ。`restart: always` は**プロセスが死んだとき**
+    // しか効かないので、hang（応答しないが生きている）は拾えない。実際に
+    // 2026-08-06 に gateway が 10時間 502 を返し続けたが、コンテナは Running の
+    // ままだった。
+    //
+    // curl / wget を使わないのは、本番イメージが debian:bookworm-slim で
+    // **どちらも入っていない**ため。パッケージを足すとイメージが変わるので、
+    // 既にマウントされているこのバイナリ自身で叩く。
+    if args.iter().any(|a| a == "--health-check") {
+        let port = args
+            .iter()
+            .position(|a| a == "--health-check")
+            .and_then(|i| args.get(i + 1))
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or(80);
+        std::process::exit(run_health_check(port));
+    }
     let validate_only = args.iter().any(|a| a == "--validate");
     let config_path = args
         .iter()
