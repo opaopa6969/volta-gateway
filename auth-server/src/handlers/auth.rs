@@ -152,22 +152,28 @@ pub async fn verify(State(state): State<AppState>, headers: HeaderMap, jar: Cook
             .filter(|s| !s.is_empty())
         {
             let policy = volta_auth_core::policy::PolicyEngine::default_policy();
-            let satisfied = session
-                .roles
-                .iter()
-                .any(|r| policy.is_at_least(r, required));
-            if !satisfied {
+
+            // 大文字小文字は正規化する。services.json には `operator` と
+            // `OPERATOR` が混在している（schema がどちらも許してきた）。
+            let required = required.to_ascii_uppercase();
+
+            // `is_at_least` を直接使わないこと。未知のロールは rank が
+            // usize::MAX になり `rank(user) <= MAX` が常に真 = **全員通る**。
+            // enforce_min_role は未知ロールを拒否する（fail-closed）。
+            let decision = policy.enforce_min_role(&session.roles, &required);
+            if let volta_auth_core::policy::PolicyResult::Deny(reason) = decision {
                 tracing::warn!(
                     user_id = %session.user_id,
                     roles = ?session.roles,
-                    required = required,
+                    required = %required,
+                    reason = %reason,
                     "verify denied: role requirement not met"
                 );
                 let mut resp = StatusCode::FORBIDDEN.into_response();
                 let h = resp.headers_mut();
                 h.insert("x-volta-auth-reason", "insufficient_role".parse().unwrap());
                 // 何が足りないかを返す。画面側が「ADMIN が必要です」と出せる。
-                if let Ok(v) = required.parse() {
+                if let Ok(v) = required.as_str().parse() {
                     h.insert("x-volta-required-role", v);
                 }
                 no_cache_headers(&mut resp);

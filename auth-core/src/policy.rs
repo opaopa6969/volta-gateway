@@ -22,9 +22,17 @@ pub struct PolicyEngine {
 impl PolicyEngine {
     /// Create with default volta policy (OWNER > ADMIN > MEMBER > VIEWER).
     pub fn default_policy() -> Self {
+        // OWNER > ADMIN > OPERATOR > MEMBER > VIEWER
+        //
+        // OPERATOR は「運用はできるがテナント管理はできない」中間ロール。
+        // ターミナル (ttyd) やコードサーバ、監視のように **触れると影響が
+        // 大きいが、メンバー招待や課金設定とは別の権限**を束ねる場所が
+        // 無かったため追加した。services.json には既に `minRole: operator`
+        // を書いたサービスが4件ある。
         let hierarchy = vec![
             "OWNER".into(),
             "ADMIN".into(),
+            "OPERATOR".into(),
             "MEMBER".into(),
             "VIEWER".into(),
         ];
@@ -51,8 +59,21 @@ impl PolicyEngine {
         }
         perms.insert("MEMBER".into(), member);
 
-        // ADMIN inherits MEMBER
-        let mut admin: HashSet<String> = perms["MEMBER"].clone();
+        // OPERATOR inherits MEMBER — 運用操作はできるが、メンバーやテナントの
+        // 管理はできない。「サービスを触る」と「組織を触る」を分ける。
+        let mut operator: HashSet<String> = perms["MEMBER"].clone();
+        for p in &[
+            "operate_services",
+            "view_service_logs",
+            "restart_services",
+            "access_terminal",
+        ] {
+            operator.insert(p.to_string());
+        }
+        perms.insert("OPERATOR".into(), operator);
+
+        // ADMIN inherits OPERATOR
+        let mut admin: HashSet<String> = perms["OPERATOR"].clone();
         for p in &[
             "invite_members",
             "remove_members",
@@ -111,8 +132,28 @@ impl PolicyEngine {
         self.rank(role_a) <= self.rank(role_b)
     }
 
+    /// Is this a role we know about?
+    ///
+    /// `rank()` は未知のロールに `usize::MAX` を返す。これは `is_at_least(user,
+    /// unknown)` を **true**（= 全員通る）にしてしまうので、要求側のロールを
+    /// 検証せずに使うと **typo が「制限なし」に化ける**。`minRole: operatar`
+    /// のような一文字違いが、エラーではなく無防備として通る形になる。
+    pub fn is_known_role(&self, role: &str) -> bool {
+        self.hierarchy.iter().any(|r| r == role)
+    }
+
     /// Enforce that roles include at least min_role.
+    ///
+    /// 未知の `min_role` は **拒否**する（fail-closed）。設定ミスで穴が開くより、
+    /// 設定ミスで塞がって気付ける方がよい。
     pub fn enforce_min_role(&self, roles: &[String], min_role: &str) -> PolicyResult {
+        if !self.is_known_role(min_role) {
+            return PolicyResult::Deny(format!(
+                "unknown role '{}' required (known: {})",
+                min_role,
+                self.hierarchy.join(" > ")
+            ));
+        }
         if roles.iter().any(|r| self.is_at_least(r, min_role)) {
             PolicyResult::Allow
         } else {
@@ -150,7 +191,10 @@ mod tests {
     #[test]
     fn default_policy_hierarchy() {
         let policy = PolicyEngine::default_policy();
-        assert_eq!(policy.hierarchy(), &["OWNER", "ADMIN", "MEMBER", "VIEWER"]);
+        assert_eq!(
+            policy.hierarchy(),
+            &["OWNER", "ADMIN", "OPERATOR", "MEMBER", "VIEWER"]
+        );
     }
 
     #[test]
@@ -311,11 +355,67 @@ mod tests {
     #[test]
     fn min_role_allows_equal_or_higher() {
         let p = PolicyEngine::default_policy();
-        // OWNER > ADMIN > MEMBER > VIEWER
+        // OWNER > ADMIN > OPERATOR > MEMBER > VIEWER
         assert!(p.is_at_least("OWNER", "ADMIN"));
         assert!(p.is_at_least("ADMIN", "ADMIN"));
-        assert!(p.is_at_least("ADMIN", "MEMBER"));
+        assert!(p.is_at_least("ADMIN", "OPERATOR"));
+        assert!(p.is_at_least("OPERATOR", "MEMBER"));
         assert!(p.is_at_least("MEMBER", "VIEWER"));
+        assert!(p.is_at_least("OWNER", "OPERATOR"));
+    }
+
+    #[test]
+    fn unknown_min_role_is_denied_not_allowed() {
+        // `rank()` が未知ロールに usize::MAX を返すため、素の is_at_least では
+        // `rank(user) <= MAX` が常に成立して **全員通ってしまう**。
+        // enforce_min_role は fail-closed であること。
+        let p = PolicyEngine::default_policy();
+        let roles = vec!["OWNER".to_string()];
+
+        assert!(matches!(
+            p.enforce_min_role(&roles, "OPERATAR"), // typo
+            PolicyResult::Deny(_)
+        ));
+        assert!(matches!(
+            p.enforce_min_role(&roles, "superuser"),
+            PolicyResult::Deny(_)
+        ));
+        assert!(matches!(
+            p.enforce_min_role(&roles, ""),
+            PolicyResult::Deny(_)
+        ));
+        // 正しいロール名なら通る
+        assert!(matches!(
+            p.enforce_min_role(&roles, "OPERATOR"),
+            PolicyResult::Allow
+        ));
+
+        assert!(p.is_known_role("OPERATOR"));
+        assert!(!p.is_known_role("operator"), "大文字小文字は呼び出し側で正規化する");
+    }
+
+    #[test]
+    fn operator_sits_between_admin_and_member() {
+        // services.json に `minRole: operator` を書いたサービスが4件あり
+        // (ttyd / ttyd-crt / code-server / syslenz)、階層に無いせいで
+        // **誰も入れない**状態だった。中間ロールとして明示的に固定する。
+        let p = PolicyEngine::default_policy();
+
+        assert!(!p.is_at_least("MEMBER", "OPERATOR"), "MEMBER では運用操作は許さない");
+        assert!(!p.is_at_least("OPERATOR", "ADMIN"), "OPERATOR にテナント管理は許さない");
+        assert!(!p.is_at_least("VIEWER", "OPERATOR"));
+
+        // 運用はできるが、組織は触れない
+        assert!(p.can("OPERATOR", "access_terminal"));
+        assert!(p.can("OPERATOR", "restart_services"));
+        assert!(p.can("OPERATOR", "use_apps"), "MEMBER の権限を継承する");
+        assert!(!p.can("OPERATOR", "invite_members"));
+        assert!(!p.can("OPERATOR", "change_member_role"));
+        assert!(!p.can("OPERATOR", "delete_tenant"));
+
+        // ADMIN 以上は OPERATOR の権限を継承する
+        assert!(p.can("ADMIN", "access_terminal"));
+        assert!(p.can("OWNER", "restart_services"));
     }
 
     #[test]
