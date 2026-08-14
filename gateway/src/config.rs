@@ -379,6 +379,20 @@ pub struct RouteEntry {
     pub backends: Vec<WeightedBackend>,
     #[serde(default)]
     pub app_id: Option<String>,
+
+    /// このルートに必要な最低ロール（#58 / volta-platform#41）。
+    ///
+    /// `VIEWER` < `MEMBER` < `ADMIN` < `OWNER`。指定すると ForwardAuth に
+    /// `X-Volta-Required-Role` を渡し、**auth-server がセッションのロールと
+    /// 突き合わせて足りなければ 403** を返す。
+    ///
+    /// これまで services.json に `access.minRole` を書いても**誰も読んでいなかった**
+    /// ため、「operator 限定にしたつもり」でも viewer でログインすれば通っていた。
+    /// 判定を auth-server 側でやるのは、ロールの正はセッション（＝auth-server）に
+    /// あるため。gateway は「何が必要か」を渡すだけにする。
+    #[serde(default)]
+    pub min_role: Option<String>,
+
     #[serde(default)]
     pub ip_allowlist: Vec<String>,
     /// Allowed CORS origins for this route. Empty = no CORS headers.
@@ -737,6 +751,7 @@ impl GatewayConfig {
                         backends: r.all_backends(),
                         weights: r.all_weights(),
                         app_id: r.app_id.clone(),
+                        min_role: r.min_role.clone(),
                         public: r.public,
                         bypass_paths: r.auth_bypass_paths.clone(),
                         mirror: r.mirror.clone(),

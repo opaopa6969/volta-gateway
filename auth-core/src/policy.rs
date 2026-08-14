@@ -303,4 +303,53 @@ mod tests {
         assert!(!policy.can("MEMBER", "remove_members"));
         assert!(!policy.can("MEMBER", "change_member_role"));
     }
+    // ── #58: ForwardAuth のロール判定で使う階層 ────────────────────
+    //
+    // services.json の `access.minRole` を auth-server が評価するようになった。
+    // ここがずれると「ADMIN 限定のつもりが VIEWER で通る」になるので固定する。
+
+    #[test]
+    fn min_role_allows_equal_or_higher() {
+        let p = PolicyEngine::default_policy();
+        // OWNER > ADMIN > MEMBER > VIEWER
+        assert!(p.is_at_least("OWNER", "ADMIN"));
+        assert!(p.is_at_least("ADMIN", "ADMIN"));
+        assert!(p.is_at_least("ADMIN", "MEMBER"));
+        assert!(p.is_at_least("MEMBER", "VIEWER"));
+    }
+
+    #[test]
+    fn min_role_denies_lower() {
+        let p = PolicyEngine::default_policy();
+        assert!(!p.is_at_least("VIEWER", "MEMBER"));
+        assert!(!p.is_at_least("MEMBER", "ADMIN"));
+        assert!(!p.is_at_least("ADMIN", "OWNER"));
+    }
+
+    #[test]
+    fn enforce_min_role_uses_any_of_the_users_roles() {
+        // ユーザーは複数ロールを持ちうる。どれか1つが足りていれば通す。
+        let p = PolicyEngine::default_policy();
+        let roles = vec!["VIEWER".to_string(), "ADMIN".to_string()];
+        assert!(matches!(
+            p.enforce_min_role(&roles, "ADMIN"),
+            PolicyResult::Allow
+        ));
+        assert!(matches!(
+            p.enforce_min_role(&roles, "OWNER"),
+            PolicyResult::Deny(_)
+        ));
+    }
+
+    #[test]
+    fn unknown_role_is_denied() {
+        // 階層に無いロール（typo や独自ロール）を「通す」と危ない。
+        let p = PolicyEngine::default_policy();
+        assert!(!p.is_at_least("SUPERUSER", "VIEWER"));
+        let roles = vec!["SUPERUSER".to_string()];
+        assert!(matches!(
+            p.enforce_min_role(&roles, "VIEWER"),
+            PolicyResult::Deny(_)
+        ));
+    }
 }

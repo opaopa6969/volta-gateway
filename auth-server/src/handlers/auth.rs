@@ -133,6 +133,48 @@ pub async fn verify(State(state): State<AppState>, headers: HeaderMap, jar: Cook
             }
         }
 
+        // #58 / volta-platform#41: ルートが要求する最低ロールを満たすか。
+        //
+        // gateway が `X-Volta-Required-Role` で「何が必要か」を渡してくる
+        // （services.json の `access.minRole` 由来）。**判定をこちら側でやるのは、
+        // ロールの正がセッションにあるため。** gateway に判定させると、gateway が
+        // ロール階層を知る必要が出て二重管理になる。
+        //
+        // これまで minRole は services.json に書けるだけで**誰も読んでいなかった**。
+        // 「operator 限定にしたつもり」でも viewer でログインすれば通っていた。
+        //
+        // 403 を返すのは、ログインし直しても足りないロールは満たせないため
+        // （302 で /login に送ると無限ループになる）。
+        if let Some(required) = headers
+            .get("x-volta-required-role")
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            let policy = volta_auth_core::policy::PolicyEngine::default_policy();
+            let satisfied = session
+                .roles
+                .iter()
+                .any(|r| policy.is_at_least(r, required));
+            if !satisfied {
+                tracing::warn!(
+                    user_id = %session.user_id,
+                    roles = ?session.roles,
+                    required = required,
+                    "verify denied: role requirement not met"
+                );
+                let mut resp = StatusCode::FORBIDDEN.into_response();
+                let h = resp.headers_mut();
+                h.insert("x-volta-auth-reason", "insufficient_role".parse().unwrap());
+                // 何が足りないかを返す。画面側が「ADMIN が必要です」と出せる。
+                if let Ok(v) = required.parse() {
+                    h.insert("x-volta-required-role", v);
+                }
+                no_cache_headers(&mut resp);
+                return resp;
+            }
+        }
+
         // P1.1 AUTH-010: MFA pending → send user to challenge (only if they are
         // not already navigating to the MFA page, to avoid redirect loops).
         // Only enforce when the user actually has an *active* second factor —

@@ -283,6 +283,8 @@ impl VoltaAuthClient {
         proto: &str,
         cookie: Option<&str>,
         app_id: Option<&str>,
+        // #58: このルートに必要な最低ロール。auth-server が評価する。
+        min_role: Option<&str>,
         client_ip: Option<&str>,
     ) -> AuthResult {
         // DD-005 Phase 0: In-process JWT verify (skip HTTP roundtrip).
@@ -314,6 +316,9 @@ impl VoltaAuthClient {
             cookie.unwrap_or("").hash(&mut h);
             host.hash(&mut h);
             app_id.unwrap_or("").hash(&mut h);
+            // #58: 必要ロールが違えば判定結果も違う。混ぜないと、
+            // 別ルートの許可結果を使い回してしまう
+            min_role.unwrap_or("").hash(&mut h);
             h.finish()
         };
         {
@@ -339,6 +344,12 @@ impl VoltaAuthClient {
         }
         if let Some(id) = app_id {
             builder = builder.header("X-Volta-App-Id", id);
+        }
+        // #58: 必要ロールを渡す。判定は auth-server 側（ロールの正はセッションに
+        // あるため）。gateway は「何が必要か」を伝えるだけで、足りるかどうかは
+        // 見ない。ここで判定すると、gateway がロール階層を知る必要が出て二重管理。
+        if let Some(role) = min_role {
+            builder = builder.header("X-Volta-Required-Role", role);
         }
         if let Some(ip) = client_ip {
             builder = builder.header("X-Real-IP", ip);
