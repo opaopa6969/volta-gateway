@@ -81,6 +81,8 @@ pub struct RouteInfo {
     /// Weights for weighted routing (same length as backends). Empty = equal weight.
     pub weights: Vec<u32>,
     pub app_id: Option<String>,
+    /// ForwardAuth に渡す最低ロール（#58）。
+    pub min_role: Option<String>,
     pub public: bool,
     pub bypass_paths: Vec<crate::config::BypassPath>,
     pub mirror: Option<crate::config::MirrorConfig>,
@@ -755,7 +757,7 @@ impl ProxyService {
 
         // SM should be in ROUTED state now (waiting for External: auth check)
         // Extract route target from SM context
-        let (backend_url, app_id) = {
+        let (backend_url, app_id, min_role) = {
             let eng = engine.lock().unwrap();
             let flow = match eng.store.get(&flow_id) {
                 Some(f) => f,
@@ -773,7 +775,10 @@ impl ProxyService {
                         .backend_selector
                         .select(&host, &rt.backends, weights)
                         .to_string();
-                    (selected, rt.app_id.clone())
+                    // #58: 必要ロールは routing から引く（RouteTarget は flow の
+                    // context なので、ここで hot state から取る方が単純）
+                    let min_role = route.and_then(|r| r.min_role.clone());
+                    (selected, rt.app_id.clone(), min_role)
                 }
                 Err(_) => return error_response(StatusCode::BAD_REQUEST, &request_id),
             }
@@ -817,6 +822,7 @@ impl ProxyService {
                     proto,
                     cookie.as_deref(),
                     app_id.as_deref(),
+                    min_role.as_deref(),
                     Some(&client_ip_str),
                 )
                 .await;
@@ -1777,6 +1783,7 @@ mod circuit_breaker_tests {
 
     fn route_stub() -> RouteInfo {
         RouteInfo {
+            min_role: None,
             backends: vec!["http://127.0.0.1:1".into()],
             weights: vec![],
             app_id: None,

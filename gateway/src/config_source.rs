@@ -275,6 +275,7 @@ impl ServicesJsonSource {
             .collect();
 
         Ok(Some(RouteEntry {
+            min_role: None,
             host,
             backend: Some(backend),
             backends: vec![],
@@ -322,6 +323,7 @@ impl ServicesJsonSource {
                 .collect();
 
             routes.push(RouteEntry {
+                min_role: None,
                 host,
                 backend: Some(backend),
                 backends: vec![],
@@ -468,6 +470,7 @@ impl DockerLabelsSource {
             .unwrap_or_default();
 
         Some(RouteEntry {
+            min_role: None,
             host: host.clone(),
             backend: Some(format!("http://{}:{}", container_ip, port)),
             backends: vec![],
@@ -765,6 +768,7 @@ pub fn spawn_watchers(
                 let mut this_source: crate::proxy::RoutingTable = std::collections::HashMap::new();
                 for route in &dynamic_routes {
                     let info = crate::proxy::RouteInfo {
+                        min_role: route.min_role.clone(),
                         backends: route.all_backends(),
                         weights: route.all_weights(),
                         app_id: route.app_id.clone(),

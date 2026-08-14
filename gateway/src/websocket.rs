@@ -72,6 +72,7 @@ pub async fn handle_websocket(
     };
     let backends = route.backends;
     let app_id = route.app_id;
+    let min_role = route.min_role;
 
     // Public routes skip auth; bypass_paths also skip for matching prefixes
     let skip_auth = route.public
@@ -103,6 +104,7 @@ pub async fn handle_websocket(
                 "https",
                 cookie.as_deref(),
                 app_id.as_deref(),
+                min_role.as_deref(),
                 Some(&client_ip_str),
             )
             .await;
