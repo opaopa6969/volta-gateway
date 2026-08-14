@@ -391,7 +391,10 @@ mod tests {
         ));
 
         assert!(p.is_known_role("OPERATOR"));
-        assert!(!p.is_known_role("operator"), "大文字小文字は呼び出し側で正規化する");
+        assert!(
+            !p.is_known_role("operator"),
+            "大文字小文字は呼び出し側で正規化する"
+        );
     }
 
     #[test]
@@ -401,8 +404,14 @@ mod tests {
         // **誰も入れない**状態だった。中間ロールとして明示的に固定する。
         let p = PolicyEngine::default_policy();
 
-        assert!(!p.is_at_least("MEMBER", "OPERATOR"), "MEMBER では運用操作は許さない");
-        assert!(!p.is_at_least("OPERATOR", "ADMIN"), "OPERATOR にテナント管理は許さない");
+        assert!(
+            !p.is_at_least("MEMBER", "OPERATOR"),
+            "MEMBER では運用操作は許さない"
+        );
+        assert!(
+            !p.is_at_least("OPERATOR", "ADMIN"),
+            "OPERATOR にテナント管理は許さない"
+        );
         assert!(!p.is_at_least("VIEWER", "OPERATOR"));
 
         // 運用はできるが、組織は触れない
