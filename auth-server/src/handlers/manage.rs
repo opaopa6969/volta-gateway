@@ -148,18 +148,172 @@ pub struct PatchMemberReq {
     pub role: String,
 }
 
+/// 呼び出し元がそのテナントで `permission` を持つことを確かめる。
+///
+/// これが無かった。`auth()` は**ログイン済みか見るだけ**で、テナントも権限も
+/// 見ていない。つまり誰でも任意のテナントの任意のメンバーを操作できた
+/// （自分の membership を OWNER に PATCH できる = 権限昇格）。
+async fn require_tenant_permission(
+    s: &AppState,
+    jar: &CookieJar,
+    tenant_id: Uuid,
+    permission: &str,
+) -> Result<(SessionRecord, String), ApiError> {
+    let session = auth(s, jar).await?;
+    let uid: Uuid = session
+        .user_id
+        .parse()
+        .map_err(|_| ApiError::internal("bad uid"))?;
+
+    let membership = MembershipStore::find(&s.db, uid, tenant_id)
+        .await
+        .map_err(|e| ApiError::internal(&e.to_string()))?
+        .filter(|m| m.is_active)
+        .ok_or_else(|| {
+            // 「そのテナントのメンバーではない」と「権限が足りない」を
+            // 区別して返さない。存在の有無を漏らさないため。
+            ApiError::forbidden("FORBIDDEN", "この操作を行う権限がありません")
+        })?;
+
+    let policy = volta_auth_core::policy::PolicyEngine::default_policy();
+    if !policy.can(&membership.role.to_ascii_uppercase(), permission) {
+        return Err(ApiError::forbidden(
+            "FORBIDDEN",
+            "この操作を行う権限がありません",
+        ));
+    }
+    Ok((session, membership.role.to_ascii_uppercase()))
+}
+
+/// mid がそのテナントの membership であることを確かめる。
+///
+/// パスの tenantId と memberId は独立に渡ってくるので、**別テナントの
+/// membership id を渡せば他所のテナントを操作できる**。
+async fn member_in_tenant(
+    s: &AppState,
+    tenant_id: Uuid,
+    member_id: Uuid,
+) -> Result<volta_auth_core::record::MembershipRecord, ApiError> {
+    let members = MembershipStore::list_by_tenant(&s.db, tenant_id)
+        .await
+        .map_err(|e| ApiError::internal(&e.to_string()))?;
+    members
+        .into_iter()
+        .find(|m| m.id == member_id && m.is_active)
+        .ok_or_else(|| ApiError::forbidden("FORBIDDEN", "この操作を行う権限がありません"))
+}
+
+/// ロール変更が許されるかを判定する（DB を触らない）。
+///
+/// ここを純粋関数にしてあるのは、**権限判定こそテストが要る**のに、
+/// ハンドラのままだと DB とセッションを用意しないと呼べないため。
+///
+/// `owner_count` は target が OWNER のときだけ意味を持つ。それ以外は
+/// `usize::MAX` を渡してよい（最後の OWNER 判定に入らない）。
+fn authorize_role_change(
+    caller_role: &str,
+    target_role: &str,
+    new_role: &str,
+    owner_count: usize,
+) -> Result<(), ApiError> {
+    let policy = volta_auth_core::policy::PolicyEngine::default_policy();
+    let caller = caller_role.to_ascii_uppercase();
+    let target = target_role.to_ascii_uppercase();
+
+    // 未知のロール名を DB に入れない。
+    //
+    // enforce_min_role は未知ロールを拒否する（fail-closed）ので、typo した
+    // ロールを持たされた人は **何にもアクセスできなくなる**。しかも本人には
+    // 理由が分からない。入口で弾く。
+    if !policy.is_known_role(new_role) {
+        return Err(ApiError::bad_request(
+            "INVALID_ROLE",
+            &format!(
+                "未知のロール '{}' — {} のいずれかを指定してください",
+                new_role,
+                policy.hierarchy().join(" / ")
+            ),
+        ));
+    }
+
+    // 自分より上のロールを配れない。無いと ADMIN が自分を OWNER に上げられる。
+    if !policy.is_at_least(&caller, new_role) {
+        return Err(ApiError::forbidden(
+            "FORBIDDEN",
+            "自分より上のロールは付与できません",
+        ));
+    }
+
+    // 相手が自分より上なら触らせない（ADMIN が OWNER を降格できない）。
+    if !policy.is_at_least(&caller, &target) {
+        return Err(ApiError::forbidden(
+            "FORBIDDEN",
+            "自分より上のロールのメンバーは変更できません",
+        ));
+    }
+
+    // 最後の OWNER を降格させない。誰も管理できないテナントが残る。
+    if target == "OWNER" && new_role != "OWNER" && owner_count <= 1 {
+        return Err(ApiError::bad_request(
+            "LAST_OWNER",
+            "最後の OWNER は降格できません。先に別の OWNER を立ててください",
+        ));
+    }
+    Ok(())
+}
+
+/// メンバー削除（無効化）が許されるか。
+fn authorize_member_removal(
+    caller_role: &str,
+    target_role: &str,
+    owner_count: usize,
+) -> Result<(), ApiError> {
+    let policy = volta_auth_core::policy::PolicyEngine::default_policy();
+    let caller = caller_role.to_ascii_uppercase();
+    let target = target_role.to_ascii_uppercase();
+
+    if !policy.is_at_least(&caller, &target) {
+        return Err(ApiError::forbidden(
+            "FORBIDDEN",
+            "自分より上のロールのメンバーは削除できません",
+        ));
+    }
+    if target == "OWNER" && owner_count <= 1 {
+        return Err(ApiError::bad_request(
+            "LAST_OWNER",
+            "最後の OWNER は削除できません。先に別の OWNER を立ててください",
+        ));
+    }
+    Ok(())
+}
+
 pub async fn patch_member(
     State(s): State<AppState>,
     jar: CookieJar,
     Path((tid, mid)): Path<(Uuid, Uuid)>,
     Json(b): Json<PatchMemberReq>,
 ) -> Result<Response, ApiError> {
-    let _ = auth(&s, &jar).await?;
-    let _ = tid; // tenant context validation
-    MembershipStore::update_role(&s.db, mid, &b.role)
+    let (_session, caller_role) =
+        require_tenant_permission(&s, &jar, tid, "change_member_role").await?;
+    let target = member_in_tenant(&s, tid, mid).await?;
+
+    let new_role = b.role.trim().to_ascii_uppercase();
+
+    // 最後の OWNER かどうかは DB を引かないと分からないので、必要なときだけ数える。
+    let owner_count = if target.role.eq_ignore_ascii_case("OWNER") {
+        MembershipStore::count_active_owners(&s.db, tid)
+            .await
+            .map_err(|e| ApiError::internal(&e.to_string()))?
+    } else {
+        usize::MAX
+    };
+
+    authorize_role_change(&caller_role, &target.role, &new_role, owner_count)?;
+
+    MembershipStore::update_role(&s.db, mid, &new_role)
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
-    Ok(Json(serde_json::json!({"ok": true})).into_response())
+    Ok(Json(serde_json::json!({"ok": true, "role": new_role})).into_response())
 }
 
 pub async fn delete_member(
@@ -167,8 +321,20 @@ pub async fn delete_member(
     jar: CookieJar,
     Path((tid, mid)): Path<(Uuid, Uuid)>,
 ) -> Result<Response, ApiError> {
-    let _ = auth(&s, &jar).await?;
-    let _ = tid;
+    let (_session, caller_role) =
+        require_tenant_permission(&s, &jar, tid, "remove_members").await?;
+    let target = member_in_tenant(&s, tid, mid).await?;
+
+    let owner_count = if target.role.eq_ignore_ascii_case("OWNER") {
+        MembershipStore::count_active_owners(&s.db, tid)
+            .await
+            .map_err(|e| ApiError::internal(&e.to_string()))?
+    } else {
+        usize::MAX
+    };
+
+    authorize_member_removal(&caller_role, &target.role, owner_count)?;
+
     MembershipStore::deactivate(&s.db, mid)
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
@@ -590,4 +756,103 @@ pub async fn oauth_token(
         "expires_in": s.session_ttl_secs,
     }))
     .into_response())
+}
+
+#[cfg(test)]
+mod authz_tests {
+    use super::*;
+
+    fn ok(r: Result<(), ApiError>) -> bool {
+        r.is_ok()
+    }
+
+    // ── 権限昇格 ───────────────────────────────────────────────
+    //
+    // 元の実装は `auth()` でログイン済みか見るだけで、テナントも権限も
+    // 見ていなかった。**誰でも自分を OWNER に PATCH できた**。
+
+    #[test]
+    fn cannot_grant_a_role_above_your_own() {
+        // ADMIN が自分（や他人）を OWNER に上げられない
+        assert!(!ok(authorize_role_change("ADMIN", "MEMBER", "OWNER", 2)));
+        assert!(!ok(authorize_role_change("MEMBER", "MEMBER", "ADMIN", 2)));
+        assert!(!ok(authorize_role_change("OPERATOR", "MEMBER", "ADMIN", 2)));
+    }
+
+    #[test]
+    fn can_grant_your_own_role_or_lower() {
+        assert!(ok(authorize_role_change("OWNER", "MEMBER", "OWNER", 2)));
+        assert!(ok(authorize_role_change("ADMIN", "MEMBER", "ADMIN", 2)));
+        assert!(ok(authorize_role_change("ADMIN", "MEMBER", "OPERATOR", 2)));
+        assert!(ok(authorize_role_change("ADMIN", "MEMBER", "VIEWER", 2)));
+    }
+
+    #[test]
+    fn cannot_touch_a_member_above_your_own_role() {
+        // ADMIN が OWNER を降格できない
+        assert!(!ok(authorize_role_change("ADMIN", "OWNER", "MEMBER", 5)));
+        assert!(!ok(authorize_member_removal("ADMIN", "OWNER", 5)));
+    }
+
+    // ── 未知のロール ───────────────────────────────────────────
+    //
+    // enforce_min_role は未知ロールを拒否する（fail-closed）ので、typo した
+    // ロールを持たされた人は何にもアクセスできなくなる。入口で弾く。
+
+    #[test]
+    fn unknown_role_is_rejected() {
+        assert!(!ok(authorize_role_change("OWNER", "MEMBER", "OPERATAR", 2)));
+        assert!(!ok(authorize_role_change(
+            "OWNER",
+            "MEMBER",
+            "superuser",
+            2
+        )));
+        assert!(!ok(authorize_role_change("OWNER", "MEMBER", "", 2)));
+    }
+
+    #[test]
+    fn operator_is_a_known_role() {
+        assert!(ok(authorize_role_change("OWNER", "MEMBER", "OPERATOR", 2)));
+    }
+
+    #[test]
+    fn role_is_case_insensitive_on_input() {
+        // services.json 側に 'operator' と 'OPERATOR' が混在しており、
+        // ハンドラは大文字化してから渡す。判定側も大小を揃えて扱う。
+        assert!(ok(authorize_role_change("owner", "member", "OPERATOR", 2)));
+    }
+
+    // ── 最後の OWNER ───────────────────────────────────────────
+    //
+    // 降格/削除できてしまうと、**誰も管理できないテナント**が残る。
+
+    #[test]
+    fn last_owner_cannot_be_demoted() {
+        assert!(!ok(authorize_role_change("OWNER", "OWNER", "ADMIN", 1)));
+        assert!(!ok(authorize_member_removal("OWNER", "OWNER", 1)));
+    }
+
+    #[test]
+    fn owner_can_be_demoted_when_another_owner_exists() {
+        assert!(ok(authorize_role_change("OWNER", "OWNER", "ADMIN", 2)));
+        assert!(ok(authorize_member_removal("OWNER", "OWNER", 2)));
+    }
+
+    #[test]
+    fn owner_to_owner_is_not_a_demotion() {
+        // 変わらないなら OWNER が1人でも通す（冪等な PATCH を壊さない）
+        assert!(ok(authorize_role_change("OWNER", "OWNER", "OWNER", 1)));
+    }
+
+    #[test]
+    fn non_owner_target_ignores_owner_count() {
+        // usize::MAX を渡す運用（OWNER 以外は数えない）が壊れていないこと
+        assert!(ok(authorize_role_change(
+            "OWNER",
+            "MEMBER",
+            "ADMIN",
+            usize::MAX
+        )));
+    }
 }
