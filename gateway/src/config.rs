@@ -807,6 +807,7 @@ mod tests {
 
     fn make_route(host: &str, backend: &str) -> RouteEntry {
         RouteEntry {
+            min_role: None,
             host: host.to_string(),
             backend: Some(backend.to_string()),
             backends: vec![],
@@ -831,6 +832,7 @@ mod tests {
 
     fn make_weighted_route(host: &str, backends: Vec<WeightedBackend>) -> RouteEntry {
         RouteEntry {
+            min_role: None,
             host: host.to_string(),
             backend: None,
             backends,
@@ -903,6 +905,7 @@ routing:
     fn all_backends_single_not_duplicated_when_also_in_backends() {
         // backend field url already appears in backends — should not duplicate
         let route = RouteEntry {
+            min_role: None,
             host: "example.com".into(),
             backend: Some("http://a:3000".into()),
             backends: vec![WeightedBackend {
@@ -933,6 +936,7 @@ routing:
     #[test]
     fn all_backends_empty_when_none_configured() {
         let route = RouteEntry {
+            min_role: None,
             host: "example.com".into(),
             backend: None,
             backends: vec![],

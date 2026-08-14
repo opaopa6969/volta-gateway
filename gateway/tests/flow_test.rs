@@ -14,6 +14,7 @@ fn test_routing() -> Arc<RoutingTable> {
     rt.insert(
         "app.example.com".into(),
         RouteInfo {
+            min_role: None,
             weights: vec![],
             backends: vec!["http://localhost:3000".into()],
             app_id: Some("app-wiki".into()),
@@ -35,6 +36,7 @@ fn test_routing() -> Arc<RoutingTable> {
     rt.insert(
         "*.example.com".into(),
         RouteInfo {
+            min_role: None,
             weights: vec![],
             backends: vec!["http://localhost:3001".into()],
             app_id: None,

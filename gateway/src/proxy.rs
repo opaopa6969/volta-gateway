@@ -1783,6 +1783,7 @@ mod circuit_breaker_tests {
 
     fn route_stub() -> RouteInfo {
         RouteInfo {
+            min_role: None,
             backends: vec!["http://127.0.0.1:1".into()],
             weights: vec![],
             app_id: None,

@@ -608,7 +608,9 @@ mod degraded_tests {
     async fn check_valid_session_survives_proxy_down() {
         let c = client(true);
         let cookie = valid_cookie();
-        let r = c.check("h", "/", "https", Some(&cookie), None, None).await;
+        let r = c
+            .check("h", "/", "https", Some(&cookie), None, None, None)
+            .await;
         assert!(
             matches!(r, AuthResult::Authenticated(_)),
             "valid session must survive auth-proxy outage"
@@ -619,7 +621,7 @@ mod degraded_tests {
     async fn check_no_session_proxy_down_fail_closed_when_off() {
         let c = client(false);
         // クッキー無し → Phase 0 は NoSession で fall-through → HTTP 失敗 → degraded off → Error
-        let r = c.check("h", "/", "https", None, None, None).await;
+        let r = c.check("h", "/", "https", None, None, None, None).await;
         assert!(matches!(r, AuthResult::Error(_)));
     }
 
@@ -734,7 +736,9 @@ mod degraded_tests {
         c.degraded_mode = true;
         let cookie = rs256_cookie(Some("volta-auth"), Some("volta-apps"));
         // auth-proxy unreachable → Phase 0 in-process RS256 verify must pass.
-        let r = c.check("h", "/", "https", Some(&cookie), None, None).await;
+        let r = c
+            .check("h", "/", "https", Some(&cookie), None, None, None)
+            .await;
         match r {
             AuthResult::Authenticated(h) => {
                 assert_eq!(h.get("x-volta-user-id").unwrap(), "rs-user");
@@ -760,7 +764,7 @@ mod degraded_tests {
         parts[2] = &bad_sig;
         let tampered = parts.join(".");
         let r = c
-            .check("h", "/", "https", Some(&tampered), None, None)
+            .check("h", "/", "https", Some(&tampered), None, None, None)
             .await;
         assert!(
             matches!(r, AuthResult::Error(_)),
@@ -775,7 +779,9 @@ mod degraded_tests {
         let mut c = VoltaAuthClient::new(&rs256_config());
         c.degraded_mode = true;
         let cookie = rs256_cookie(Some("evil-issuer"), Some("volta-apps"));
-        let r = c.check("h", "/", "https", Some(&cookie), None, None).await;
+        let r = c
+            .check("h", "/", "https", Some(&cookie), None, None, None)
+            .await;
         assert!(
             matches!(r, AuthResult::Error(_)),
             "wrong iss must be rejected"
@@ -809,7 +815,7 @@ mod degraded_tests {
         c.degraded_mode = true;
         // HS256 cookie (signed with SECRET) must still verify via the chain.
         let r = c
-            .check("h", "/", "https", Some(&valid_cookie()), None, None)
+            .check("h", "/", "https", Some(&valid_cookie()), None, None, None)
             .await;
         assert!(
             matches!(r, AuthResult::Authenticated(_)),
