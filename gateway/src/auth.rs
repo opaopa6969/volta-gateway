@@ -120,6 +120,35 @@ pub struct VoltaAuthClient {
     degraded_total: Arc<AtomicU64>,
 }
 
+/// ForwardAuth キャッシュのキー。
+///
+/// **資格情報は全部混ぜること。** 混ぜ忘れたものがあると、それを持たない相手が
+/// 同じキーに当たって *持っている人の許可結果* を受け取る。
+///
+/// 過去に踏んだ／踏みかけた例:
+///   - `min_role` を混ぜていなかった → 別ルートの許可を使い回した (#58)
+///   - `bearer` を混ぜないと → トークンを持たない他人がそのまま通る
+///
+/// キーが同じ = 「同じ資格情報で、同じ場所に、同じ条件でアクセスした」でなければ
+/// ならない。
+fn auth_cache_key(
+    cookie: Option<&str>,
+    host: &str,
+    app_id: Option<&str>,
+    min_role: Option<&str>,
+    bearer: Option<&str>,
+) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    cookie.unwrap_or("").hash(&mut h);
+    host.hash(&mut h);
+    app_id.unwrap_or("").hash(&mut h);
+    min_role.unwrap_or("").hash(&mut h);
+    bearer.unwrap_or("").hash(&mut h);
+    h.finish()
+}
+
 impl VoltaAuthClient {
     pub fn new(config: &AuthConfig) -> Self {
         let client = Client::builder(TokioExecutor::new())
@@ -286,6 +315,12 @@ impl VoltaAuthClient {
         // #58: このルートに必要な最低ロール。auth-server が評価する。
         min_role: Option<&str>,
         client_ip: Option<&str>,
+        // Authorization: Bearer の中身（"Bearer " を剥がしたもの）。
+        //
+        // これまで gateway は cookie しか見ておらず、**M2M トークンを持っていても
+        // gateway 配下のサービスには入れなかった**。OAuth 一式は auth-server 自身の
+        // API を叩く用途にしか使えていなかった。
+        bearer: Option<&str>,
     ) -> AuthResult {
         // DD-005 Phase 0: In-process JWT verify (skip HTTP roundtrip).
         // async path → JWKS may force-refresh on a cold cache / kid miss.
@@ -309,18 +344,7 @@ impl VoltaAuthClient {
         }
 
         // #33: Auth cache lookup
-        let cache_key = {
-            use std::collections::hash_map::DefaultHasher;
-            use std::hash::{Hash, Hasher};
-            let mut h = DefaultHasher::new();
-            cookie.unwrap_or("").hash(&mut h);
-            host.hash(&mut h);
-            app_id.unwrap_or("").hash(&mut h);
-            // #58: 必要ロールが違えば判定結果も違う。混ぜないと、
-            // 別ルートの許可結果を使い回してしまう
-            min_role.unwrap_or("").hash(&mut h);
-            h.finish()
-        };
+        let cache_key = auth_cache_key(cookie, host, app_id, min_role, bearer);
         {
             let cache = self.auth_cache.lock().unwrap();
             if let Some(entry) = cache.get(&cache_key) {
@@ -341,6 +365,9 @@ impl VoltaAuthClient {
 
         if let Some(c) = cookie {
             builder = builder.header("Cookie", c);
+        }
+        if let Some(b) = bearer {
+            builder = builder.header("Authorization", format!("Bearer {}", b));
         }
         if let Some(id) = app_id {
             builder = builder.header("X-Volta-App-Id", id);
@@ -493,6 +520,9 @@ mod degraded_tests {
             app_id: None,
             iat: None,
             exp: None,
+            jti: None,
+            aud: None,
+            scope: None,
         }
     }
 
@@ -609,7 +639,7 @@ mod degraded_tests {
         let c = client(true);
         let cookie = valid_cookie();
         let r = c
-            .check("h", "/", "https", Some(&cookie), None, None, None)
+            .check("h", "/", "https", Some(&cookie), None, None, None, None)
             .await;
         assert!(
             matches!(r, AuthResult::Authenticated(_)),
@@ -621,7 +651,9 @@ mod degraded_tests {
     async fn check_no_session_proxy_down_fail_closed_when_off() {
         let c = client(false);
         // クッキー無し → Phase 0 は NoSession で fall-through → HTTP 失敗 → degraded off → Error
-        let r = c.check("h", "/", "https", None, None, None, None).await;
+        let r = c
+            .check("h", "/", "https", None, None, None, None, None)
+            .await;
         assert!(matches!(r, AuthResult::Error(_)));
     }
 
@@ -737,7 +769,7 @@ mod degraded_tests {
         let cookie = rs256_cookie(Some("volta-auth"), Some("volta-apps"));
         // auth-proxy unreachable → Phase 0 in-process RS256 verify must pass.
         let r = c
-            .check("h", "/", "https", Some(&cookie), None, None, None)
+            .check("h", "/", "https", Some(&cookie), None, None, None, None)
             .await;
         match r {
             AuthResult::Authenticated(h) => {
@@ -764,7 +796,7 @@ mod degraded_tests {
         parts[2] = &bad_sig;
         let tampered = parts.join(".");
         let r = c
-            .check("h", "/", "https", Some(&tampered), None, None, None)
+            .check("h", "/", "https", Some(&tampered), None, None, None, None)
             .await;
         assert!(
             matches!(r, AuthResult::Error(_)),
@@ -780,7 +812,7 @@ mod degraded_tests {
         c.degraded_mode = true;
         let cookie = rs256_cookie(Some("evil-issuer"), Some("volta-apps"));
         let r = c
-            .check("h", "/", "https", Some(&cookie), None, None, None)
+            .check("h", "/", "https", Some(&cookie), None, None, None, None)
             .await;
         assert!(
             matches!(r, AuthResult::Error(_)),
@@ -815,11 +847,94 @@ mod degraded_tests {
         c.degraded_mode = true;
         // HS256 cookie (signed with SECRET) must still verify via the chain.
         let r = c
-            .check("h", "/", "https", Some(&valid_cookie()), None, None, None)
+            .check(
+                "h",
+                "/",
+                "https",
+                Some(&valid_cookie()),
+                None,
+                None,
+                None,
+                None,
+            )
             .await;
         assert!(
             matches!(r, AuthResult::Authenticated(_)),
             "HS256 token must still verify when RS256 is also configured"
+        );
+    }
+}
+
+#[cfg(test)]
+mod cache_key_tests {
+    use super::auth_cache_key;
+
+    /// 一時アクセスで最も踏みやすい穴の回帰テスト。
+    ///
+    /// キャッシュキーに Bearer を混ぜ忘れると:
+    ///   ① トークン保持者が `GET /` を叩く → 認証OK がキー (cookie="", host, …) で保存
+    ///   ② 無関係の他人が `GET /` を叩く   → 同じキーに当たって **そのまま通る**
+    ///
+    /// 一時公開のつもりが恒久的な全公開になる。
+    #[test]
+    fn bearer_holder_and_anonymous_do_not_share_a_key() {
+        let with = auth_cache_key(None, "h", None, None, Some("tok-abc"));
+        let without = auth_cache_key(None, "h", None, None, None);
+        assert_ne!(
+            with, without,
+            "トークン保持者と未提示の匿名が同じキーを共有してはいけない"
+        );
+    }
+
+    #[test]
+    fn different_bearers_do_not_share_a_key() {
+        let a = auth_cache_key(None, "h", None, None, Some("tok-a"));
+        let b = auth_cache_key(None, "h", None, None, Some("tok-b"));
+        assert_ne!(a, b, "別のトークンの判定結果を使い回してはいけない");
+    }
+
+    #[test]
+    fn same_credentials_share_a_key() {
+        // 混ぜすぎてキャッシュが効かなくなっていないこと。
+        // AI エージェントは同じトークンで大量に叩くので、ここが効かないと
+        // auth-server への往復が毎回発生する。
+        let a = auth_cache_key(Some("c"), "h", Some("app"), Some("MEMBER"), Some("t"));
+        let b = auth_cache_key(Some("c"), "h", Some("app"), Some("MEMBER"), Some("t"));
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn every_credential_dimension_changes_the_key() {
+        let base = auth_cache_key(Some("c"), "h", Some("app"), Some("MEMBER"), Some("t"));
+        assert_ne!(
+            base,
+            auth_cache_key(Some("c2"), "h", Some("app"), Some("MEMBER"), Some("t"))
+        );
+        assert_ne!(
+            base,
+            auth_cache_key(Some("c"), "h2", Some("app"), Some("MEMBER"), Some("t"))
+        );
+        assert_ne!(
+            base,
+            auth_cache_key(Some("c"), "h", Some("app2"), Some("MEMBER"), Some("t"))
+        );
+        assert_ne!(
+            base,
+            auth_cache_key(Some("c"), "h", Some("app"), Some("ADMIN"), Some("t"))
+        );
+        assert_ne!(
+            base,
+            auth_cache_key(Some("c"), "h", Some("app"), Some("MEMBER"), Some("t2"))
+        );
+    }
+
+    #[test]
+    fn none_and_empty_string_are_equivalent() {
+        // Some("") で来ても None と同じ扱いになること（呼び出し側が filter して
+        // いるが、片方だけ通ると鍵が割れて無駄にキャッシュミスする）。
+        assert_eq!(
+            auth_cache_key(None, "h", None, None, None),
+            auth_cache_key(Some(""), "h", Some(""), Some(""), Some("")),
         );
     }
 }

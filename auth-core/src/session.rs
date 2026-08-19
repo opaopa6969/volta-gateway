@@ -131,6 +131,9 @@ mod tests {
             app_id: None,
             iat: Some(chrono::Utc::now().timestamp() as u64),
             exp: Some((chrono::Utc::now().timestamp() + 3600) as u64),
+            jti: None,
+            aud: None,
+            scope: None,
         };
 
         let token = encode(
@@ -163,6 +166,9 @@ mod tests {
             app_id: None,
             iat: Some(chrono::Utc::now().timestamp() as u64),
             exp: Some((chrono::Utc::now().timestamp() + 3600) as u64),
+            jti: None,
+            aud: None,
+            scope: None,
         };
 
         let token = encode(
@@ -194,6 +200,9 @@ mod tests {
             app_id: None,
             iat: Some(1000),
             exp: Some(1001), // way in the past
+            jti: None,
+            aud: None,
+            scope: None,
         };
 
         let token = encode(
@@ -221,6 +230,9 @@ mod tests {
             app_id: None,
             iat: Some(chrono::Utc::now().timestamp() as u64),
             exp: Some((chrono::Utc::now().timestamp() + 3600) as u64),
+            jti: None,
+            aud: None,
+            scope: None,
         };
 
         let token = encode(
@@ -252,6 +264,9 @@ mod tests {
             app_id: None,
             iat: Some(chrono::Utc::now().timestamp() as u64),
             exp: Some((chrono::Utc::now().timestamp() + 3600) as u64),
+            jti: None,
+            aud: None,
+            scope: None,
         };
 
         let token = encode(

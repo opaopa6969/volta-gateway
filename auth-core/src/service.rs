@@ -194,6 +194,9 @@ impl AuthService {
                 app_id: None,
                 iat: None, // set by issuer
                 exp: None,
+                jti: None,
+                aud: None,
+                scope: None,
             })
             .map_err(|e| AuthError::Internal(e.to_string()))?;
 
@@ -292,6 +295,9 @@ impl AuthService {
                 app_id: None,
                 iat: None,
                 exp: None,
+                jti: None,
+                aud: None,
+                scope: None,
             })
             .map_err(|e| AuthError::Internal(e.to_string()))?;
 
@@ -362,6 +368,9 @@ mod tests {
             app_id: None,
             iat: None,
             exp: None,
+            jti: None,
+            aud: None,
+            scope: None,
         };
 
         let token = issuer.issue(&claims).unwrap();

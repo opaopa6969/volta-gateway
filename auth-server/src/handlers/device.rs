@@ -283,6 +283,9 @@ pub async fn device_token_grant(s: &AppState, device_code: &str) -> Response {
         app_id: None,
         iat: None,
         exp: None,
+        jti: None,
+        aud: None,
+        scope: None,
     }) {
         Ok(j) => j,
         Err(e) => {
