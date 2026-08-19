@@ -747,6 +747,9 @@ pub async fn oauth_token(
             app_id: None,
             iat: None,
             exp: None,
+            jti: None,
+            aud: None,
+            scope: None,
         })
         .map_err(|e| ApiError::internal(&e.to_string()))?;
 

@@ -689,6 +689,22 @@ impl ProxyService {
             .get("cookie")
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
+        // Authorization: Bearer <token>
+        //
+        // ここが無かったので、既存の M2M / OIDC アクセストークンを持っていても
+        // gateway 配下のサービスには入れなかった。scheme の比較は大文字小文字を
+        // 無視する（RFC 7235 §2.1）。
+        let bearer = req
+            .headers()
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| {
+                let (scheme, rest) = s.split_once(' ')?;
+                scheme
+                    .eq_ignore_ascii_case("bearer")
+                    .then(|| rest.trim().to_string())
+            })
+            .filter(|t| !t.is_empty());
         let req_origin = req
             .headers()
             .get("origin")
@@ -824,6 +840,7 @@ impl ProxyService {
                     app_id.as_deref(),
                     min_role.as_deref(),
                     Some(&client_ip_str),
+                    bearer.as_deref(),
                 )
                 .await;
 

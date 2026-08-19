@@ -36,6 +36,77 @@ pub struct VoltaClaims {
     /// Expiration (Unix timestamp)
     #[serde(default)]
     pub exp: Option<u64>,
+
+    /// JWT ID — この token 1枚を指す一意な値。
+    ///
+    /// アクセストークンはステートレスな JWT なので、**発行してしまうと
+    /// 期限切れまで止められない**（`/oauth/revoke` のコメントもそう言っている）。
+    /// 個別に失効させるには「どれを失効させたか」を指す名前が要る。
+    /// 失効リストはこの値で引く。
+    #[serde(default)]
+    pub jti: Option<String>,
+
+    /// Audience — この token を受け取ってよい相手。
+    ///
+    /// 無いと、あるサービス向けに出した token が**別のサービスでもそのまま通る**。
+    /// 一時アクセスでは「このホストだけ」を強制したいので必須級。
+    /// 単一文字列と配列の両方が来る（RFC 7519 がどちらも許している）。
+    #[serde(default)]
+    pub aud: Option<Audience>,
+
+    /// スコープ（空白区切り）。OAuth 2.0 の慣習に合わせる。
+    ///
+    /// 「このホストのこのパスだけ」「読み取りだけ」を token 自体に載せるために使う。
+    #[serde(default)]
+    pub scope: Option<String>,
+}
+
+/// `aud` は単一文字列でも配列でもよい（RFC 7519 §4.1.3）。
+///
+/// 片方しか受けないと、他所が発行した token を読めずに落ちる。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum Audience {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl Audience {
+    pub fn contains(&self, value: &str) -> bool {
+        match self {
+            Audience::One(a) => a == value,
+            Audience::Many(v) => v.iter().any(|a| a == value),
+        }
+    }
+
+    pub fn as_vec(&self) -> Vec<String> {
+        match self {
+            Audience::One(a) => vec![a.clone()],
+            Audience::Many(v) => v.clone(),
+        }
+    }
+}
+
+impl VoltaClaims {
+    /// スコープを空白区切りで分解する。
+    pub fn scopes(&self) -> Vec<&str> {
+        self.scope
+            .as_deref()
+            .unwrap_or("")
+            .split_whitespace()
+            .collect()
+    }
+
+    /// この token が `host` 向けに出されたものか。
+    ///
+    /// `aud` が無い token は**従来どおり通す**。既に出回っている token を
+    /// 一斉に無効化しないため（後方互換）。新しく出す token には必ず載せる。
+    pub fn allows_audience(&self, host: &str) -> bool {
+        match &self.aud {
+            None => true,
+            Some(a) => a.contains(host),
+        }
+    }
 }
 
 impl VoltaClaims {
@@ -237,6 +308,9 @@ mod tests {
             app_id: None,
             iat: None,
             exp: None,
+            jti: None,
+            aud: None,
+            scope: None,
         }
     }
 
@@ -311,6 +385,9 @@ mod tests {
             app_id: None,
             iat: None,
             exp: None,
+            jti: None,
+            aud: None,
+            scope: None,
         };
         let token = issuer.issue(&c).unwrap();
         assert!(matches!(
@@ -353,5 +430,102 @@ mod tests {
             verifier.verify(&token),
             Err(JwtError::InvalidSignature)
         ));
+    }
+}
+
+#[cfg(test)]
+mod grant_claim_tests {
+    use super::*;
+
+    fn claims() -> VoltaClaims {
+        VoltaClaims {
+            sub: "u1".into(),
+            email: None,
+            tenant_id: None,
+            tenant_slug: None,
+            roles: Some("VIEWER".into()),
+            name: None,
+            app_id: None,
+            iat: None,
+            exp: None,
+            jti: None,
+            aud: None,
+            scope: None,
+        }
+    }
+
+    // ── aud ────────────────────────────────────────────────────
+    //
+    // 無いと、あるサービス向けに出した token が別サービスでもそのまま通る。
+
+    #[test]
+    fn audience_accepts_single_string() {
+        let c = VoltaClaims {
+            aud: Some(Audience::One("a.example.org".into())),
+            ..claims()
+        };
+        assert!(c.allows_audience("a.example.org"));
+        assert!(!c.allows_audience("b.example.org"));
+    }
+
+    #[test]
+    fn audience_accepts_array() {
+        // RFC 7519 §4.1.3 は単一文字列と配列の両方を許す。片方しか受けないと
+        // 他所が発行した token を読めずに落ちる。
+        let c = VoltaClaims {
+            aud: Some(Audience::Many(vec![
+                "a.example.org".into(),
+                "b.example.org".into(),
+            ])),
+            ..claims()
+        };
+        assert!(c.allows_audience("a.example.org"));
+        assert!(c.allows_audience("b.example.org"));
+        assert!(!c.allows_audience("c.example.org"));
+    }
+
+    #[test]
+    fn missing_audience_is_allowed_for_backward_compat() {
+        // 既に出回っている token を一斉に無効化しないため。
+        // 新しく出す token には必ず載せる。
+        assert!(claims().allows_audience("anything.example.org"));
+    }
+
+    #[test]
+    fn audience_deserializes_both_shapes() {
+        let one: VoltaClaims = serde_json::from_str(r#"{"sub":"u","aud":"x.org"}"#).unwrap();
+        assert!(one.allows_audience("x.org"));
+        let many: VoltaClaims =
+            serde_json::from_str(r#"{"sub":"u","aud":["x.org","y.org"]}"#).unwrap();
+        assert!(many.allows_audience("y.org"));
+    }
+
+    // ── scope ──────────────────────────────────────────────────
+
+    #[test]
+    fn scopes_split_on_whitespace() {
+        let c = VoltaClaims {
+            scope: Some("read:reports  write:notes".into()),
+            ..claims()
+        };
+        assert_eq!(c.scopes(), vec!["read:reports", "write:notes"]);
+    }
+
+    #[test]
+    fn missing_scope_is_empty_not_panic() {
+        assert!(claims().scopes().is_empty());
+    }
+
+    // ── 後方互換 ───────────────────────────────────────────────
+
+    #[test]
+    fn old_tokens_without_new_claims_still_parse() {
+        // 3つとも Option + serde(default) なので、既存の token が読めなくなっては困る。
+        let c: VoltaClaims =
+            serde_json::from_str(r#"{"sub":"u1","roles":"MEMBER","exp":9999999999}"#).unwrap();
+        assert_eq!(c.sub, "u1");
+        assert!(c.jti.is_none());
+        assert!(c.aud.is_none());
+        assert!(c.scope.is_none());
     }
 }

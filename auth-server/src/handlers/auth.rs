@@ -86,6 +86,123 @@ pub async fn verify(State(state): State<AppState>, headers: HeaderMap, jar: Cook
         resp
     };
 
+    // ── Bearer path ───────────────────────────────────────────
+    //
+    // gateway も /auth/verify も Authorization を見ていなかったので、既存の
+    // M2M / OIDC アクセストークンを持っていても **gateway 配下のサービスには
+    // 入れなかった**。OAuth 一式が auth-server 自身の API 専用になっていた。
+    //
+    // **無効な Authorization でリクエストを落とさない。**
+    // gateway 配下には、自分で Authorization を解釈するサービスがいる
+    // （Basic 認証、独自の API キー等）。ここで「Volta の JWT でなければ 401」に
+    // すると、**今まで動いていたサービスが一斉に壊れる**。
+    // 検証に通ったときだけ認証済みとして扱い、それ以外は下の経路へ落とす。
+    //
+    // セッション cookie より後ろに置いてあるのも同じ理由で、既存の挙動を
+    // 一切変えないため。両方付いている場合は cookie が勝つ。
+    if let Some(token) = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| {
+            let (scheme, rest) = v.split_once(' ')?;
+            scheme
+                .eq_ignore_ascii_case("bearer")
+                .then(|| rest.trim().to_string())
+        })
+        .filter(|t| !t.is_empty())
+    {
+        match state.jwt_verifier.verify(&token) {
+            Ok(claims) => {
+                // aud があるなら、この host 向けに出された token か確かめる。
+                //
+                // 無いと **あるサービス向けに出した token が別サービスでも通る**。
+                // aud を持たない古い token は従来どおり通す（後方互換）。
+                let host = forwarded_host.unwrap_or("");
+                if !claims.allows_audience(host) {
+                    tracing::warn!(
+                        host = %host,
+                        aud = ?claims.aud,
+                        "verify denied: bearer token audience mismatch"
+                    );
+                    let mut resp = StatusCode::FORBIDDEN.into_response();
+                    resp.headers_mut()
+                        .insert("x-volta-auth-reason", "audience_mismatch".parse().unwrap());
+                    no_cache_headers(&mut resp);
+                    return resp;
+                }
+
+                // 必要ロールの評価は cookie 経路と同じ規則にする。
+                // ここを飛ばすと **Bearer なら min_role を無視して入れる**
+                // 抜け道になる。
+                if let Some(required) = headers
+                    .get("x-volta-required-role")
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    let required = required.to_ascii_uppercase();
+                    let roles: Vec<String> = claims
+                        .roles
+                        .as_deref()
+                        .unwrap_or("")
+                        .split(',')
+                        .map(|r| r.trim().to_ascii_uppercase())
+                        .filter(|r| !r.is_empty())
+                        .collect();
+                    let policy = volta_auth_core::policy::PolicyEngine::default_policy();
+                    if let volta_auth_core::policy::PolicyResult::Deny(reason) =
+                        policy.enforce_min_role(&roles, &required)
+                    {
+                        tracing::warn!(
+                            sub = %claims.sub,
+                            roles = ?roles,
+                            required = %required,
+                            reason = %reason,
+                            "verify denied: bearer token role requirement not met"
+                        );
+                        let mut resp = StatusCode::FORBIDDEN.into_response();
+                        let h = resp.headers_mut();
+                        h.insert("x-volta-auth-reason", "insufficient_role".parse().unwrap());
+                        if let Ok(v) = required.as_str().parse() {
+                            h.insert("x-volta-required-role", v);
+                        }
+                        no_cache_headers(&mut resp);
+                        return resp;
+                    }
+                }
+
+                let mut resp = StatusCode::OK.into_response();
+                let h = resp.headers_mut();
+                for (k, v) in claims.to_volta_headers() {
+                    if let (Ok(name), Ok(value)) = (
+                        axum::http::HeaderName::try_from(k.as_str()),
+                        v.parse::<axum::http::HeaderValue>(),
+                    ) {
+                        h.insert(name, value);
+                    }
+                }
+                // backend が「素のログインではない」と分かるようにする。
+                h.insert("x-volta-auth-source", "bearer".parse().unwrap());
+                if let Some(ref jti) = claims.jti {
+                    if let Ok(v) = jti.parse() {
+                        h.insert("x-volta-token-id", v);
+                    }
+                }
+                if let Some(ref scope) = claims.scope {
+                    if let Ok(v) = scope.parse() {
+                        h.insert("x-volta-scope", v);
+                    }
+                }
+                no_cache_headers(&mut resp);
+                return resp;
+            }
+            Err(e) => {
+                // 落とさない。下の経路（cookie 済み / local bypass / login）へ。
+                tracing::debug!(error = ?e, "bearer token not a valid volta JWT — falling through");
+            }
+        }
+    }
+
     // ── Session path ──────────────────────────────────────────
     if let Some(session_id) = extract_session_id(&jar) {
         let session = match SessionStore::find(&state.db, &session_id).await {
@@ -252,6 +369,9 @@ pub async fn verify(State(state): State<AppState>, headers: HeaderMap, jar: Cook
             app_id: None,
             iat: None,
             exp: None,
+            jti: None,
+            aud: None,
+            scope: None,
         }) {
             h.insert("x-volta-jwt", jwt.parse().unwrap());
         }
@@ -372,6 +492,9 @@ pub async fn refresh(State(state): State<AppState>, jar: CookieJar) -> Result<Re
             app_id: None,
             iat: None,
             exp: None,
+            jti: None,
+            aud: None,
+            scope: None,
         })
         .map_err(|e| ApiError::internal(&e.to_string()))?;
 

@@ -113,6 +113,9 @@ mod tests {
             app_id: None,
             iat: None,
             exp: None,
+            jti: None,
+            aud: None,
+            scope: None,
         }
     }
 
