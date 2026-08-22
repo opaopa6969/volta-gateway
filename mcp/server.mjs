@@ -101,6 +101,7 @@ export function createServer() {
       page: z.number().int().min(1).optional().default(1).describe('ページ番号'),
       size: z.number().int().min(1).max(100).optional().default(20).describe('ページサイズ'),
     },
+    { readOnlyHint: true, openWorldHint: false },
     async (args) => {
       try {
         const qs = buildQuery({ q: args.q, user_id: args.userId, event: args.event, from: args.from, to: args.to, page: args.page, size: args.size });
@@ -119,6 +120,7 @@ export function createServer() {
       page: z.number().int().min(1).optional().default(1),
       size: z.number().int().min(1).max(100).optional().default(20),
     },
+    { readOnlyHint: true, openWorldHint: false },
     async (args) => {
       try {
         const qs = buildQuery({ q: args.q, status: args.status, page: args.page, size: args.size });
@@ -136,6 +138,7 @@ export function createServer() {
       page: z.number().int().min(1).optional().default(1),
       size: z.number().int().min(1).max(100).optional().default(20),
     },
+    { readOnlyHint: true, openWorldHint: false },
     async (args) => {
       try {
         const qs = buildQuery({ q: args.q, page: args.page, size: args.size });
@@ -149,6 +152,7 @@ export function createServer() {
     'metrics',
     'gateway の Prometheus メトリクスを取得する（読み取り専用）',
     {},
+    { readOnlyHint: true, openWorldHint: false },
     async () => {
       try {
         const text = await fetchText(`${GATEWAY_URL}/metrics`);
@@ -161,6 +165,7 @@ export function createServer() {
     'routes_list',
     'gateway のルート一覧を取得する（読み取り専用・loopback からアクセス）',
     {},
+    { readOnlyHint: true, openWorldHint: false },
     async () => {
       try {
         const data = await fetchJson(`${GATEWAY_URL}/admin/routes`, { bearer: VOLTA_ADMIN_TOKEN });
@@ -173,6 +178,7 @@ export function createServer() {
     'backends_health',
     'gateway のバックエンド健全性を取得する（circuit breaker 状態含む・読み取り専用）',
     {},
+    { readOnlyHint: true, openWorldHint: false },
     async () => {
       try {
         const data = await fetchJson(`${GATEWAY_URL}/admin/backends`, { bearer: VOLTA_ADMIN_TOKEN });
@@ -185,6 +191,7 @@ export function createServer() {
     'stats',
     'gateway のリクエスト統計を取得する（読み取り専用）',
     {},
+    { readOnlyHint: true, openWorldHint: false },
     async () => {
       try {
         const data = await fetchJson(`${GATEWAY_URL}/admin/stats`, { bearer: VOLTA_ADMIN_TOKEN });
@@ -200,6 +207,7 @@ export function createServer() {
       format: z.enum(['docker-compose', 'traefik-yaml']).describe('入力形式'),
       input: z.string().min(1).describe('入力ファイルの内容（Traefik 設定）'),
     },
+    { readOnlyHint: true, openWorldHint: false },
     async (args) => {
       try {
         if (!TRAEFIK_TO_VOLTA_BIN) {
