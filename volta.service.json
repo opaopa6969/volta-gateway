@@ -12,7 +12,7 @@
   "auth": "minRole:OPERATOR",
   "health_check": "/healthz",
   "tags": ["mcp", "gateway", "auth", "ops"],
-  "repo_url": "https://github.com/opaopa6969/auth-test/volta-gateway",
+  "repo_url": "https://github.com/opaopa6969/volta-gateway",
   "mcp": {
     "enabled": true,
     "port": 9214,
