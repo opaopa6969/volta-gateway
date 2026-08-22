@@ -467,13 +467,6 @@ async function serveHttp(port) {
   const httpServer = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
 
-    const clientIp = req.socket.remoteAddress || '';
-    const allowed = ['127.0.0.1', '::1', '::ffff:127.0.0.1', '192.168.1.50', '192.168.1.8'];
-    if (!allowed.some((a) => clientIp === a || clientIp.endsWith(`.${a.split('.').slice(1).join('.')}`))) {
-      res.writeHead(403, { 'content-type': 'application/json' });
-      return res.end(JSON.stringify({ error: 'forbidden' }));
-    }
-
     try {
       if (url.pathname === '/healthz') {
         res.writeHead(200, { 'content-type': 'application/json', 'content-encoding': 'identity' });
@@ -483,6 +476,14 @@ async function serveHttp(port) {
         res.writeHead(404, { 'content-type': 'application/json', 'content-encoding': 'identity' });
         return res.end(JSON.stringify({ error: 'not found' }));
       }
+
+      const clientIp = req.socket.remoteAddress || '';
+      const allowed = ['127.0.0.1', '::1', '::ffff:127.0.0.1', '192.168.1.50', '192.168.1.8'];
+      if (!allowed.includes(clientIp)) {
+        res.writeHead(403, { 'content-type': 'application/json', 'content-encoding': 'identity' });
+        return res.end(JSON.stringify({ error: 'forbidden' }));
+      }
+
       const sid = req.headers['mcp-session-id'];
       if (sid && transports.has(sid)) {
         return await transports.get(sid).handleRequest(req, res);
