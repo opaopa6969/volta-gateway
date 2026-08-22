@@ -1,0 +1,209 @@
+{
+  "repo": "volta-gateway",
+  "surveyed_at": "2026-08-22T07:55:00Z",
+  "kind": "service",
+  "summary": "Auth-aware HTTP/WS/L4 リバースプロキシ（Rust, tramli 状態機械駆動）と、Java volta-auth-proxy と 1:1 互換の 126 ルート認証サーバ（auth-server）を含む 5-crate Cargo workspace。auth.unlaxer.org として本番稼働中。volta 基盤のフロントドア。",
+  "decision": "wrap",
+  "decision_reason": "gateway は既に /admin/* (loopback-only, Bearer token 認証) と /metrics (Prometheus) と /healthz を持つ常駐 HTTP サーバ。volta カタログにも volta-gateway / volta-auth-server として登録済み。MCP 化すべきは gateway の管理操作（ルート一覧・バックエンド健全性・設定の取得/更新・リロード・drain・サーキットブレーカー_reset）を tool として薄く包むこと。126 ルートの認証 API（auth-server 側）は人向けブラウザ UI が主で、エージェントが直接叩く価値は低い（認証フローはステートフル・リダイレクト前提）。一方 gateway の admin API は JSON in/out で副作用が明確、まさに tool 向き。新規サーバは不要・既存 HTTP API を wrap する。",
+  "existing": {
+    "http_api": true,
+    "cli": true,
+    "mcp": false,
+    "healthz": true,
+    "volta_manifest": false,
+    "hosted_url": "https://auth.unlaxer.org"
+  },
+  "proposed_namespace": "gw",
+  "capabilities": [
+    {
+      "verb": "ルーティング表を一覧する",
+      "kind": "tool",
+      "name": "list_routes",
+      "io": "void → [{host, backends, app_id, public}]",
+      "side_effect": "read",
+      "long_running": false,
+      "maps_to": "gateway/src/main.rs:757 GET /admin/routes"
+    },
+    {
+      "verb": "バックエンドの健全性とサーキットブレーカー状態を一覧する",
+      "kind": "tool",
+      "name": "list_backends",
+      "io": "void → [{url, alive, circuit_state, circuit_failures}]",
+      "side_effect": "read",
+      "long_running": false,
+      "maps_to": "gateway/src/main.rs:784 GET /admin/backends"
+    },
+    {
+      "verb": "ゲートウェイの統計（リクエスト数・ステータス別・WebSocket・キャッシュ・ミラー）を取得する",
+      "kind": "tool",
+      "name": "stats",
+      "io": "void → {requests_total, status{2xx,4xx,5xx}, websocket{total,active}, cache{size,fresh}, mirror{total,errors}}",
+      "side_effect": "read",
+      "long_running": false,
+      "maps_to": "gateway/src/main.rs:938 GET /admin/stats"
+    },
+    {
+      "verb": "現在の有効設定（base YAML ⊕ overlay）を取得する",
+      "kind": "tool",
+      "name": "get_config",
+      "io": "void → GatewayConfig(JSON)",
+      "side_effect": "read",
+      "long_running": false,
+      "maps_to": "gateway/src/main.rs:855 GET /admin/config"
+    },
+    {
+      "verb": "設定に JSON Merge Patch を適用し永続化・ホット適用する",
+      "kind": "tool",
+      "name": "patch_config",
+      "io": "JSONMergePatch → {status, hot_applied[], requires_restart[]}",
+      "side_effect": "write",
+      "long_running": false,
+      "maps_to": "gateway/src/main.rs:871 PATCH /admin/config"
+    },
+    {
+      "verb": "設定オーバーレイを破棄しベース YAML に戻す",
+      "kind": "tool",
+      "name": "clear_overlay",
+      "io": "void → {status}",
+      "side_effect": "write",
+      "long_running": false,
+      "maps_to": "gateway/src/main.rs:918 DELETE /admin/config/overlay"
+    },
+    {
+      "verb": "設定を再読み込みしホットスワップする",
+      "kind": "tool",
+      "name": "reload",
+      "io": "void → {status, routes}",
+      "side_effect": "write",
+      "long_running": false,
+      "maps_to": "gateway/src/main.rs:830 POST /admin/reload"
+    },
+    {
+      "verb": "グレースフルシャットダウン（drain）を開始する",
+      "kind": "tool",
+      "name": "drain",
+      "io": "void → {status}",
+      "side_effect": "write",
+      "long_running": false,
+      "maps_to": "gateway/src/main.rs:972 POST /admin/drain"
+    },
+    {
+      "verb": "指定バックエンドのサーキットブレーカーをリセットする",
+      "kind": "tool",
+      "name": "reset_circuit",
+      "io": "backend_url → {status, backend, was_open, circuit_state}",
+      "side_effect": "write",
+      "long_running": false,
+      "maps_to": "gateway/src/main.rs:738 POST /admin/backends/{id}/reset"
+    },
+    {
+      "verb": "Traefik 設定を volta-gateway YAML に変換する",
+      "kind": "tool",
+      "name": "convert_traefik",
+      "io": "{format: docker-compose|traefik-yaml, input: string} → YAML string",
+      "side_effect": "none",
+      "long_running": false,
+      "maps_to": "tools/traefik-to-volta/src/main.rs"
+    },
+    {
+      "verb": "設定を静的検証する",
+      "kind": "tool",
+      "name": "validate_config",
+      "io": "config_path → {valid: bool, errors[]}",
+      "side_effect": "none",
+      "long_running": false,
+      "maps_to": "gateway/src/main.rs --validate flag"
+    },
+    {
+      "verb": "能力の仕様",
+      "kind": "resource",
+      "name": "spec",
+      "uri": "gw://spec"
+    },
+    {
+      "verb": "使い方",
+      "kind": "resource",
+      "name": "guide",
+      "uri": "gw://guide"
+    },
+    {
+      "verb": "gateway の設定スキーマと全ルート オプションの参照",
+      "kind": "resource",
+      "name": "config_schema",
+      "uri": "gw://config-schema"
+    },
+    {
+      "verb": "126 ルート認証 API のエンドポイント一覧",
+      "kind": "resource",
+      "name": "auth_routes",
+      "uri": "gw://auth-routes"
+    },
+    {
+      "verb": "Traefik からの移行手順",
+      "kind": "skill",
+      "name": "migrate-from-traefik",
+      "locality": "global"
+    },
+    {
+      "verb": "gateway + auth-server のデプロイ手順",
+      "kind": "skill",
+      "name": "deploy-volta-gateway",
+      "locality": "service"
+    }
+  ],
+  "composition_examples": [
+    "catalog__list_services → gw__list_routes で「どのサービスがどの host で公開されているか」を一覧化し、gw__list_backends で死活を確認 → volta__svc_restart で不調サービスを再起動",
+    "gw__get_config → gw__patch_config でルート追加 → gw__reload でホット適用 → gw__list_backends で新バックエンドの健全性を確認（volt 基盤のサービス追加を gateway 経由で完結）",
+    "gw__stats で 5xx スパイク検知 → gw__list_backends でサーキットオープンを特定 → gw__reset_circuit で強制リカバリ → volta__svc_logs で該当サービスのログ確認"
+  ],
+  "dependencies": [
+    {
+      "repo": "volta-auth-proxy",
+      "direction": "depends_on",
+      "capability": "GET /auth/verify (ForwardAuth)",
+      "exists_now": true,
+      "note": "gateway は auth-server または Java volta-auth-proxy の /auth/verify に依存。volta-auth-proxy は catalog に retired 登録、volta-auth-server が後継"
+    },
+    {
+      "repo": "volta-platform",
+      "direction": "depends_on",
+      "capability": "services.json (config source)",
+      "exists_now": true,
+      "note": "gateway の config_source.rs が volta-platform の services.json 形式を読む。volta__svc_list / gateway_routes_apply と重複・協調関係"
+    },
+    {
+      "repo": "volta-platform",
+      "direction": "provides_to",
+      "capability": "gateway ルーティング表の実体",
+      "exists_now": true,
+      "note": "volta-platform の gateway_routes_apply が services.json → gateway ルートを反映。gw__list_routes はその結果を読む側。操作経路が 2 つあり、どちらを正とするかは open_questions"
+    },
+    {
+      "repo": "volta-auth-proxy",
+      "direction": "provides_to",
+      "capability": "126-route auth API (auth-server)",
+      "exists_now": true,
+      "note": "auth-server は Java volta-auth-proxy の 1:1 Rust 再実装。SAML 署名検証のみ Java sidecar が残る (DD-005)"
+    }
+  ],
+  "library_serve": {
+    "needed": false,
+    "new_work": [],
+    "runtime": "docker",
+    "estimated_effort": "S"
+  },
+  "risks": [
+    "admin API は loopback-only が前提。MCP ファサード（LAN から来る）で公開する場合、admin token (VOLTA_ADMIN_TOKEN) の認証が必須。token 未設定だと書き込み API が 403 で機能しない",
+    "patch_config / reload / drain / clear_overlay は破壊的（ルート変更・トラフィック停止）。confirm: bool=false で dry-run を挟む必要がある",
+    "gateway と volta-platform の両方がルートを操作でき、二重管理の競合リスクがある。どちらを正とするかの運用方針が必要",
+    "auth-server の 126 ルートはブラウザ UI（リダイレクト・SSE・cookie）前提で、そのまま MCP tool にするのは不適切。スキップすべき",
+    "admin API の /admin/* はルーティング表に載っている Host 宛のものはバックエンドに横流しされる（例: auth.unlaxer.org/admin/tenants）。gateway 自身の管理 API は未ルート Host(localhost/生IP) のみ。MCP ラッパーはこの区別を意識する必要がある"
+  ],
+  "open_questions": [
+    "gw__* tools の向き先は gateway プロセス(:8080) か、それとも auth-server プロセス(:7072) か。admin API は gateway プロセスのみ。auth-server の管理操作は別途検討が必要か？",
+    "volta-platform の gateway_routes_apply と gw__patch_config が両方ルートを変更できる。MCP で公開するのはどちらか？ それとも両方？ 運用上の正をどちらに置くか",
+    "admin token を MCP バックエンドにどう渡すか（環境変数? gateway の config に埋め込み? ファサードの secret 注入?）",
+    "drain はプロセス停止を伴う。MCP tool として公開してよい操作か、それとも人間専用に留めるべきか",
+    "traefik-to-volta 変換ツールを MCP tool にする場合、変換結果をそのまま gw__patch_config に渡すパイプラインが自然か。ワンステップで「Traefik ラベル → gateway ルート追加」を作るか"
+  ]
+}

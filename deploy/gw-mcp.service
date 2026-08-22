@@ -1,0 +1,15 @@
+[Unit]
+Description=Volta Gateway Admin MCP (namespace: gw)
+After=network.target
+
+[Service]
+Type=simple
+Environment=PORT=9217
+Environment=GATEWAY_URL=http://127.0.0.1:80
+EnvironmentFile=-/home/opa/volta-secrets/gw-mcp.env
+ExecStart=/home/opa/gw-mcp/run.sh
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

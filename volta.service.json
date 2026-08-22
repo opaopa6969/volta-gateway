@@ -1,0 +1,25 @@
+{
+  "id": "gw-mcp",
+  "name": "Volta Gateway Admin MCP",
+  "description": "volta-gateway admin API（ルート一覧・バックエンド健全性・設定取得/変更・リロード・drain・CB リセット・設定検証・Traefik 変換）を MCP で提供",
+  "type": "node",
+  "hostname": "gw-mcp.unlaxer.org",
+  "port": 9217,
+  "host": "192.168.1.50",
+  "runtime": "systemd",
+  "exec_start": "/home/opa/gw-mcp/run.sh",
+  "user": "opa",
+  "auth": "minRole:MEMBER",
+  "health_check": "/healthz",
+  "tags": ["mcp", "gateway", "ops", "rust", "infra"],
+  "repo_url": "https://github.com/opaopa6969/volta-gateway",
+  "mcp": {
+    "enabled": true,
+    "port": 9217,
+    "path": "/mcp",
+    "namespace": "gw",
+    "min_role": "MEMBER",
+    "timeoutMs": 110000,
+    "description": "volta-gateway admin API MCP wrapper（ルート一覧・バックエンド健全性・設定取得/変更・リロード・drain・CB リセット・設定検証・Traefik 変換）"
+  }
+}

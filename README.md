@@ -458,6 +458,21 @@ cargo run -p volta -- config.yaml
 - [CHANGELOG](CHANGELOG.md)
 - [Backlog](docs/backlog.md) · [HANDOFF](docs/HANDOFF.md)
 
+## MCP
+
+This repository provides an MCP server (namespace: `gw`, port 9217) that wraps
+the gateway admin API. See `gw://spec` (via the volta MCP facade) for the
+machine-readable capability list.
+
+- **Tools**: `list_routes`, `list_backends`, `stats`, `get_config`, `metrics`,
+  `patch_config` (dry-run + confirm), `clear_overlay` (dry-run + confirm),
+  `reload` (dry-run + confirm), `drain` (dry-run + confirm),
+  `reset_circuit` (dry-run + confirm), `validate_config`, `convert_traefik`
+- **Resources**: `gw://spec`, `gw://guide`, `gw://config-schema`, `gw://auth-routes`
+- **Skills**: `docs/skills/gateway-ops/`, `docs/skills/migrate-from-traefik/`, `docs/skills/deploy-volta-gateway/`
+- **Design**: `docs/mcp/DESIGN.md`
+- **Start**: `cd mcp && npm install && PORT=9217 node server.mjs`
+
 ## License
 
 MIT

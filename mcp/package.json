@@ -1,0 +1,16 @@
+{
+  "name": "gw-mcp",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "volta-gateway admin API MCP wrapper (namespace: gw)",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.18.0",
+    "zod": "^3.24.0"
+  }
+}
