@@ -1,0 +1,68 @@
+{
+  "repo": "volta-gateway",
+  "surveyed_at": "2026-08-21T23:11:23Z",
+  "kind": "service",
+  "summary": "tramli ステートマシン駆動の認証対応リバースプロキシ（Rust）。5 crate の workspace: gateway（HTTP 逆プロキシ、30+ 機能）、auth-core（JWT/OIDC/MFA/Passkey ライブラリ）、auth-server（Axum 認証 API、Java volta-auth-proxy と 1:1 の約 96 ルート）、volta-bin（統合バイナリ）、tools/traefik-to-volta（Traefik 設定変換 CLI）。既に volta 基盤上で稼働中（gateway = 192.168.1.50:80/docker、auth-server = 192.168.1.8:7072/source）。",
+  "decision": "wrap",
+  "decision_reason": "gateway 本体の運用（routes 適用・reload・health・drain）は volta-platform-mcp が volta namespace で既に提供しており重複するため、gateway 側は追加不要。一方、auth-server は約 96 ルート（audit 取得・ユーザー検索・セッション無効化・Webhook 管理・ポリシー評価・SCIM 等）の REST API を持つが、MCP 化されておらず、エージェントからの運用自動化（インシデント時のセッション一括無効化、audit ログ検索、ユーザー/テナント操作）で価値がある。既存 REST API を薄く包む（wrap）ことで、新規プロセス不要・ポート追加不要で参加できる。traefik-to-volta CLI も移行支援 skill として配れる。",
+  "existing": {
+    "http_api": true,
+    "cli": true,
+    "mcp": false,
+    "healthz": true,
+    "volta_manifest": false,
+    "hosted_url": null
+  },
+  "proposed_namespace": "vgw",
+  "capabilities": [
+    { "verb": "監査ログを検索する", "kind": "tool", "name": "audit_search", "io": "{tenantId?, limit, cursor} → {entries: [{userId, action, ts, ip, meta}], next_cursor}", "side_effect": "read", "long_running": false, "maps_to": "auth-server/src/handlers/admin.rs:list_audit (GET /api/v1/admin/audit)" },
+    { "verb": "ユーザーを検索する", "kind": "tool", "name": "user_search", "io": "{tenantId?, query, status?} → {users: [{id, email, name, status, mfa_enabled}]}", "side_effect": "read", "long_running": false, "maps_to": "auth-server/src/handlers/admin.rs:admin_list_users (GET /api/v1/admin/users)" },
+    { "verb": "テナント一覧を取得する", "kind": "tool", "name": "tenant_list", "io": "{} → {tenants: [{id, name, plan, member_count}]}", "side_effect": "read", "long_running": false, "maps_to": "auth-server/src/handlers/admin.rs:admin_list_tenants (GET /api/v1/admin/tenants)" },
+    { "verb": "セッションを一覧する", "kind": "tool", "name": "session_list", "io": "{userId?, tenantId?, limit, cursor} → {sessions: [{id, userId, device, ip, last_active, created_at}], next_cursor}", "side_effect": "read", "long_running": false, "maps_to": "auth-server/src/handlers/extra.rs:admin_list_sessions (GET /api/v1/admin/sessions)" },
+    { "verb": "セッションを無効化する", "kind": "tool", "name": "session_revoke", "io": "{sessionId} → {status, revoked_at} | {userId} → {status, count}", "side_effect": "write", "long_running": false, "maps_to": "auth-server/src/handlers/extra.rs:admin_revoke_session / revoke_all_sessions" },
+    { "verb": "デバイス一覧と削除", "kind": "tool", "name": "device_manage", "io": "list: {userId} → [{deviceId, name, last_seen}] | delete: {deviceId} → {status}", "side_effect": "write", "long_running": false, "maps_to": "auth-server/src/handlers/admin.rs:list_devices / delete_device" },
+    { "verb": "Webhook を管理する", "kind": "tool", "name": "webhook_manage", "io": "list/create/patch/delete + deliveries照会", "side_effect": "write", "long_running": false, "maps_to": "auth-server/src/handlers/webhook.rs (GET/POST/PATCH/DELETE /api/v1/tenants/{id}/webhooks)" },
+    { "verb": "ポリシーを評価する", "kind": "tool", "name": "policy_evaluate", "io": "{tenantId, subject, action, resource} → {allow: bool, reasons: []}", "side_effect": "none", "long_running": false, "maps_to": "auth-server/src/handlers/admin.rs:evaluate_policy (POST /api/v1/tenants/{id}/policies/evaluate)" },
+    { "verb": "データエクスポートを実行する", "kind": "tool", "name": "data_export", "io": "{userId} → {job_id} → (job 型で result を取得)", "side_effect": "read", "long_running": true, "maps_to": "auth-server/src/handlers/admin.rs:data_export (POST /api/v1/users/me/data-export)" },
+    { "verb": "gateway のメトリクスを取得する", "kind": "tool", "name": "metrics", "io": "{} → {requests_total, status:{2xx,4xx,5xx}, websocket, cache, mirror, auth_degraded_total}", "side_effect": "read", "long_running": false, "maps_to": "gateway/src/main.rs /metrics (Prometheus 形式)" },
+    { "verb": "gateway のルート一覧を取得する", "kind": "tool", "name": "routes_list", "io": "{} → [{host, backends, app_id, public}]", "side_effect": "read", "long_running": false, "maps_to": "gateway/src/main.rs GET /admin/routes" },
+    { "verb": "gateway のバックエンド健全性を取得する", "kind": "tool", "name": "backends_health", "io": "{} → [{url, alive, circuit_state, circuit_failures}]", "side_effect": "read", "long_running": false, "maps_to": "gateway/src/main.rs GET /admin/backends" },
+    { "verb": "gateway の統計を取得する", "kind": "tool", "name": "stats", "io": "{} → {requests_total, status, websocket, cache, mirror}", "side_effect": "read", "long_running": false, "maps_to": "gateway/src/main.rs GET /admin/stats" },
+    { "verb": "gateway の config を検証する", "kind": "tool", "name": "config_validate", "io": "{yaml_content} → {valid: bool, errors: []}", "side_effect": "none", "long_running": false, "maps_to": "gateway/src/main.rs --validate (cargo run -p volta-gateway -- --validate config.yaml)" },
+    { "verb": "Traefik 設定を変換する", "kind": "tool", "name": "traefik_convert", "io": "{format: docker-compose|traefik-yaml, input} → {yaml: string}", "side_effect": "none", "long_running": false, "maps_to": "tools/traefik-to-volta/src/main.rs (traefik-to-volta CLI)" },
+    { "verb": "能力の仕様", "kind": "resource", "name": "spec", "uri": "vgw://spec" },
+    { "verb": "使い方", "kind": "resource", "name": "guide", "uri": "vgw://guide" },
+    { "verb": "認証フロー定義一覧", "kind": "resource", "name": "flows", "uri": "vgw://flows" },
+    { "verb": "ルートパリティ表", "kind": "resource", "name": "parity", "uri": "vgw://parity" },
+    { "verb": "gateway リバースプロキシ運用手順", "kind": "skill", "name": "gateway-ops", "locality": "service" },
+    { "verb": "auth-server ルート追加手順", "kind": "skill", "name": "add-route", "locality": "repo" },
+    { "verb": "Traefik からの移行手順", "kind": "skill", "name": "traefik-migration", "locality": "global" }
+  ],
+  "composition_examples": [
+    "vgw__audit_search（監査ログ検索）→ LLM で異常抽出 → vgw__session_revoke（該当セッション無効化）→ slack 通知（外部サービス）",
+    "vgw__user_search → vgw__policy_evaluate（アクセス権確認）→ nanori__parse（名前正規化）でユーザー登録品質向上",
+    "vgw__traefik_convert → vgw__config_validate → volta__gateway_routes_apply で Traefik から volta-gateway への移行を自動化"
+  ],
+  "dependencies": [
+    { "repo": "volta-platform", "direction": "depends_on", "capability": "volta__gateway_routes_apply / volta__gateway_reload（gateway の経路適用・reload は platform-mcp 経由で行う）", "exists_now": true, "note": "gateway 自身の運用操作は platform-mcp に寄せる。本リポジトリの MCP は重複しない読み取り系（metrics/stats/routes/backends）と auth-server 管理系に限定" },
+    { "repo": "volta-auth-proxy", "direction": "provides_to", "capability": "auth-server が Java volta-auth-proxy の 1:1 置換（約 96 ルート）。gateway は /auth/verify で volta-auth-proxy または auth-server に依存", "exists_now": true, "note": "Java 側は retired。本リポジトリが置換。catalog 上は volta-auth-server として別 id で登録済み" },
+    { "repo": "tramli", "direction": "depends_on", "capability": "tramli 3.8 / tramli-plugins 3.6.1（ステートマシンエンジン）", "exists_now": true, "note": "ライブラリ依存。MCP 化には無関係だが、flow 可視化（viz/flows）で他サービスとの協調可能性あり" }
+  ],
+  "library_serve": { "needed": false, "new_work": [], "runtime": "rust", "estimated_effort": "M" },
+  "risks": [
+    "auth-server の管理 API は loopback bypass と Bearer 認証を持つが、MCP 化する場合は ファサード（LAN 越し）からのアクセスを許可する必要がある。既存の local_bypass.rs の CIDR 設定を拡張するか、MCP サーバプロセスを auth-server と同じホストで動かす必要がある",
+    "gateway の /admin/* は loopback 限定。MCP サーバから gateway admin API を叩く場合は同じホストで動かすか、admin.token を用いた Bearer 認証に加えて loopback 制限を緩和する必要がある",
+    "セッション無効化・デバイス削除等の write 系 tool は confirm: bool=false で dry-run にする規約が必要。既存 API に dry-run 機構はないため、wrapper 側で実装",
+    "データエクスポート（data_export）は長時間処理の可能性があり job 型（start → status → result）にする必要がある",
+    "auth-server の API は PostgreSQL 依存（DATABASE_URL）。MCP サーバが auth-server と同じ DB を触るわけではないが、auth-server プロセスが稼働していることが前提",
+    "SAML 署名検証は Java 側（xmlsec 相当）が本番推奨。Rust 側は simplified。SAML 関連の tool 化は避けるべき",
+    "JWKS エンドポイントは現在空 keys を返す（HS256 前提）。RS256 運用時の key rotation を考慮する必要がある"
+  ],
+  "open_questions": [
+    "gateway の読み取り系（metrics / stats / routes / backends）を MCP 化するか、それとも volta-platform-mcp 側に追加してもらうか。重複を避けるなら platform-mcp 側の拡張が望ましいが、本リポジトリ固有の詳細情報（circuit breaker 状態等）は platform-mcp にない",
+    "auth-server の管理 API を MCP 化する場合、namespace は vgw で統一するか、auth-server 用に別 namespace（例: vauth）を切るか。catalog 上は volta-gateway と volta-auth-server が別 id だがソースは同一リポジトリ",
+    "MCP サーバの実装言語は Rust（auth-server と同じプロセスに組み込む）か、別プロセス（Python/Node で薄い wrapper）か。Rust に組み込む場合は auth-server の axum router に /mcp エンドポイントを追加する形になるが、MCP SDK の Rust 実装の成熟度を確認する必要がある",
+    "volta-auth-server（catalog id）と volta-gateway（catalog id）は別サービスとして登録済み。MCP バックエンドを追加する場合、どちらの services.json エントリに mcp 項を追加するか、それとも新規サービスとして登録するか",
+    "traefik-to-volta CLI の tool 化は、このリポジトリの MCP に含めるか、それとも独立した移行支援 skill として配るか"
+  ]
+}

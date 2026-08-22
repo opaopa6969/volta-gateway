@@ -1,0 +1,16 @@
+[Unit]
+Description=Volta Gateway MCP (vgw-mcp)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/opa/vgw-mcp
+Environment=PORT=9214
+EnvironmentFile=-/home/opa/volta-secrets/vgw-mcp.env
+ExecStart=/home/opa/vgw-mcp/run.sh
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

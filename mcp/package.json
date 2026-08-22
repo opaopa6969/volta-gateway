@@ -1,0 +1,16 @@
+{
+  "name": "vgw-mcp",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "volta-gateway / auth-server MCP wrapper",
+  "main": "mcp/server.mjs",
+  "scripts": {
+    "start": "node mcp/server.mjs",
+    "test": "node --test mcp/test/"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.18.0",
+    "zod": "^3.24.0"
+  }
+}

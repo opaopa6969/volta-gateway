@@ -403,6 +403,33 @@ Single binary combining gateway + auth-core (the `volta-bin/` crate, package nam
 cargo run -p volta -- config.yaml
 ```
 
+## MCP
+
+This repository provides an **MCP server** (namespace: `vgw`) that wraps the auth-server admin API and gateway admin API for agent-driven operations.
+
+- **Tools**: `audit_search`, `user_search`, `tenant_list`, `metrics`, `routes_list`, `backends_health`, `stats`, `traefik_convert`
+- **Resources**: `vgw://spec`, `vgw://guide`, `vgw://flows`, `vgw://parity`
+- **Skills**: `gateway-ops`, `add-route`, `traefik-migration`
+- **Design**: [docs/mcp/DESIGN.md](docs/mcp/DESIGN.md)
+
+### Run the MCP server
+
+```bash
+cd mcp && npm install
+VGW_AUTH_TOKEN=<jwt> VOLTA_ADMIN_TOKEN=<token> npm start
+# listens on PORT (default 9214), /healthz + /mcp
+```
+
+### Test
+
+```bash
+cd mcp && npm test
+```
+
+### volta integration
+
+Registered as service `vgw-mcp` (port 9214, host 192.168.1.50). See `volta.service.json` and [docs/mcp/DESIGN.md](docs/mcp/DESIGN.md) §9.
+
 ## Requirements
 
 - Rust 1.75+ (edition 2021)
@@ -417,6 +444,7 @@ cargo run -p volta -- config.yaml
 - [Rust ↔ Java Parity](docs/parity.md) · [日本語](docs/parity-ja.md) — route-by-route, 96 endpoints
 - [tramli feedback loop](docs/feedback.md) — upgrade trail 3.2 → 3.8
 - [Benchmarks](docs/benchmark-article.md) · [Migration from Traefik](docs/migration-from-traefik.md) · [日本語](docs/migration-from-traefik-ja.md)
+- [MCP Design](docs/mcp/DESIGN.md) — namespace `vgw`, tools list, volta integration
 - [CHANGELOG](CHANGELOG.md)
 - [Backlog](docs/backlog.md) · [HANDOFF](docs/HANDOFF.md)
 

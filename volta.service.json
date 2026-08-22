@@ -1,0 +1,25 @@
+{
+  "id": "vgw-mcp",
+  "name": "Volta Gateway MCP",
+  "description": "volta-gateway と auth-server の運用能力（監査ログ検索・ユーザー/テナント管理・gateway メトリクス・Traefik 移行）を MCP で提供",
+  "type": "node",
+  "hostname": "vgw-mcp.unlaxer.org",
+  "port": 9214,
+  "host": "192.168.1.50",
+  "runtime": "systemd",
+  "exec_start": "/home/opa/vgw-mcp/run.sh",
+  "user": "opa",
+  "auth": "minRole:OPERATOR",
+  "health_check": "/healthz",
+  "tags": ["mcp", "gateway", "auth", "ops"],
+  "repo_url": "https://github.com/opaopa6969/auth-test/volta-gateway",
+  "mcp": {
+    "enabled": true,
+    "port": 9214,
+    "path": "/mcp",
+    "namespace": "vgw",
+    "min_role": "OPERATOR",
+    "timeoutMs": 110000,
+    "description": "volta-gateway/auth-server 運用 MCP（監査ログ・ユーザー/テナント検索・gateway メトリクス・Traefik 変換）"
+  }
+}
