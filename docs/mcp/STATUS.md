@@ -1,15 +1,16 @@
 # MCP 化ステータス — auth-test/volta-gateway
 
-> 最終更新: 2026-08-22
+> 最終更新: 2026-08-22 (Phase 2 追加修正)
 
-## 現在の状態: registered（deploy 完了）
+## 現在の状態: registered（deploy 完了・annotations 追加）
 
 | 項目 | 状態 | 備考 |
 |------|------|------|
 | Phase 1 survey | done | `docs/mcp/survey.json`, `docs/mcp/SURVEY.md` |
 | Phase 2 設計 | done | `docs/mcp/DESIGN.md` |
 | MCP サーバ実装 | done | `mcp/server.mjs` (Node, namespace `vgw`, port 9214) |
-| e2e テスト | done | `mcp/test/e2e.test.mjs` — 7/7 pass |
+| e2e テスト | done | `mcp/test/e2e.test.mjs` — 7/7 pass（`npm test` と repo root 両方で成功） |
+| ToolAnnotations | done | 全8 tool に `readOnlyHint: true, openWorldHint: false` 追加 |
 | volta.service.json | done | `volta.service.json` (id: `vgw-mcp`, port 9214, host 192.168.1.50) |
 | deploy unit | done | `deploy/vgw-mcp.service`, `run.sh` |
 | skills | done | `docs/skills/{gateway-ops,add-route,traefik-migration}/SKILL.md` + `skill://` resources |
@@ -18,8 +19,9 @@
 | volta 登録 (svc_add) | done | dry-run → confirm: true → exit 0 |
 | gateway routes 適用 | done | diff 自分の1件のみ → apply → exit 0 |
 | healthz 確認 | done | `https://vgw-mcp.unlaxer.org/healthz` → 200 |
-| catalog 確認 | done | `catalog__backend_status` で `vgw` が ready, audit 8ok/0ng |
+| catalog 確認 | done | `catalog__backend_status` で `vgw` が ready, tools=8 |
 | tools/list 確認 | done | 8 tools (`vgw__*`), 7 resources |
+| prod deploy (annotations) | done | git pull + systemctl restart → catalog reload → audit 9ok/1ng |
 
 ## 実装した tools（8 個）
 
@@ -42,10 +44,10 @@
 - `skill://add-route` — auth-server ルート追加手順
 - `skill://traefik-migration` — Traefik 移行手順
 
-## 監査結果（catalog__audit_backend）
+## 監査結果（catalog__audit_backend）— annotations 追加後
 
 ```
-8 ok / 0 ng / 3 skip / 1 unknown
+9 ok / 1 ng / 3 skip / 1 unknown
 ```
 
 - connect: ok (tools=8)
@@ -54,12 +56,22 @@
 - tool_descriptions: ok
 - spec: ok (capabilities=8, compositions=2, depends_on=2)
 - guide: ok
+- annotations: ok (**8/8 tools に annotations** — readOnlyHint: true)
 - skills: ok (3 skill://)
 - healthz: ok (200)
 - confirm_on_destructive: skip (壊す系なし)
 - job_pattern: skip (job型なし)
 - prompts: skip (0 prompts)
-- content_encoding: unknown
+- content_encoding: unknown (healthz は identity。MCP エンドポイントは未確認)
+- smoke: ng (1/8 ok — auth-server token 未設定・gateway admin が loopback 限定・traefik に必須引数。想定内)
+
+### smoke test の詳細
+- `metrics` — ok（認証不要）
+- `audit_search` / `user_search` / `tenant_list` — 401（VGW_AUTH_TOKEN 未設定のため）
+- `routes_list` / `backends_health` / `stats` — 403（gateway admin が loopback 限定・VOLTA_ADMIN_TOKEN 未設定）
+- `traefik_convert` — バリデーションエラー（必須引数 format, input なし。smoke は引数なしで呼ぶため）
+
+これらのエラーは環境変数（`VGW_AUTH_TOKEN`, `VOLTA_ADMIN_TOKEN`）が未設定であることが原因。本番運用では `/home/opa/volta-secrets/vgw-mcp.env` に設定する。
 
 ## 未実装の tools（issue-hub #258 で協調中）
 
