@@ -2,7 +2,7 @@
 
 > 最終更新: 2026-08-22
 
-## 現在の状態: implemented → registered（deploy 中）
+## 現在の状態: registered（deploy 完了）
 
 | 項目 | 状態 | 備考 |
 |------|------|------|
@@ -15,10 +15,11 @@
 | skills | done | `docs/skills/{gateway-ops,add-route,traefik-migration}/SKILL.md` + `skill://` resources |
 | README MCP 節 | done | `README.md` に MCP 節追加 |
 | issue-hub 協調 | open | issue #258 — auth-server admin API Bearer 対応依頼 |
-| volta 登録 (svc_add) | pending | dry-run → 確認 → confirm |
-| gateway routes 適用 | pending | dry-run → 確認 → apply |
-| healthz 確認 | pending | `https://vgw-mcp.unlaxer.org/healthz` 200 |
-| catalog 確認 | pending | `catalog__backend_status` で `vgw` が ready |
+| volta 登録 (svc_add) | done | dry-run → confirm: true → exit 0 |
+| gateway routes 適用 | done | diff 自分の1件のみ → apply → exit 0 |
+| healthz 確認 | done | `https://vgw-mcp.unlaxer.org/healthz` → 200 |
+| catalog 確認 | done | `catalog__backend_status` で `vgw` が ready, audit 8ok/0ng |
+| tools/list 確認 | done | 8 tools (`vgw__*`), 7 resources |
 
 ## 実装した tools（8 個）
 
@@ -31,16 +32,7 @@
 7. `stats` — リクエスト統計（gateway admin, loopback, OPERATOR）
 8. `traefik_convert` — Traefik 設定変換（CLI, OPERATOR）
 
-## 未実装の tools（issue-hub #258 で協調中）
-
-以下は auth-server が `require_admin`（cookie only）を使っており、Bearer 非対応のため MCP wrapper からアクセスできない。issue #258 で Bearer 対応を依頼中。
-
-- `session_list`, `session_revoke`
-- `policy_evaluate`
-- `data_export_start`, `data_export_status`, `data_export_result`
-- `device_list`, `device_delete`
-
-## resources（4 個 + 3 skill）
+## resources（7 個）
 
 - `vgw://spec` — 能力仕様（tools/list から自動生成）
 - `vgw://guide` — 使い方ガイド
@@ -50,28 +42,55 @@
 - `skill://add-route` — auth-server ルート追加手順
 - `skill://traefik-migration` — Traefik 移行手順
 
+## 監査結果（catalog__audit_backend）
+
+```
+8 ok / 0 ng / 3 skip / 1 unknown
+```
+
+- connect: ok (tools=8)
+- tools: 8 tools
+- tool_names: ok
+- tool_descriptions: ok
+- spec: ok (capabilities=8, compositions=2, depends_on=2)
+- guide: ok
+- skills: ok (3 skill://)
+- healthz: ok (200)
+- confirm_on_destructive: skip (壊す系なし)
+- job_pattern: skip (job型なし)
+- prompts: skip (0 prompts)
+- content_encoding: unknown
+
+## 未実装の tools（issue-hub #258 で協調中）
+
+以下は auth-server が `require_admin`（cookie only）を使っており、Bearer 非対応のため MCP wrapper からアクセスできない。issue #258 で Bearer 対応を依頼中。
+
+- `session_list`, `session_revoke`
+- `policy_evaluate`
+- `data_export_start`, `data_export_status`, `data_export_result`
+- `device_list`, `device_delete`
+
 ## issue-hub
 
 - [#258](https://github.com/opaopa6969/issue-hub/issues/258) — `[mcp] vgw → auth-server: admin API の Bearer 対応依頼`
   - 対象: `GET /api/v1/admin/sessions`, `DELETE /admin/sessions/{id}`, `POST /api/v1/tenants/{id}/policies/evaluate`, `POST /api/v1/users/me/data-export`, `GET/DELETE /api/v1/users/me/devices*`
-  - 状態: 暫定仕様で先行リリース。Bearer 対応後に該当 tool を有効化。
+  - 状態: 暫定仕様で先行リリース完了。Bearer 対応後に該当 tool を有効化。
 
-## deploy 手順（次にやること）
+## deploy 履歴
 
-1. `volta__svc_add(manifest)` dry-run → 差分確認
-2. `confirm: true` で登録
-3. prod で git clone + `systemctl --user enable --now vgw-mcp`
-4. `curl http://127.0.0.1:9214/healthz` が 200 になるまで確認
-5. `volta__gateway_routes_diff()` → 自分の 1 件のみ → `volta__gateway_routes_apply(confirm=true)`
-6. `https://vgw-mcp.unlaxer.org/healthz` 200 確認
-7. `catalog__backend_status` で `vgw` が ready 確認
+1. `volta__svc_add(manifest)` dry-run → exists: false, exit: 0 → 問題なし
+2. `volta__svc_add(manifest, confirm: true)` → exit: 0, 登録完了
+3. `volta__gateway_routes_diff()` → `[新規] vgw-mcp.unlaxer.org -> http://192.168.1.50:9214`（自分の1件のみ）
+4. `volta__gateway_routes_apply(confirm: true)` → job done, exit: 0, SIGHUP 済み
+5. prod に git clone + `npm install` + `systemctl --user enable --now vgw-mcp`
+6. `curl http://127.0.0.1:9214/healthz` → 200
+7. `https://vgw-mcp.unlaxer.org/healthz` → 200（IP制限修正後）
+8. `catalog__reload()` → vgw status: ready
+9. `catalog__audit_backend("vgw")` → 8 ok / 0 ng
 
 ## 未決事項
 
 1. auth-server Bearer 対応ルートの追加（issue-hub #258 解決後）
 2. `config_validate` tool の追加（CLI を別プロセス起動する方法の検討）
 3. webhook 管理 tool の追加（cookie-only 認証の問題解決後）
-
-## 持ち主への質問
-
-なし（2026-08-22 に deploy まで進めてよいと了承済み）
+4. `VGW_AUTH_TOKEN` / `VOLTA_ADMIN_TOKEN` の実際の値設定（volta-secrets/vgw-mcp.env にコメントアウト済み）
