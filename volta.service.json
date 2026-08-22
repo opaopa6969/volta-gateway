@@ -5,7 +5,7 @@
   "type": "node",
   "hostname": "gw-mcp.unlaxer.org",
   "port": 9217,
-  "host": "192.168.1.50",
+  "host": "192.168.1.8",
   "runtime": "systemd",
   "exec_start": "/home/opa/gw-mcp/run.sh",
   "user": "opa",
