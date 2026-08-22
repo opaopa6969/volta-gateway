@@ -14,7 +14,7 @@ let serverProcess;
 function startServer() {
   return new Promise((resolve, reject) => {
     const env = { ...process.env, PORT: String(PORT) };
-    serverProcess = execFile('node', ['mcp/server.mjs'], { env, cwd: process.cwd() }, (err) => {
+    serverProcess = execFile('node', ['server.mjs'], { env, cwd: new URL('.', import.meta.url).pathname + '../' }, (err) => {
       if (err && err.code !== null && !err.killed) reject(err);
     });
     let resolved = false;
