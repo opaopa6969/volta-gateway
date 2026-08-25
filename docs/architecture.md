@@ -6,6 +6,11 @@
 > on *how the pieces fit together*: the FlowEngine at the core, the routing
 > table, the `auth-server` 5-merge router, the plugin system, and the
 > rate-limiting layers.
+>
+> **Runtime status (2026-08-25):** the supported topology is Rust-only:
+> `volta-gateway` + `volta-auth-server`. Java `volta-auth-proxy` and Traefik
+> references below are historical lineage or migration tooling, not supported
+> runtime choices. See the [foundation specification](rust-only-foundation-spec.md).
 
 ## 1. Workspace layout
 
@@ -13,10 +18,10 @@
 volta-gateway/                       Cargo workspace root
 ├── gateway/          HTTP reverse proxy (96 routes in auth-server → forwarded)
 ├── auth-core/        Auth library — JWT, session, OIDC/MFA/Passkey SM flows
-├── auth-server/      Axum HTTP API — Java volta-auth-proxy 1:1 replacement
+├── auth-server/      Axum HTTP API — Rust identity and authorization service
 ├── volta-bin/        Unified binary (gateway + auth-core in-process)
 └── tools/
-    └── traefik-to-volta/  Config converter CLI
+    └── traefik-to-volta/  Historical import/migration CLI (not runtime)
 ```
 
 Shared dependencies: `tramli = "3.8"` and `tramli-plugins = "3.6.1"` in both
@@ -80,7 +85,7 @@ volta-gateway](https://github.com/opaopa6969/tramli/blob/main/docs/review-volta-
 map keyed by host (exact + wildcard). Each `RouteTarget` carries:
 
 - `backend` / `backends` (round-robin or weighted)
-- optional `path_prefix` (used e.g. to route `/saml/*` to a Java sidecar — DD-005)
+- optional `path_prefix` (route a path subset to another Rust backend)
 - `public`, `auth_bypass_paths`, `cors_origins`, `timeout_secs`
 - `geo_allowlist` / `geo_denylist` (CF-IPCountry)
 - `strip_prefix` / `add_prefix`, header add/remove rules
@@ -123,8 +128,8 @@ Router::new()
 Why this shape? Axum's `route_layer` only applies to routes declared *inside*
 the sub-router. By colocating only the sensitive, brute-forceable endpoints in
 their own sub-router and attaching the `RateLimiter` there, we avoid a global
-middleware that would charge the other ~80 routes. Matches Java's per-endpoint
-`@RateLimit(limit=N, window=60s)` annotations 1:1.
+middleware that would charge the other ~80 routes. The per-endpoint limits were
+originally validated against the retired Java implementation.
 
 Each limiter is a `RateLimiter::new("oidc", 10, Duration::from_secs(60))`
 instance keyed by client IP via `limit_by_ip` middleware.
@@ -154,8 +159,9 @@ Route taxonomy (see [`parity.md`](parity.md) for the full table):
 
 ## 6. auth-core flow library
 
-`auth-core/src/flow/` holds four tramli `FlowDefinition`s ported 1:1 from
-Java `volta-auth-proxy`:
+`auth-core/src/flow/` holds four tramli `FlowDefinition`s. Their initial
+behavior was ported from the retired Java implementation; Rust is now the
+authoritative implementation:
 
 | Flow file          | Purpose                                           |
 |--------------------|---------------------------------------------------|
