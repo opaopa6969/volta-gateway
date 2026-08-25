@@ -102,7 +102,7 @@ async fn main() {
     if local_bypass.is_empty() {
         info!("local_bypass disabled (LOCAL_BYPASS_CIDRS is empty)");
     } else {
-        info!("local_bypass enabled");
+        info!("local_bypass enabled; forwarded IPs require LOCAL_BYPASS_TRUSTED_PROXY_CIDRS");
     }
 
     // P1 #7: optional Redis pub/sub bridge for SSE fan-out.

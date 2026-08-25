@@ -11,6 +11,7 @@ use serde::Deserialize;
 use crate::auth_events::AuthEvent;
 use crate::error::{no_cache_headers, ApiError};
 use crate::helpers::{extract_session_id, is_json_accept, set_session_cookie, clear_session_cookie};
+use crate::local_bypass::PeerIp;
 use crate::state::AppState;
 use volta_auth_core::store::{SessionStore, MembershipStore, TenantStore};
 
@@ -48,6 +49,7 @@ async fn publish_logout_event(state: &AppState, session_id: &str) {
 /// users still get their real user headers and MFA enforcement.
 pub async fn verify(
     State(state): State<AppState>,
+    PeerIp(peer_ip): PeerIp,
     headers: HeaderMap,
     jar: CookieJar,
 ) -> Response {
@@ -126,7 +128,7 @@ pub async fn verify(
     }
 
     // ── No session: local-network bypass (P1.3) ───────────────
-    if state.local_bypass.matches_request(&headers, None) {
+    if state.local_bypass.matches_request(&headers, peer_ip) {
         let mut resp = StatusCode::OK.into_response();
         resp.headers_mut().insert("x-volta-auth-source", "local-bypass".parse().unwrap());
         no_cache_headers(&mut resp);
