@@ -78,7 +78,7 @@ pub mod builtin {
     use super::*;
 
     /// JWT validation extension — verify JWT in Authorization header.
-    /// Useful for API-only routes where volta-auth-proxy is not used.
+    /// Useful for API-only routes where volta-auth-server is not used.
     pub struct JwtValidator {
         pub secret: String,
         pub issuer: Option<String>,

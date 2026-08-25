@@ -3,17 +3,18 @@
 # volta-gateway Getting Started (日本語)
 
 `git clone` から実際にリクエストが通るところまでを 1 つの端末で完結する手順。
-3 つの構成を扱う:
+サポートするRust構成を扱う:
 
-1. **Gateway + Java auth-proxy** (旧構成)
-2. **Gateway + Rust auth-server** (推奨構成)
-3. **統合バイナリ `volta-bin`** (gateway + auth-core in-process、HTTP ホップ 0)
+1. **Gateway + Rust auth-server** (サポートする本番構成)
+
+`volta-bin` crate は現時点ではコンポーネント／flow の実験的smoke checkであり、
+gatewayを起動しないためデプロイ構成には含めない。
 
 ## 0. 前提
 
 - Rust 1.75+ (edition 2021)
 - PostgreSQL 13+ (auth-core 機能使用時)
-- Docker (任意 — 統合テスト / Java sidecar 起動用)
+- Docker (任意 — 統合テスト用)
 - 任意の HTTP バックエンド。無ければ同梱の `mock_backend` を使う
 
 ## 1. Clone & build
@@ -37,7 +38,7 @@ server:
   port: 8080
 
 auth:
-  volta_url: http://localhost:7070   # auth-server または Java auth-proxy
+  volta_url: http://localhost:7070   # Rust auth-server
   timeout_ms: 500                    # fail-closed: 認証側ダウン → 502
 
 routing:
@@ -76,8 +77,8 @@ curl -H "Host: app.localhost" http://localhost:8080/api/hi
 
 ## 4. 本物の auth-server (Rust) に切り替え
 
-`auth-server` は Java と 1:1 互換の Axum サービス ([`parity-ja.md`](parity-ja.md))。
-PostgreSQL 必須。
+`auth-server` は正となるRust製の認証サービス。PostgreSQL 必須。
+旧実装との対比表は[履歴追跡用](parity-ja.md)としてのみ残す。
 
 ```bash
 # Postgres 起動
@@ -96,27 +97,18 @@ cargo run --release -p volta-gateway -- my-config.yaml
 (`IDP_PROVIDER`, `IDP_CLIENT_ID`, `IDP_CLIENT_SECRET`) は
 [`auth-server/README.md`](../auth-server/README.md) に一覧あり。
 
-## 5. 統合バイナリ — 認証ホップ 0
+## 5. 実験用 `volta-bin` scaffold
 
-`volta-bin/` クレート（パッケージ名は `volta`）は gateway と `auth-core` を 1 プロセスに束ねる。認証検査は
-~1 µs の in-process 関数呼び出しになり、HTTP ラウンドトリップ (~250 µs) を
-完全排除。
+`volta-bin/` クレート（パッケージ名は `volta`）は、現時点ではauth-coreの
+コンポーネントとflow定義がbuildできることを確認する。HTTP gatewayは起動しない。
 
 ```bash
 cargo run --release -p volta -- my-config.yaml
 ```
 
-有効化するには:
-
-```yaml
-auth:
-  jwt_secret: "${JWT_SECRET}"   # in-process JWT 検証
-  cookie_name: volta_session
-```
-
-このモードでは 126 本のルート (login, MFA, etc.) は**公開しない**。
-既存セッションの**検証のみ**。完全なフローが必要なら `auth-server` を別途
-立てるか、移行期は Java sidecar を併置する。
+gateway + auth-server の代替デプロイとして使用しないこと。in-process認可は
+将来実装であり、サポートするgatewayでのローカルJWT検証は明示的な縮退運転時に
+限られる。
 
 ## 6. パブリックルート、CORS、ロードバランシング
 

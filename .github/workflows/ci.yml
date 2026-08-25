@@ -36,6 +36,9 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+      - name: PostgreSQL integration tests
+        run: cargo test -p volta-auth-core --features postgres --test pg_store_test -- --ignored --test-threads=1
+
       # ── SPEC §12.8 の要件 (#83) ────────────────────────────────────
       #
       # 以前は build + test だけで、SPEC が要求する5項目が1つも無かった。
@@ -44,8 +47,6 @@ jobs:
       #   - `cargo clippy -D warnings`: 現状 85 件の警告がある。潰してから
       #     `-D warnings` に上げる。下の clippy ステップは**可視化のため**に
       #     置いてあり、警告では落とさない。
-      #
-      # `--ignored` の Postgres 統合テストは DB サービスの用意が要るので別途。
 
       # fmt は 2026-08-13 に workspace 全体を整形して揃えた（#83）。
       # 以降の差分はここで止める。

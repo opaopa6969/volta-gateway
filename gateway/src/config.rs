@@ -296,41 +296,53 @@ pub struct AuthConfig {
     pub timeout_ms: u64,
     #[serde(default = "default_pool_max_idle")]
     pub pool_max_idle: usize,
-    /// JWT secret for in-process session verification (DD-005 Phase 0).
-    /// If set, gateway verifies session JWT locally before falling back to HTTP.
+    /// JWT secret for explicit degraded-mode session verification (DD-005).
+    /// This never replaces the normal online `/auth/verify` request.
     #[serde(default)]
     pub jwt_secret: Option<String>,
     /// Session cookie name (default: __volta_session).
     #[serde(default = "default_cookie_name")]
     pub cookie_name: Option<String>,
     /// Public-facing base URL of the auth proxy (e.g. https://auth.example.com).
-    /// Redirects from auth-proxy to this origin are allowed through sanitize_redirect.
+    /// Redirects from auth-server to this origin are allowed through sanitize_redirect.
     #[serde(default)]
     pub auth_public_url: Option<String>,
-    /// DD-005 縮退運転 (degraded mode): on auth-proxy failure, fall back to
+    /// DD-005 縮退運転 (degraded mode): on auth-server failure, fall back to
     /// in-process JWT verification for requests that carry a still-valid session.
     /// Default false (fail-closed). The env var `VOLTA_AUTH_DEGRADED_MODE`
     /// (1/true/yes/on) overrides this YAML value, mirroring `admin.token`.
     #[serde(default)]
     pub degraded_mode: bool,
     /// RS256 public key for in-process verification. Either an inline PEM
-    /// (`-----BEGIN PUBLIC KEY-----…`) or a path to a `.pem` file. auth-proxy
+    /// (`-----BEGIN PUBLIC KEY-----…`) or a path to a `.pem` file. auth-server
     /// issues RS256 tokens, so this (or `jwks_url`) is the production path.
     #[serde(default)]
     pub jwt_public_key_pem: Option<String>,
     /// JWKS endpoint URL for RS256 key discovery (e.g.
-    /// `http://auth-proxy:8080/.well-known/jwks.json`). When set it takes
+    /// `http://auth-server:7070/.well-known/jwks.json`). When set it takes
     /// precedence over `jwt_public_key_pem` and is refreshed on a TTL.
     #[serde(default)]
     pub jwks_url: Option<String>,
-    /// Expected `iss` claim for RS256 tokens (auth-proxy uses `volta-auth`).
+    /// Expected `iss` claim for RS256 tokens (auth-server uses `volta-auth`).
     /// When unset, the issuer is not enforced.
     #[serde(default)]
     pub jwt_issuer: Option<String>,
-    /// Expected `aud` claim for RS256 tokens (auth-proxy uses `volta-apps`).
+    /// Expected `aud` claim for RS256 tokens (auth-server uses `volta-apps`).
     /// When unset, the audience is not enforced.
     #[serde(default)]
     pub jwt_audience: Option<String>,
+    /// HMAC secret used to prove gateway origin to internal backends. The env
+    /// `VOLTA_GATEWAY_ASSERTION_SECRET` overrides this value when non-empty.
+    #[serde(default)]
+    pub gateway_assertion_secret: Option<String>,
+    /// Identifier emitted with assertions signed by the current key.
+    #[serde(default)]
+    pub gateway_assertion_key_id: Option<String>,
+    /// Previous key accepted by consumers during a bounded rotation window.
+    #[serde(default)]
+    pub gateway_assertion_previous_key_id: Option<String>,
+    #[serde(default)]
+    pub gateway_assertion_previous_secret: Option<String>,
 }
 
 impl AuthConfig {
@@ -345,6 +357,43 @@ impl AuthConfig {
             }
         }
         self.degraded_mode
+    }
+
+    pub fn effective_gateway_assertion_secret(&self) -> Option<String> {
+        if let Ok(secret) = std::env::var("VOLTA_GATEWAY_ASSERTION_SECRET") {
+            if !secret.is_empty() {
+                return Some(secret);
+            }
+        }
+        self.gateway_assertion_secret
+            .as_ref()
+            .filter(|secret| !secret.is_empty())
+            .cloned()
+    }
+
+    pub fn effective_gateway_assertion_key_id(&self) -> String {
+        std::env::var("VOLTA_GATEWAY_ASSERTION_KEY_ID")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                self.gateway_assertion_key_id
+                    .as_ref()
+                    .filter(|value| !value.is_empty())
+                    .cloned()
+            })
+            .unwrap_or_else(|| crate::assertion::LEGACY_KEY_ID.into())
+    }
+
+    pub fn effective_gateway_assertion_previous(&self) -> (Option<String>, Option<String>) {
+        let key_id = std::env::var("VOLTA_GATEWAY_ASSERTION_PREVIOUS_KEY_ID")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .or_else(|| self.gateway_assertion_previous_key_id.clone());
+        let secret = std::env::var("VOLTA_GATEWAY_ASSERTION_PREVIOUS_SECRET")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .or_else(|| self.gateway_assertion_previous_secret.clone());
+        (key_id, secret)
     }
 
     /// Resolve the RS256 public-key PEM bytes from `jwt_public_key_pem`, which
@@ -669,6 +718,130 @@ impl GatewayConfig {
                     format!("routing host '{}' has no backends", r.host),
                 ));
             }
+            if !r.public && r.cache.as_ref().is_some_and(|cache| cache.enabled) {
+                errors.push((
+                    Self::EXIT_SCHEMA,
+                    format!(
+                        "routing host '{}' enables response cache on an authenticated route; cache is allowed only with public: true",
+                        r.host
+                    ),
+                ));
+            }
+            if let Some(min_role) = r.min_role.as_deref() {
+                let role = min_role.trim().to_ascii_uppercase();
+                let valid =
+                    ["OWNER", "ADMIN", "OPERATOR", "MEMBER", "VIEWER"].contains(&role.as_str());
+                if !valid {
+                    errors.push((
+                        Self::EXIT_SCHEMA,
+                        format!(
+                            "routing host '{}' has invalid min_role '{}'; expected OWNER, ADMIN, OPERATOR, MEMBER, or VIEWER",
+                            r.host, min_role
+                        ),
+                    ));
+                }
+                if r.public {
+                    errors.push((
+                        Self::EXIT_SCHEMA,
+                        format!(
+                            "routing host '{}' cannot combine public: true with min_role",
+                            r.host
+                        ),
+                    ));
+                }
+                if !r.auth_bypass_paths.is_empty() {
+                    errors.push((
+                        Self::EXIT_SCHEMA,
+                        format!(
+                            "routing host '{}' cannot combine min_role with auth_bypass_paths",
+                            r.host
+                        ),
+                    ));
+                }
+            }
+            for bypass in &r.auth_bypass_paths {
+                if bypass.prefix.is_empty() || !bypass.prefix.starts_with('/') {
+                    errors.push((
+                        Self::EXIT_SCHEMA,
+                        format!(
+                            "routing host '{}' has invalid auth_bypass_paths prefix '{}'; it must start with '/'",
+                            r.host, bypass.prefix
+                        ),
+                    ));
+                }
+            }
+        }
+        let assertion_secret = self.auth.effective_gateway_assertion_secret();
+        let assertion_key_id = self.auth.effective_gateway_assertion_key_id();
+        if let Some(secret) = &assertion_secret {
+            if secret.len() < crate::assertion::MIN_SECRET_LEN {
+                errors.push((
+                    Self::EXIT_SCHEMA,
+                    format!(
+                        "auth.gateway_assertion_secret / VOLTA_GATEWAY_ASSERTION_SECRET must be at least {} bytes",
+                        crate::assertion::MIN_SECRET_LEN
+                    ),
+                ));
+            }
+            if let Err(error) = crate::assertion::validate_key_id(&assertion_key_id) {
+                errors.push((
+                    Self::EXIT_SCHEMA,
+                    format!("invalid gateway assertion current key ID: {error}"),
+                ));
+            }
+        } else if self.auth.gateway_assertion_key_id.is_some()
+            || std::env::var("VOLTA_GATEWAY_ASSERTION_KEY_ID").is_ok()
+        {
+            errors.push((
+                Self::EXIT_SCHEMA,
+                "gateway assertion key ID requires a current assertion secret".into(),
+            ));
+        }
+        let (previous_key_id, previous_secret) = self.auth.effective_gateway_assertion_previous();
+        match (&previous_key_id, &previous_secret) {
+            (Some(key_id), Some(secret)) => {
+                if assertion_secret.is_none() {
+                    errors.push((
+                        Self::EXIT_SCHEMA,
+                        "previous gateway assertion key requires a current key".into(),
+                    ));
+                }
+                if secret.len() < crate::assertion::MIN_SECRET_LEN {
+                    errors.push((
+                        Self::EXIT_SCHEMA,
+                        format!(
+                            "previous gateway assertion secret must be at least {} bytes",
+                            crate::assertion::MIN_SECRET_LEN
+                        ),
+                    ));
+                }
+                if let Err(error) = crate::assertion::validate_key_id(key_id) {
+                    errors.push((
+                        Self::EXIT_SCHEMA,
+                        format!("invalid gateway assertion previous key ID: {error}"),
+                    ));
+                }
+                if key_id == &assertion_key_id {
+                    errors.push((
+                        Self::EXIT_SCHEMA,
+                        "current and previous gateway assertion key IDs must differ".into(),
+                    ));
+                }
+            }
+            (None, None) => {}
+            _ => errors.push((
+                Self::EXIT_SCHEMA,
+                "previous gateway assertion key ID and secret must be configured together".into(),
+            )),
+        }
+        if self.plugins.iter().any(|plugin| plugin.name == "monetizer")
+            && assertion_secret.is_none()
+        {
+            errors.push((
+                Self::EXIT_SCHEMA,
+                "monetizer plugin requires auth.gateway_assertion_secret or VOLTA_GATEWAY_ASSERTION_SECRET"
+                    .into(),
+            ));
         }
         // ── #95: SPEC §11.8 の 3 / 4 / 5 に相当する検査（今まで無かった） ──
 
@@ -807,7 +980,6 @@ mod tests {
 
     fn make_route(host: &str, backend: &str) -> RouteEntry {
         RouteEntry {
-            min_role: None,
             host: host.to_string(),
             backend: Some(backend.to_string()),
             backends: vec![],
@@ -822,6 +994,7 @@ mod tests {
             geo_allowlist: vec![],
             geo_denylist: vec![],
             public: false,
+            min_role: None,
             auth_bypass_paths: vec![],
             mirror: None,
             timeout_secs: None,
@@ -832,7 +1005,6 @@ mod tests {
 
     fn make_weighted_route(host: &str, backends: Vec<WeightedBackend>) -> RouteEntry {
         RouteEntry {
-            min_role: None,
             host: host.to_string(),
             backend: None,
             backends,
@@ -847,6 +1019,7 @@ mod tests {
             geo_allowlist: vec![],
             geo_denylist: vec![],
             public: false,
+            min_role: None,
             auth_bypass_paths: vec![],
             mirror: None,
             timeout_secs: None,
@@ -905,7 +1078,6 @@ routing:
     fn all_backends_single_not_duplicated_when_also_in_backends() {
         // backend field url already appears in backends — should not duplicate
         let route = RouteEntry {
-            min_role: None,
             host: "example.com".into(),
             backend: Some("http://a:3000".into()),
             backends: vec![WeightedBackend {
@@ -923,6 +1095,7 @@ routing:
             geo_allowlist: vec![],
             geo_denylist: vec![],
             public: false,
+            min_role: None,
             auth_bypass_paths: vec![],
             mirror: None,
             timeout_secs: None,
@@ -936,7 +1109,6 @@ routing:
     #[test]
     fn all_backends_empty_when_none_configured() {
         let route = RouteEntry {
-            min_role: None,
             host: "example.com".into(),
             backend: None,
             backends: vec![],
@@ -951,6 +1123,7 @@ routing:
             geo_allowlist: vec![],
             geo_denylist: vec![],
             public: false,
+            min_role: None,
             auth_bypass_paths: vec![],
             mirror: None,
             timeout_secs: None,
@@ -1200,6 +1373,57 @@ routing:
         let cfg: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
         let errs = cfg.validate().unwrap_err();
         assert!(errs.iter().any(|e| e.contains("no backends")));
+    }
+
+    #[test]
+    fn validate_accepts_gateway_assertion_dual_key_rotation() {
+        let yaml = r#"
+server:
+  port: 8080
+auth:
+  volta_url: "http://localhost:7070"
+  gateway_assertion_key_id: "2026-09"
+  gateway_assertion_secret: "current-current-current-current-1234"
+  gateway_assertion_previous_key_id: "2026-08"
+  gateway_assertion_previous_secret: "previous-previous-previous-prev-1234"
+routing:
+  - host: "example.com"
+    backend: "http://a:3000"
+"#;
+        let cfg: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_incomplete_or_ambiguous_assertion_rotation() {
+        let incomplete = r#"
+server: { port: 8080 }
+auth:
+  volta_url: "http://localhost:7070"
+  gateway_assertion_key_id: "2026-09"
+  gateway_assertion_secret: "current-current-current-current-1234"
+  gateway_assertion_previous_key_id: "2026-08"
+routing:
+  - host: "example.com"
+    backend: "http://a:3000"
+"#;
+        let cfg: GatewayConfig = serde_yaml::from_str(incomplete).unwrap();
+        assert!(cfg
+            .validate()
+            .unwrap_err()
+            .iter()
+            .any(|error| error.contains("configured together")));
+
+        let duplicate_id = incomplete.replace(
+            "gateway_assertion_previous_key_id: \"2026-08\"",
+            "gateway_assertion_previous_key_id: \"2026-09\"\n  gateway_assertion_previous_secret: \"previous-previous-previous-prev-1234\"",
+        );
+        let cfg: GatewayConfig = serde_yaml::from_str(&duplicate_id).unwrap();
+        assert!(cfg
+            .validate()
+            .unwrap_err()
+            .iter()
+            .any(|error| error.contains("must differ")));
     }
 
     #[test]

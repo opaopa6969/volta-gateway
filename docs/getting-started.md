@@ -3,17 +3,18 @@
 # Getting Started with volta-gateway
 
 This guide walks you from `git clone` to a working request through the
-gateway. The whole loop fits in one terminal, and it covers three layouts:
+gateway. The supported loop fits in one terminal:
 
-1. **Gateway + Java auth-proxy** (legacy topology).
-2. **Gateway + Rust auth-server** (replacement topology — recommended).
-3. **Unified `volta-bin`** (gateway + auth-core in-process, no HTTP roundtrip).
+1. **Gateway + Rust auth-server** (supported production topology).
+
+The `volta-bin` crate is currently an experimental component/flow smoke check;
+it does not launch the gateway and is not a deployment topology.
 
 ## 0. Prerequisites
 
 - Rust 1.75+ (edition 2021)
 - PostgreSQL 13+ (for auth-core features)
-- Docker (optional — for integration tests and the `volta-auth-proxy` sidecar)
+- Docker (optional — for integration tests)
 - A backend HTTP service to route to. If you don't have one, use the
   `mock_backend` example shipped with the repo.
 
@@ -38,7 +39,7 @@ server:
   port: 8080
 
 auth:
-  volta_url: http://localhost:7070   # auth-server (or Java auth-proxy)
+  volta_url: http://localhost:7070   # Rust auth-server
   timeout_ms: 500                    # fail-closed: auth down → 502
 
 routing:
@@ -78,8 +79,8 @@ Forwarded → Completed) with `durationMicros` for each hop.
 
 ## 4. Swap to the real auth-server (Rust)
 
-`auth-server` is the Java-parity Axum service (see [`parity.md`](parity.md)).
-It needs PostgreSQL.
+`auth-server` is the authoritative Rust identity service. It needs PostgreSQL.
+The old parity table is retained only as [historical traceability](parity.md).
 
 ```bash
 # Start Postgres
@@ -98,27 +99,19 @@ Visit `http://localhost:8080/login` to kick off an OIDC flow. Configure the
 IdP env vars (`IDP_PROVIDER`, `IDP_CLIENT_ID`, `IDP_CLIENT_SECRET`) as listed
 in [`auth-server/README.md`](../auth-server/README.md).
 
-## 5. Unified binary — zero auth hop
+## 5. Experimental `volta-bin` scaffold
 
-The `volta-bin/` crate (package name `volta`) bundles the gateway and
-`auth-core` into one process. Auth checks become ~1 µs in-process function
-calls instead of a ~250 µs HTTP roundtrip.
+The `volta-bin/` crate (package name `volta`) currently verifies that auth-core
+components and flow definitions build. It does not start an HTTP gateway.
 
 ```bash
 cargo run --release -p volta -- my-config.yaml
 ```
 
-Enable in config:
-
-```yaml
-auth:
-  jwt_secret: "${JWT_SECRET}"   # in-process JWT verification
-  cookie_name: volta_session
-```
-
-This mode does **not** expose the 126 routes (login, MFA, etc.) — it only
-*verifies* existing sessions. Pair it with an `auth-server` instance for the
-full flow, or keep the Java sidecar during migration.
+Do not use this command as a deployment substitute for gateway + auth-server.
+In-process authorization remains future work. In the supported gateway,
+local JWT verification is only an explicit degraded-mode fallback and never
+silently replaces normal online authorization.
 
 ## 6. Public routes, CORS, load balancing
 

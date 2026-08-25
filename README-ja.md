@@ -3,22 +3,20 @@
 # volta-gateway
 
 ステートマシン ([tramli 3.8](https://github.com/opaopa6969/tramli)) 駆動の
-認証対応リバースプロキシ。**Rust と Java の二重実装**: Rust 版は本ワークスペース
-(既定)、Java 版は `volta-auth-proxy` sidecar (本番 SAML で引き続き推奨)。
-Rust 側は Java auth-proxy と 1:1 対応する **約 126 ルート**を提供する
-([`docs/parity-ja.md`](docs/parity-ja.md))。
+認証対応リバースプロキシ兼ID基盤。サポートする実行構成は
+**Rust-only** (`volta-gateway` + 同梱の `volta-auth-server`)。
+Java `volta-auth-proxy` と Traefik は目標ランタイム構成には含めない。
 
 **全てのリクエストはレールの上を走る** — ステートマシンが有効な遷移だけを許可する。リクエストスマグリングなし。認証チェック忘れなし。見えない障害なし。
 
-> **大規模 (50+ サービス, Kubernetes, Canary):** [Traefik](https://traefik.io/) + [volta-auth-proxy](https://github.com/opaopa6969/volta-auth-proxy) の ForwardAuth を推奨。Traefik のエコシステムはオーケストレーションで無敵。
->
-> **中小規模 SaaS (5-20 サービス, 認証レイテンシ重視):** volta-gateway なら認証チェック 5-10倍速、ステップ別可視化、YAML 1ファイル設定。
+> 現行アーキテクチャと信頼境界の契約:
+> [`docs/rust-only-foundation-spec.md`](docs/rust-only-foundation-spec.md)
 
 ## 目次
 
 - [仕組み](#仕組み) — リクエスト状態遷移
 - [クイックスタート](#クイックスタート)
-- [二重実装 (Rust + Java)](#二重実装-rust--java)
+- [Rust-only 認証サービス](#rust-only-認証サービス)
 - [機能一覧](#機能一覧)
 - [設定](#設定)
 - [セキュリティ](#セキュリティ)
@@ -36,7 +34,7 @@ Rust 側は Java auth-proxy と 1:1 対応する **約 126 ルート**を提供�
 flowchart LR
     Client --> CF["Cloudflare (TLS)"]
     CF --> GW["volta-gateway (HTTP:8080)"]
-    GW -->|認証チェック| Volta[volta-auth-proxy]
+    GW -->|認証チェック| Volta[volta-auth-server (Rust)]
     GW --> Backend["バックエンド App"]
 ```
 
@@ -125,7 +123,7 @@ cp volta-gateway.yaml my-config.yaml
 cargo run --release -p volta-gateway --example mock_backend &
 cargo run --release -p volta-gateway --example mock_auth &
 
-# 3b. もしくは本物の Rust auth-server (Java 互換) を :7070 で起動
+# 3b. もしくは本物の Rust auth-server を :7070 で起動
 #     export DATABASE_URL=... JWT_SECRET=...
 cargo run --release -p volta-auth-server &
 
@@ -139,21 +137,15 @@ curl -H "Host: app.localhost" http://localhost:8080/api/hi
 完全手順: [`docs/getting-started-ja.md`](docs/getting-started-ja.md) ·
 [English](docs/getting-started.md)。
 
-## 二重実装 (Rust + Java)
+## Rust-only 認証サービス
 
 volta-gateway は本ワークスペースに **Rust auth-server** (`auth-server/`) を
-同梱。Java `volta-auth-proxy` の**ルート毎置換**で、約 126 エンドポイント
-(auth / OIDC / SAML / MFA / Passkey / Magic Link / SCIM 2.0 / Webhook / Audit
-/ Billing / Policy / GDPR / Admin / JWKS / viz・SSE) を提供する。
+同梱し、約 126 エンドポイント (auth / OIDC / SAML / MFA / Passkey /
+Magic Link / SCIM 2.0 / Webhook /
+Audit / Billing / Policy / GDPR / Admin / JWKS / viz・SSE を提供する。
 
-| シナリオ                                         | 推奨構成 |
-|--------------------------------------------------|----------|
-| 新規・単一言語                                   | **gateway + auth-server (Rust)**、または `volta-bin` (in-process) |
-| Java `volta-auth-proxy` からの移行               | DD-005 に従い `/saml/*` を Java sidecar (`path_prefix`) 経由、それ以外は auth-server |
-| 本番 SAML で `xmlsec` 相当の保証が必要           | `/saml/*` のみ Java sidecar を残す (Rust 側は simplified) |
-
-ルート毎の対応表: [`docs/parity-ja.md`](docs/parity-ja.md)。Java コミットから
-Rust 着地点への trace: [`auth-server/docs/sync-from-java-2026-04-14.md`](auth-server/docs/sync-from-java-2026-04-14.md)。
+Javaパリティや移行資料は履歴追跡用として残すが、現行のデプロイ推奨ではない。
+新しい本番要件とセキュリティ修正はRust実装を正として反映する。
 
 ## 機能一覧
 
@@ -203,7 +195,7 @@ server:
   port: 8080
 
 auth:
-  volta_url: http://localhost:7070   # volta-auth-proxy
+  volta_url: http://localhost:7070   # volta-auth-server
   timeout_ms: 500                    # フェイルクローズド: volta ダウン → 502
 
 admin:
@@ -358,14 +350,14 @@ volta-gateway/
   Cargo.toml              ワークスペースルート (5 crate)
   gateway/                HTTP リバースプロキシ (30+ 機能)
   auth-core/              認証ライブラリ — JWT / セッション / OIDC・MFA・Passkey SM フロー
-  auth-server/            Axum 認証 API — 約 126 ルート、Java volta-auth-proxy と 1:1
-  volta-bin/              統合バイナリ (gateway + auth-core in-process)
+  auth-server/            Axum 認証 API — 約 126 ルートのRust認証サービス
+  volta-bin/              実験用authコンポーネント／flow smoke-check scaffold
   tools/traefik-to-volta/ 設定変換 CLI
 ```
 
 ### auth-core
 
-in-process 認証ライブラリ。auth-proxy への HTTP ラウンドトリップ不要。
+in-process 認証ライブラリ。別プロセスの auth-server への HTTP ラウンドトリップ不要。
 
 | モジュール | 用途 |
 |-----------|------|
@@ -402,9 +394,10 @@ cargo test -p volta-auth-core --features postgres -- --ignored
 
 - [Getting Started](docs/getting-started-ja.md) · [English](docs/getting-started.md)
 - [アーキテクチャ](docs/architecture-ja.md) · [English](docs/architecture.md) — FlowEngine、ルーティング、auth-server 8 マージルータ、プラグイン
-- [Rust ↔ Java パリティ](docs/parity-ja.md) · [English](docs/parity.md) — ルート毎対比、126 エンドポイント
+- [Rust-only 基盤仕様](docs/rust-only-foundation-spec.md) — 現行の構成・信頼境界・リリース条件
+- [Rust ↔ Java パリティ（履歴）](docs/parity-ja.md) · [English](docs/parity.md) — 過去実装とのルート毎対比
 - [tramli フィードバックループ](docs/feedback.md) — 3.2 → 3.8 のアップグレード経緯
-- [ベンチマーク](docs/benchmark-article.md) · [Traefik からの移行](docs/migration-from-traefik-ja.md) · [English](docs/migration-from-traefik.md)
+- [ベンチマーク（履歴比較）](docs/benchmark-article.md) · [Traefik からの移行（履歴）](docs/migration-from-traefik-ja.md) · [English](docs/migration-from-traefik.md)
 - [CHANGELOG](CHANGELOG.md)
 - [Backlog](docs/backlog.md) · [HANDOFF](docs/HANDOFF.md)
 

@@ -2,23 +2,22 @@
 
 # volta-gateway
 
-Auth-aware reverse proxy for small-to-medium SaaS, powered by a state machine
-([tramli 3.8](https://github.com/opaopa6969/tramli)). **Dual implementation**:
-Rust (default, this workspace) and Java (`volta-auth-proxy` sidecar, still
-supported for production SAML). The Rust side ships **~126 routes** that match
-the Java auth-proxy 1:1 — see [`docs/parity.md`](docs/parity.md).
+Auth-aware reverse proxy and identity foundation for small-to-medium SaaS,
+powered by a state machine
+([tramli 3.8](https://github.com/opaopa6969/tramli)). The supported runtime is
+**Rust-only**: `volta-gateway` + the bundled `volta-auth-server`. Java
+`volta-auth-proxy` and Traefik are not part of the target runtime architecture.
 
 **Every request rides on rails** — the state machine ensures that only valid transitions happen. No request smuggling. No forgotten auth checks. No invisible failures.
 
-> **For large-scale deployments (50+ services, Kubernetes, Canary deploys):** use [Traefik](https://traefik.io/) + [volta-auth-proxy](https://github.com/opaopa6969/volta-auth-proxy) with ForwardAuth. Traefik's ecosystem is unmatched for orchestration.
->
-> **For small-to-medium SaaS (5-20 services, auth latency matters):** volta-gateway gives you 5-10x faster auth checks, per-step visibility, and a single YAML config.
+> Current architecture and trust-boundary contract:
+> [`docs/rust-only-foundation-spec.md`](docs/rust-only-foundation-spec.md).
 
 ## Table of Contents
 
 - [How it works](#how-it-works) — request state machine
 - [Quick Start](#quick-start) — clone, configure, run
-- [Dual implementation (Rust + Java)](#dual-implementation-rust--java)
+- [Rust-only identity service](#rust-only-identity-service)
 - [Features](#features-v030)
 - [Configuration](#configuration)
 - [Security](#security)
@@ -36,7 +35,7 @@ the Java auth-proxy 1:1 — see [`docs/parity.md`](docs/parity.md).
 flowchart LR
     Client --> CF["Cloudflare (TLS)"]
     CF --> GW["volta-gateway (HTTP:8080)"]
-    GW -->|auth check| Volta[volta-auth-proxy]
+    GW -->|auth check| Volta[volta-auth-server (Rust)]
     GW --> Backend["Backend App"]
 ```
 
@@ -126,7 +125,7 @@ cp volta-gateway.yaml my-config.yaml
 cargo run --release -p volta-gateway --example mock_backend &
 cargo run --release -p volta-gateway --example mock_auth &
 
-# 3b. Or run the real auth-server (Rust, Java-parity) on :7070
+# 3b. Or run the real Rust auth-server on :7070
 #     export DATABASE_URL=... JWT_SECRET=...
 cargo run --release -p volta-auth-server &
 
@@ -140,22 +139,16 @@ curl -H "Host: app.localhost" http://localhost:8080/api/hi
 Full walkthrough: [`docs/getting-started.md`](docs/getting-started.md) ·
 [日本語](docs/getting-started-ja.md).
 
-## Dual implementation (Rust + Java)
+## Rust-only identity service
 
-volta-gateway ships with a **Rust auth-server** (`auth-server/` in this
-workspace) that is a route-by-route replacement for the Java
-`volta-auth-proxy`. ~126 endpoints are covered: auth, OIDC, SAML, MFA,
+volta-gateway ships with **Rust auth-server** (`auth-server/` in this
+workspace). Its ~126 endpoints cover auth, OIDC, SAML, MFA,
 Passkey, Magic Link, SCIM 2.0, Webhook, Audit, Billing, Policy, GDPR,
 Admin, JWKS, viz/SSE.
 
-| Scenario                                       | Recommended topology |
-|------------------------------------------------|----------------------|
-| Greenfield, single language                    | **gateway + auth-server (Rust)** or `volta-bin` (in-process) |
-| Migrating from Java `volta-auth-proxy`         | keep Java sidecar under `path_prefix: /saml/` per DD-005, route the rest to auth-server |
-| SAML production with `xmlsec`-class assurance  | keep Java sidecar for `/saml/*` (Rust side is simplified) |
-
-Full route-by-route table: [`docs/parity.md`](docs/parity.md). Tracing every
-Java commit that landed in Rust: [`auth-server/docs/sync-from-java-2026-04-14.md`](auth-server/docs/sync-from-java-2026-04-14.md).
+Historical Java parity and migration documents remain available for traceability,
+but they are not deployment recommendations. New production requirements and
+security fixes land in the Rust implementation first.
 
 ## Features (v0.3.0)
 
@@ -205,7 +198,7 @@ server:
   port: 8080
 
 auth:
-  volta_url: http://localhost:7070   # volta-auth-proxy
+  volta_url: http://localhost:7070   # volta-auth-server
   timeout_ms: 500                    # fail-closed: volta down → 502
 
 admin:
@@ -387,14 +380,14 @@ volta-gateway/
   Cargo.toml              Workspace root (5 crates)
   gateway/                HTTP reverse proxy (30+ features)
   auth-core/              Auth library — JWT, session, OIDC/MFA/Passkey SM flows
-  auth-server/            Axum auth API — ~126 routes, Java volta-auth-proxy 1:1
-  volta-bin/              Unified binary (gateway + auth-core in-process)
+  auth-server/            Axum auth API — ~126-route Rust identity service
+  volta-bin/              Experimental auth component/flow smoke-check scaffold
   tools/traefik-to-volta/ Config converter CLI
 ```
 
 ### auth-core
 
-In-process auth library — no HTTP roundtrip to auth-proxy needed.
+In-process auth library — no HTTP roundtrip to a separate auth-server needed.
 
 | Module | Purpose |
 |--------|---------|
@@ -423,9 +416,11 @@ cargo test -p volta-auth-core
 cargo test -p volta-auth-core --features postgres -- --ignored
 ```
 
-### Unified binary (volta-bin)
+### Experimental `volta-bin` scaffold
 
-Single binary combining gateway + auth-core (the `volta-bin/` crate, package name `volta`). Auth checks run in-process (~1μs) instead of HTTP roundtrip (~250μs).
+The `volta-bin/` crate currently checks that auth-core components and flows
+construct successfully. It does not launch the HTTP gateway and is not a
+supported deployment topology.
 
 > ⚠️ **Status: not functional yet (#86).** `volta-bin/src/main.rs` is a 60-line
 > startup check — it verifies that the auth-core components construct and that
@@ -452,9 +447,11 @@ cargo run -p volta -- config.yaml
 
 - [Getting Started](docs/getting-started.md) · [日本語](docs/getting-started-ja.md)
 - [Architecture](docs/architecture.md) · [日本語](docs/architecture-ja.md) — FlowEngine, routing, auth-server 8-merge router, plugins
-- [Rust ↔ Java Parity](docs/parity.md) · [日本語](docs/parity-ja.md) — route-by-route, 126 endpoints
+- [Rust-only foundation specification](docs/rust-only-foundation-spec.md) — current topology, trust boundaries, and release gates
+- [Rust ↔ Java Parity (historical)](docs/parity.md) · [日本語](docs/parity-ja.md) — route-by-route comparison with the retired implementation
 - [tramli feedback loop](docs/feedback.md) — upgrade trail 3.2 → 3.8
-- [Benchmarks](docs/benchmark-article.md) · [Migration from Traefik](docs/migration-from-traefik.md) · [日本語](docs/migration-from-traefik-ja.md)
+- [Benchmarks (historical comparison)](docs/benchmark-article.md) · [Migration from Traefik (historical)](docs/migration-from-traefik.md) · [日本語](docs/migration-from-traefik-ja.md)
+- [MCP Design](docs/mcp/DESIGN.md) — namespace `vgw`, tools list, volta integration
 - [CHANGELOG](CHANGELOG.md)
 - [Backlog](docs/backlog.md) · [HANDOFF](docs/HANDOFF.md)
 

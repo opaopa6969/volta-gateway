@@ -181,6 +181,20 @@ magic_links, signing_keys, idp_configs, m2m_clients, user_passkeys,
 webhook_subscriptions, outbox_events, webhook_deliveries, audit_logs,
 known_devices, trusted_devices, plans, subscriptions, policies
 
+## Local network bypass（既定無効）
+
+`LOCAL_BYPASS_CIDRS` を明示した場合だけ、セッションのない接続元を
+network perimeterとして許可します。gatewayからの転送IPを使う場合は、直接接続する
+gatewayのCIDRも別途指定してください。
+
+```bash
+LOCAL_BYPASS_CIDRS=100.64.0.0/10
+LOCAL_BYPASS_TRUSTED_PROXY_CIDRS=10.42.0.0/16
+```
+
+`X-Real-IP` / `X-Forwarded-For` は、Axumが取得したpeer IPがtrusted proxyに
+一致するときだけ参照されます。公開環境ではbypassを無効のままにすることを推奨します。
+
 ## テスト
 
 ```bash

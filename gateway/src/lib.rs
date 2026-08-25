@@ -1,4 +1,5 @@
 pub mod admin_auth;
+pub mod assertion;
 pub mod auth;
 pub mod cache;
 pub mod config;
