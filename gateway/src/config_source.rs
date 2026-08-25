@@ -71,6 +71,8 @@ pub struct ServiceEntry {
     pub strip_prefix: Option<String>,
     #[serde(default)]
     pub app_id: Option<String>,
+    #[serde(default)]
+    pub min_role: Option<String>,
 }
 
 // ─── Console (volta-platform) services.json format ──────
@@ -129,6 +131,8 @@ pub struct ConsoleAccess {
     pub visibility: Option<String>,
     #[serde(default)]
     pub public: Option<bool>,
+    #[serde(default, rename = "minRole")]
+    pub min_role: Option<String>,
 }
 
 pub struct ServicesJsonSource {
@@ -275,7 +279,6 @@ impl ServicesJsonSource {
             .collect();
 
         Ok(Some(RouteEntry {
-            min_role: None,
             host,
             backend: Some(backend),
             backends: vec![],
@@ -290,6 +293,7 @@ impl ServicesJsonSource {
             geo_allowlist: vec![],
             geo_denylist: vec![],
             public,
+            min_role: svc.access.as_ref().and_then(|access| access.min_role.clone()),
             auth_bypass_paths: bypass_paths,
             mirror: None,
             timeout_secs: None,
@@ -323,7 +327,6 @@ impl ServicesJsonSource {
                 .collect();
 
             routes.push(RouteEntry {
-                min_role: None,
                 host,
                 backend: Some(backend),
                 backends: vec![],
@@ -338,6 +341,7 @@ impl ServicesJsonSource {
                 geo_allowlist: vec![],
                 geo_denylist: vec![],
                 public: svc.public.unwrap_or(false),
+                min_role: svc.min_role,
                 auth_bypass_paths: bypass_paths,
                 mirror: None,
                 timeout_secs: None,
@@ -470,7 +474,6 @@ impl DockerLabelsSource {
             .unwrap_or_default();
 
         Some(RouteEntry {
-            min_role: None,
             host: host.clone(),
             backend: Some(format!("http://{}:{}", container_ip, port)),
             backends: vec![],
@@ -485,6 +488,7 @@ impl DockerLabelsSource {
             geo_allowlist: vec![],
             geo_denylist: vec![],
             public,
+            min_role: labels.get("volta.min_role").cloned(),
             auth_bypass_paths: bypass,
             mirror: None,
             timeout_secs: None,
@@ -768,11 +772,11 @@ pub fn spawn_watchers(
                 let mut this_source: crate::proxy::RoutingTable = std::collections::HashMap::new();
                 for route in &dynamic_routes {
                     let info = crate::proxy::RouteInfo {
-                        min_role: route.min_role.clone(),
                         backends: route.all_backends(),
                         weights: route.all_weights(),
                         app_id: route.app_id.clone(),
                         public: route.public,
+                        min_role: route.min_role.clone(),
                         bypass_paths: route.auth_bypass_paths.clone(),
                         mirror: route.mirror.clone(),
                         path_prefix: route.path_prefix.clone(),

@@ -14,6 +14,7 @@ use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
 mod admin_auth;
+mod assertion;
 mod auth;
 mod cache;
 mod config;
@@ -305,8 +306,24 @@ async fn main() {
     // DD-005: start the JWKS background refresher (no-op unless auth.jwks_url set).
     volta.spawn_jwks_refresher();
     let metrics = Arc::new(metrics::Metrics::new());
-    let plugin_mgr = Arc::new(plugin::PluginManager::load_from_config(&config.plugins));
-    let proxy = ProxyService::new(volta.clone(), hot.clone(), metrics.clone(), plugin_mgr);
+    let assertion_signer = config
+        .auth
+        .effective_gateway_assertion_secret()
+        .map(|secret| {
+            assertion::GatewayAssertionSigner::new(secret)
+                .expect("gateway assertion secret was validated before startup")
+        });
+    let plugin_mgr = Arc::new(plugin::PluginManager::load_from_config_with_assertion(
+        &config.plugins,
+        assertion_signer.clone(),
+    ));
+    let proxy = ProxyService::new_with_assertion(
+        volta.clone(),
+        hot.clone(),
+        metrics.clone(),
+        plugin_mgr,
+        assertion_signer,
+    );
 
     // BT-SEC-7: Admin API auth. When a token is configured (YAML or env
     // VOLTA_ADMIN_TOKEN), every /admin/* request must present a matching
@@ -594,7 +611,7 @@ async fn main() {
                     if req.uri().path() == "/metrics" {
                         // DD-005 縮退運転: auth フォールバック発動回数を追加で公開。
                         let body = format!(
-                            "{}# HELP auth_degraded_total Auth degraded-mode fallbacks (auth-proxy down, served via in-process JWT)\n# TYPE auth_degraded_total counter\nauth_degraded_total {}\n",
+                            "{}# HELP auth_degraded_total Auth degraded-mode fallbacks (auth-server down, served via in-process JWT)\n# TYPE auth_degraded_total counter\nauth_degraded_total {}\n",
                             metrics.render(),
                             volta_health.degraded_total(),
                         );
