@@ -4,6 +4,7 @@ use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode, Uri};
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioIo;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::io::copy_bidirectional;
@@ -32,6 +33,7 @@ pub async fn handle_websocket(
     backend_selector: &BackendSelector,
     ws_client: &Client<hyper_util::client::legacy::connect::HttpConnector, Empty<Bytes>>,
     trusted_proxies: &[ipnet::IpNet],
+    assertion_signer: Option<&crate::assertion::GatewayAssertionSigner>,
 ) -> Response<BoxBody<Bytes, hyper::Error>> {
     let request_id = uuid::Uuid::new_v4().to_string();
 
@@ -86,18 +88,24 @@ pub async fn handle_websocket(
             return error_response(StatusCode::BAD_REQUEST, &request_id);
         }
     };
-    let backends = route.backends;
-    let app_id = route.app_id;
-    let min_role = route.min_role;
-
     // Public routes skip auth; bypass_paths also skip for matching prefixes
-    let skip_auth = route.public
-        || route
-            .bypass_paths
-            .iter()
-            .any(|bp| uri_path.starts_with(&bp.prefix));
+    let bypass_match = route
+        .bypass_paths
+        .iter()
+        .find(|bp| crate::proxy::bypass_path_matches(&uri_path, &bp.prefix));
+    let skip_auth = route.public || bypass_match.is_some();
+    let min_role = route.min_role.as_deref();
 
-    if !skip_auth {
+    if skip_auth && min_role.is_some() {
+        warn!(
+            state = "WS_DENIED",
+            host = %host,
+            "min_role cannot be combined with WebSocket auth bypass"
+        );
+        return error_response(StatusCode::FORBIDDEN, &request_id);
+    }
+
+    let volta_headers = if !skip_auth {
         let real_client_ip = if !trusted_proxies.is_empty()
             && trusted_proxies
                 .iter()
@@ -114,19 +122,20 @@ pub async fn handle_websocket(
         };
         let client_ip_str = real_client_ip.to_string();
         let auth = volta
-            .check(
+            .check_with_degraded_policy(
                 &host,
                 &uri_path,
                 "https",
                 cookie.as_deref(),
-                app_id.as_deref(),
-                min_role.as_deref(),
+                route.app_id.as_deref(),
+                min_role,
                 Some(&client_ip_str),
                 bearer.as_deref(),
+                min_role.is_none(),
             )
             .await;
         match auth {
-            AuthResult::Authenticated(_) => {}
+            AuthResult::Authenticated(headers) => headers,
             AuthResult::Redirect(loc) => {
                 info!(state = "WS_REDIRECT", host = %host);
                 return redirect_response(&loc, &request_id);
@@ -139,20 +148,42 @@ pub async fn handle_websocket(
                 return error_response(StatusCode::BAD_GATEWAY, &request_id);
             }
         }
+    } else {
+        HashMap::new()
+    };
+
+    if let Some(min_role) = min_role {
+        let required = min_role.trim().to_ascii_uppercase();
+        let policy = volta_auth_core::policy::PolicyEngine::default_policy();
+        let valid_role = policy.hierarchy().iter().any(|role| role == &required);
+        let roles: Vec<String> = volta_headers
+            .get("x-volta-roles")
+            .map(|value| {
+                value
+                    .split(',')
+                    .map(|role| role.trim().to_ascii_uppercase())
+                    .filter(|role| !role.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !valid_role
+            || !matches!(
+                policy.enforce_min_role(&roles, &required),
+                volta_auth_core::policy::PolicyResult::Allow
+            )
+        {
+            return error_response(StatusCode::FORBIDDEN, &request_id);
+        }
     }
 
     // Select backend — check bypass_path backend override first
-    let bypass_backend = route
-        .bypass_paths
-        .iter()
-        .find(|bp| uri_path.starts_with(&bp.prefix))
-        .and_then(|bp| bp.backend.clone());
+    let bypass_backend = bypass_match.and_then(|bp| bp.backend.clone());
 
     // Select backend (round-robin, or bypass override)
     let weights = route.weights.as_slice();
     let backend = bypass_backend.unwrap_or_else(|| {
         backend_selector
-            .select(&host, &backends, weights)
+            .select(&host, &route.backends, weights)
             .to_string()
     });
 
@@ -228,11 +259,42 @@ pub async fn handle_websocket(
             .header("upgrade", "websocket")
             .header("connection", "upgrade");
     }
+    for (name, value) in &volta_headers {
+        backend_req = backend_req.header(name, value);
+    }
     backend_req = backend_req
         .header("X-Request-Id", &request_id)
         .header("X-Forwarded-For", real_client_ip.to_string())
         .header("X-Forwarded-Host", &host)
         .header("X-Forwarded-Proto", "https");
+
+    if let Some(signer) = assertion_signer {
+        let path_with_query = req
+            .uri()
+            .path_and_query()
+            .map(|value| value.as_str())
+            .unwrap_or("/");
+        let assertion = signer.sign_now(
+            "GET",
+            path_with_query,
+            volta_headers
+                .get("x-volta-user-id")
+                .map(String::as_str)
+                .unwrap_or(""),
+            volta_headers
+                .get("x-volta-tenant-id")
+                .map(String::as_str)
+                .unwrap_or(""),
+            volta_headers
+                .get("x-volta-roles")
+                .map(String::as_str)
+                .unwrap_or(""),
+        );
+        backend_req = backend_req
+            .header(crate::assertion::KEY_ID_HEADER, assertion.key_id)
+            .header(crate::assertion::TIMESTAMP_HEADER, assertion.timestamp)
+            .header(crate::assertion::SIGNATURE_HEADER, assertion.signature);
+    }
 
     let backend_req = match backend_req.body(Empty::<Bytes>::new()) {
         Ok(r) => r,

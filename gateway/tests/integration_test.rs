@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
-use volta_gateway::auth::VoltaAuthClient;
+use volta_gateway::auth::{AuthResult, VoltaAuthClient};
 use volta_gateway::config::AuthConfig;
 use volta_gateway::proxy::{HotState, ProxyService, RoutingTable};
 
@@ -77,6 +77,9 @@ fn make_proxy(auth_addr: SocketAddr, backend_addr: SocketAddr, host: &str) -> Pr
         jwt_public_key_pem: None,
         jwks_url: None,
         gateway_assertion_secret: None,
+        gateway_assertion_key_id: None,
+        gateway_assertion_previous_key_id: None,
+        gateway_assertion_previous_secret: None,
         jwt_issuer: None,
         jwt_audience: None,
     };
@@ -109,9 +112,11 @@ fn make_proxy(auth_addr: SocketAddr, backend_addr: SocketAddr, host: &str) -> Pr
     let hot = Arc::new(ArcSwap::from_pointee(HotState::new(Arc::new(routing))));
     let metrics = Arc::new(volta_gateway::metrics::Metrics::new());
     let plugins = Arc::new(volta_gateway::plugin::PluginManager::new());
-    let signer =
-        volta_gateway::assertion::GatewayAssertionSigner::new("0123456789abcdef0123456789abcdef")
-            .unwrap();
+    let signer = volta_gateway::assertion::GatewayAssertionSigner::new_with_key_id(
+        "2026-08",
+        "0123456789abcdef0123456789abcdef",
+    )
+    .unwrap();
     ProxyService::new_with_assertion(volta, hot, metrics, plugins, Some(signer))
 }
 
@@ -133,6 +138,9 @@ fn make_proxy_with_cors(
         jwt_public_key_pem: None,
         jwks_url: None,
         gateway_assertion_secret: None,
+        gateway_assertion_key_id: None,
+        gateway_assertion_previous_key_id: None,
+        gateway_assertion_previous_secret: None,
         jwt_issuer: None,
         jwt_audience: None,
     };
@@ -195,6 +203,12 @@ fn make_proxy_with_min_role(
 async fn proxy_forwards_to_backend() {
     // Mock backend: return 200 with body
     let (backend_addr, _bh) = mock_server(|req| {
+        assert_eq!(
+            req.headers()
+                .get("x-volta-assertion-key-id")
+                .and_then(|value| value.to_str().ok()),
+            Some("2026-08")
+        );
         let timestamp = req
             .headers()
             .get("x-volta-assertion-timestamp")
@@ -255,6 +269,7 @@ async fn proxy_forwards_to_backend() {
         .method("GET")
         .uri(format!("http://{}/api/test", proxy_addr))
         .header("host", "app.test.com")
+        .header("x-volta-assertion-key-id", "attacker")
         .header("x-volta-assertion-timestamp", "1")
         .header("x-volta-assertion-signature", "v1=client-forgery")
         .header("x-real-ip", "10.0.0.7")
@@ -316,6 +331,72 @@ async fn proxy_returns_403_on_auth_denied() {
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 
     server.abort();
+}
+
+#[tokio::test]
+async fn auth_client_observes_revocation_on_the_next_request() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let calls_for_server = calls.clone();
+    let (auth_addr, _ah) = mock_server(move |_req| {
+        if calls_for_server.fetch_add(1, Ordering::SeqCst) == 0 {
+            Response::builder()
+                .status(200)
+                .header("x-volta-user-id", "user-1")
+                .body(empty_body())
+                .unwrap()
+        } else {
+            Response::builder().status(403).body(empty_body()).unwrap()
+        }
+    })
+    .await;
+    let config = AuthConfig {
+        volta_url: format!("http://{auth_addr}"),
+        verify_path: "/auth/verify".into(),
+        timeout_ms: 2_000,
+        pool_max_idle: 4,
+        jwt_secret: None,
+        cookie_name: None,
+        auth_public_url: None,
+        degraded_mode: false,
+        jwt_public_key_pem: None,
+        jwks_url: None,
+        jwt_issuer: None,
+        jwt_audience: None,
+        gateway_assertion_secret: None,
+        gateway_assertion_key_id: None,
+        gateway_assertion_previous_key_id: None,
+        gateway_assertion_previous_secret: None,
+    };
+    let auth = VoltaAuthClient::new(&config);
+
+    let first = auth
+        .check(
+            "app.test.com",
+            "/account",
+            "https",
+            Some("session=same"),
+            Some("app"),
+            None,
+            Some("192.0.2.1"),
+            None,
+        )
+        .await;
+    let second = auth
+        .check(
+            "app.test.com",
+            "/account",
+            "https",
+            Some("session=same"),
+            Some("app"),
+            None,
+            Some("192.0.2.1"),
+            None,
+        )
+        .await;
+
+    assert!(matches!(first, AuthResult::Authenticated(_)));
+    assert!(matches!(second, AuthResult::Denied));
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]
@@ -560,6 +641,9 @@ fn make_proxy_public(backend_addr: SocketAddr, host: &str) -> ProxyService {
         jwt_public_key_pem: None,
         jwks_url: None,
         gateway_assertion_secret: None,
+        gateway_assertion_key_id: None,
+        gateway_assertion_previous_key_id: None,
+        gateway_assertion_previous_secret: None,
         jwt_issuer: None,
         jwt_audience: None,
     };
@@ -618,6 +702,9 @@ fn make_proxy_with_bypass(
         jwt_public_key_pem: None,
         jwks_url: None,
         gateway_assertion_secret: None,
+        gateway_assertion_key_id: None,
+        gateway_assertion_previous_key_id: None,
+        gateway_assertion_previous_secret: None,
         jwt_issuer: None,
         jwt_audience: None,
     };

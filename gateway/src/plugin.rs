@@ -280,6 +280,7 @@ pub mod builtin {
                     let mut request = http.get(parsed_url);
                     if let Some(assertion) = assertion {
                         request = request
+                            .header(crate::assertion::KEY_ID_HEADER, assertion.key_id)
                             .header(crate::assertion::TIMESTAMP_HEADER, assertion.timestamp)
                             .header(crate::assertion::SIGNATURE_HEADER, assertion.signature);
                     }
@@ -594,6 +595,12 @@ mod assertion_tests {
                         .map(|value| value.as_str().to_string())
                         .unwrap(),
                     req.headers()
+                        .get(crate::assertion::KEY_ID_HEADER)
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .to_string(),
+                    req.headers()
                         .get(crate::assertion::TIMESTAMP_HEADER)
                         .unwrap()
                         .to_str()
@@ -625,7 +632,11 @@ mod assertion_tests {
                 .await;
         });
 
-        let signer = GatewayAssertionSigner::new("0123456789abcdef0123456789abcdef").unwrap();
+        let signer = GatewayAssertionSigner::new_with_key_id(
+            "2026-08",
+            "0123456789abcdef0123456789abcdef",
+        )
+        .unwrap();
         let plugin = Monetizer::new_with_assertion(
             format!("http://{addr}/__monetizer/verify"),
             "config-1".into(),
@@ -645,8 +656,9 @@ mod assertion_tests {
         };
         plugin.on_request(&mut context).unwrap();
 
-        let (path, timestamp, signature) = rx.await.unwrap();
+        let (path, key_id, timestamp, signature) = rx.await.unwrap();
         let expected = signer.sign_at(timestamp.parse().unwrap(), "GET", &path, "", "", "");
+        assert_eq!(key_id, expected.key_id);
         assert_eq!(signature, expected.signature);
         assert_eq!(context.add_headers.get("X-Monetizer-Plan").unwrap(), "pro");
     }

@@ -643,6 +643,7 @@ impl ProxyService {
                 &self.backend_selector,
                 &self.retry_client,
                 &hot.trusted_proxies,
+                self.assertion_signer.as_ref(),
             )
             .await;
         }
@@ -855,9 +856,13 @@ impl ProxyService {
             HashMap::new()
         } else {
             let client_ip_str = real_client_ip.to_string();
+            let allow_degraded_fallback = route_info
+                .as_ref()
+                .and_then(|route| route.min_role.as_ref())
+                .is_none();
             let auth_result = self
                 .volta
-                .check(
+                .check_with_degraded_policy(
                     &host,
                     &uri_path,
                     proto,
@@ -866,6 +871,7 @@ impl ProxyService {
                     min_role.as_deref(),
                     Some(&client_ip_str),
                     bearer.as_deref(),
+                    allow_degraded_fallback,
                 )
                 .await;
 
@@ -1232,6 +1238,7 @@ impl ProxyService {
                     .unwrap_or(""),
             );
             backend_req = backend_req
+                .header(crate::assertion::KEY_ID_HEADER, assertion.key_id)
                 .header(crate::assertion::TIMESTAMP_HEADER, assertion.timestamp)
                 .header(crate::assertion::SIGNATURE_HEADER, assertion.signature);
         }
@@ -1305,6 +1312,7 @@ impl ProxyService {
                             .unwrap_or(""),
                     );
                     retry_req = retry_req
+                        .header(crate::assertion::KEY_ID_HEADER, assertion.key_id)
                         .header(crate::assertion::TIMESTAMP_HEADER, assertion.timestamp)
                         .header(crate::assertion::SIGNATURE_HEADER, assertion.signature);
                 }

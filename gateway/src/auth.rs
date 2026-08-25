@@ -5,8 +5,8 @@ use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Duration;
 
 use crate::config::AuthConfig;
 use volta_auth_core::jwks::{JwksCache, MultiVerifier};
@@ -91,23 +91,12 @@ pub enum AuthResult {
     Error(String),
 }
 
-/// HTTP client for volta /auth/verify. Connection-pooled, fail-closed.
-/// #33: Auth result cache entry.
-#[derive(Clone)]
-struct AuthCacheEntry {
-    result: AuthResult,
-    created: Instant,
-}
-
 #[derive(Clone)]
 pub struct VoltaAuthClient {
     client: Client<hyper_util::client::legacy::connect::HttpConnector, Empty<Bytes>>,
     base_url: String,
     verify_path: String,
     timeout: Duration,
-    /// #33: Short-lived auth cache (cookie hash → result). TTL = 5s.
-    auth_cache: Arc<Mutex<HashMap<u64, AuthCacheEntry>>>,
-    cache_ttl: Duration,
     /// DD-005: In-process JWT session verifier for degraded fallback (optional).
     /// RS256(jwks/pem) → HS256(secret) chain, keyed off the session cookie.
     session_verifier: Option<SessionMultiVerifier>,
@@ -118,41 +107,6 @@ pub struct VoltaAuthClient {
     degraded_mode: bool,
     /// 縮退フォールバック発動回数（メトリクス auth_degraded_total）。
     degraded_total: Arc<AtomicU64>,
-}
-
-/// ForwardAuth キャッシュのキー。
-///
-/// **資格情報は全部混ぜること。** 混ぜ忘れたものがあると、それを持たない相手が
-/// 同じキーに当たって *持っている人の許可結果* を受け取る。
-///
-/// 過去に踏んだ／踏みかけた例:
-///   - `min_role` を混ぜていなかった → 別ルートの許可を使い回した (#58)
-///   - `bearer` を混ぜないと → トークンを持たない他人がそのまま通る
-///
-/// キーが同じ = 「同じ資格情報で、同じ場所に、同じ条件でアクセスした」でなければ
-/// ならない。
-fn auth_cache_key(
-    cookie: Option<&str>,
-    host: &str,
-    uri: &str,
-    proto: &str,
-    app_id: Option<&str>,
-    min_role: Option<&str>,
-    client_ip: Option<&str>,
-    bearer: Option<&str>,
-) -> u64 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut h = DefaultHasher::new();
-    cookie.unwrap_or("").hash(&mut h);
-    host.hash(&mut h);
-    uri.hash(&mut h);
-    proto.hash(&mut h);
-    app_id.unwrap_or("").hash(&mut h);
-    min_role.unwrap_or("").hash(&mut h);
-    client_ip.unwrap_or("").hash(&mut h);
-    bearer.unwrap_or("").hash(&mut h);
-    h.finish()
 }
 
 impl VoltaAuthClient {
@@ -245,8 +199,6 @@ impl VoltaAuthClient {
             base_url: config.volta_url.clone(),
             verify_path: config.verify_path.clone(),
             timeout: Duration::from_millis(config.timeout_ms),
-            auth_cache: Arc::new(Mutex::new(HashMap::new())),
-            cache_ttl: Duration::from_secs(5),
             session_verifier,
             auth_public_url: config.auth_public_url.clone(),
             degraded_mode,
@@ -310,8 +262,11 @@ impl VoltaAuthClient {
         }
     }
 
-    /// Call volta /auth/verify with forwarded headers and cookies.
-    /// #33: Results are cached for 5s by cookie hash to skip redundant calls.
+    /// Call auth-server `/auth/verify` with forwarded headers and cookies.
+    ///
+    /// Results are deliberately not cached: revocation, tenant suspension, and
+    /// MFA state must be observed on the next request. Degraded JWT fallback is
+    /// still opt-in and is only attempted after an online transport/5xx error.
     /// `client_ip` is the resolved real client IP, forwarded as X-Real-IP so
     /// the auth proxy can apply IP-based rules (e.g. local network bypass).
     pub async fn check(
@@ -331,18 +286,29 @@ impl VoltaAuthClient {
         // API を叩く用途にしか使えていなかった。
         bearer: Option<&str>,
     ) -> AuthResult {
-        // #33: Auth cache lookup
-        let cache_key = auth_cache_key(
-            cookie, host, uri, proto, app_id, min_role, client_ip, bearer,
-        );
-        {
-            let cache = self.auth_cache.lock().unwrap();
-            if let Some(entry) = cache.get(&cache_key) {
-                if entry.created.elapsed() < self.cache_ttl {
-                    return entry.result.clone();
-                }
-            }
-        }
+        self.check_with_degraded_policy(
+            host, uri, proto, cookie, app_id, min_role, client_ip, bearer, true,
+        )
+        .await
+    }
+
+    /// Same as [`Self::check`], but allows security-sensitive callers to deny
+    /// degraded JWT fallback even when it is globally enabled. Role-gated
+    /// routes use this because a locally valid JWT cannot prove current role,
+    /// suspension, revocation, or MFA state while auth-server is unavailable.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn check_with_degraded_policy(
+        &self,
+        host: &str,
+        uri: &str,
+        proto: &str,
+        cookie: Option<&str>,
+        app_id: Option<&str>,
+        min_role: Option<&str>,
+        client_ip: Option<&str>,
+        bearer: Option<&str>,
+        allow_degraded_fallback: bool,
+    ) -> AuthResult {
 
         let url = format!("{}{}", self.base_url, self.verify_path);
 
@@ -431,28 +397,12 @@ impl VoltaAuthClient {
         // DD-005 縮退運転: auth-server がダウン（timeout/5xx → AuthResult::Error）した場合、
         // degraded_mode が有効かつ有効なセッション JWT を持つリクエストだけ in-process 検証で通す。
         // JWT 無し/期限切れ/検証失敗は従来通り fail-closed（Error を維持）。
-        let auth_result = match auth_result {
-            AuthResult::Error(msg) => self.degraded_fallback(host, cookie, msg).await,
-            other => other,
-        };
-
-        // #33: Cache successful auth results (5s TTL)
-        if matches!(auth_result, AuthResult::Authenticated(_)) {
-            let mut cache = self.auth_cache.lock().unwrap();
-            cache.insert(
-                cache_key,
-                AuthCacheEntry {
-                    result: auth_result.clone(),
-                    created: Instant::now(),
-                },
-            );
-            // GC: remove expired entries (simple cap)
-            if cache.len() > 10_000 {
-                cache.retain(|_, e| e.created.elapsed() < self.cache_ttl);
+        match auth_result {
+            AuthResult::Error(msg) if allow_degraded_fallback => {
+                self.degraded_fallback(host, cookie, msg).await
             }
+            other => other,
         }
-
-        auth_result
     }
 
     /// Health check — is volta alive?
@@ -531,47 +481,10 @@ mod degraded_tests {
             jwt_issuer: None,
             jwt_audience: None,
             gateway_assertion_secret: None,
+            gateway_assertion_key_id: None,
+            gateway_assertion_previous_key_id: None,
+            gateway_assertion_previous_secret: None,
         }
-    }
-
-    #[test]
-    fn auth_cache_key_separates_uri_and_client_ip() {
-        let base = auth_cache_key(
-            Some("session=s"),
-            "app.test",
-            "/public",
-            "https",
-            Some("app"),
-            Some("MEMBER"),
-            Some("192.0.2.1"),
-            None,
-        );
-        assert_ne!(
-            base,
-            auth_cache_key(
-                Some("session=s"),
-                "app.test",
-                "/admin",
-                "https",
-                Some("app"),
-                Some("MEMBER"),
-                Some("192.0.2.1"),
-                None,
-            )
-        );
-        assert_ne!(
-            base,
-            auth_cache_key(
-                Some("session=s"),
-                "app.test",
-                "/public",
-                "https",
-                Some("app"),
-                Some("MEMBER"),
-                Some("192.0.2.2"),
-                None,
-            )
-        );
     }
 
     /// Build a client with degraded_mode forced to a known value (bypasses env).
@@ -676,6 +589,30 @@ mod degraded_tests {
             matches!(r, AuthResult::Authenticated(_)),
             "valid session must survive auth-server outage"
         );
+    }
+
+    #[tokio::test]
+    async fn security_sensitive_check_never_uses_degraded_jwt() {
+        let c = client(true);
+        let cookie = valid_cookie();
+        let r = c
+            .check_with_degraded_policy(
+                "h",
+                "/admin",
+                "https",
+                Some(&cookie),
+                None,
+                Some("MEMBER"),
+                None,
+                None,
+                false,
+            )
+            .await;
+        assert!(
+            matches!(r, AuthResult::Error(_)),
+            "role/suspension/MFA-sensitive routes must remain fail-closed"
+        );
+        assert_eq!(c.degraded_total(), 0);
     }
 
     #[tokio::test]
@@ -904,90 +841,6 @@ mod degraded_tests {
         assert!(
             matches!(r, AuthResult::Authenticated(_)),
             "HS256 token must still verify when RS256 is also configured"
-        );
-    }
-}
-
-#[cfg(test)]
-mod cache_key_tests {
-    use super::auth_cache_key as full_auth_cache_key;
-
-    fn auth_cache_key(
-        cookie: Option<&str>,
-        host: &str,
-        app_id: Option<&str>,
-        min_role: Option<&str>,
-        bearer: Option<&str>,
-    ) -> u64 {
-        full_auth_cache_key(cookie, host, "/", "https", app_id, min_role, None, bearer)
-    }
-
-    /// 一時アクセスで最も踏みやすい穴の回帰テスト。
-    ///
-    /// キャッシュキーに Bearer を混ぜ忘れると:
-    ///   ① トークン保持者が `GET /` を叩く → 認証OK がキー (cookie="", host, …) で保存
-    ///   ② 無関係の他人が `GET /` を叩く   → 同じキーに当たって **そのまま通る**
-    ///
-    /// 一時公開のつもりが恒久的な全公開になる。
-    #[test]
-    fn bearer_holder_and_anonymous_do_not_share_a_key() {
-        let with = auth_cache_key(None, "h", None, None, Some("tok-abc"));
-        let without = auth_cache_key(None, "h", None, None, None);
-        assert_ne!(
-            with, without,
-            "トークン保持者と未提示の匿名が同じキーを共有してはいけない"
-        );
-    }
-
-    #[test]
-    fn different_bearers_do_not_share_a_key() {
-        let a = auth_cache_key(None, "h", None, None, Some("tok-a"));
-        let b = auth_cache_key(None, "h", None, None, Some("tok-b"));
-        assert_ne!(a, b, "別のトークンの判定結果を使い回してはいけない");
-    }
-
-    #[test]
-    fn same_credentials_share_a_key() {
-        // 混ぜすぎてキャッシュが効かなくなっていないこと。
-        // AI エージェントは同じトークンで大量に叩くので、ここが効かないと
-        // auth-server への往復が毎回発生する。
-        let a = auth_cache_key(Some("c"), "h", Some("app"), Some("MEMBER"), Some("t"));
-        let b = auth_cache_key(Some("c"), "h", Some("app"), Some("MEMBER"), Some("t"));
-        assert_eq!(a, b);
-    }
-
-    #[test]
-    fn every_credential_dimension_changes_the_key() {
-        let base = auth_cache_key(Some("c"), "h", Some("app"), Some("MEMBER"), Some("t"));
-        assert_ne!(
-            base,
-            auth_cache_key(Some("c2"), "h", Some("app"), Some("MEMBER"), Some("t"))
-        );
-        assert_ne!(
-            base,
-            auth_cache_key(Some("c"), "h2", Some("app"), Some("MEMBER"), Some("t"))
-        );
-        assert_ne!(
-            base,
-            auth_cache_key(Some("c"), "h", Some("app2"), Some("MEMBER"), Some("t"))
-        );
-        assert_ne!(
-            base,
-            auth_cache_key(Some("c"), "h", Some("app"), Some("ADMIN"), Some("t"))
-        );
-        assert_ne!(
-            base,
-            auth_cache_key(Some("c"), "h", Some("app"), Some("MEMBER"), Some("t2"))
-        );
-    }
-
-    #[test]
-    fn none_and_empty_string_are_equivalent() {
-        // Some("") で来ても None と同じ扱いになること（呼び出し側が filter して
-        // いるが、片方だけ通ると鍵が割れて無駄にキャッシュミスする）。
-        assert_eq!(
-            auth_cache_key(None, "h", None, None, None),
-            auth_cache_key(Some(""), "h", Some(""), Some(""), Some("")),
         );
     }
 }

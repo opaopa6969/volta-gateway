@@ -335,6 +335,14 @@ pub struct AuthConfig {
     /// `VOLTA_GATEWAY_ASSERTION_SECRET` overrides this value when non-empty.
     #[serde(default)]
     pub gateway_assertion_secret: Option<String>,
+    /// Identifier emitted with assertions signed by the current key.
+    #[serde(default)]
+    pub gateway_assertion_key_id: Option<String>,
+    /// Previous key accepted by consumers during a bounded rotation window.
+    #[serde(default)]
+    pub gateway_assertion_previous_key_id: Option<String>,
+    #[serde(default)]
+    pub gateway_assertion_previous_secret: Option<String>,
 }
 
 impl AuthConfig {
@@ -361,6 +369,31 @@ impl AuthConfig {
             .as_ref()
             .filter(|secret| !secret.is_empty())
             .cloned()
+    }
+
+    pub fn effective_gateway_assertion_key_id(&self) -> String {
+        std::env::var("VOLTA_GATEWAY_ASSERTION_KEY_ID")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                self.gateway_assertion_key_id
+                    .as_ref()
+                    .filter(|value| !value.is_empty())
+                    .cloned()
+            })
+            .unwrap_or_else(|| crate::assertion::LEGACY_KEY_ID.into())
+    }
+
+    pub fn effective_gateway_assertion_previous(&self) -> (Option<String>, Option<String>) {
+        let key_id = std::env::var("VOLTA_GATEWAY_ASSERTION_PREVIOUS_KEY_ID")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .or_else(|| self.gateway_assertion_previous_key_id.clone());
+        let secret = std::env::var("VOLTA_GATEWAY_ASSERTION_PREVIOUS_SECRET")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .or_else(|| self.gateway_assertion_previous_secret.clone());
+        (key_id, secret)
     }
 
     /// Resolve the RS256 public-key PEM bytes from `jwt_public_key_pem`, which
@@ -739,6 +772,7 @@ impl GatewayConfig {
             }
         }
         let assertion_secret = self.auth.effective_gateway_assertion_secret();
+        let assertion_key_id = self.auth.effective_gateway_assertion_key_id();
         if let Some(secret) = &assertion_secret {
             if secret.len() < crate::assertion::MIN_SECRET_LEN {
                 errors.push((
@@ -749,6 +783,56 @@ impl GatewayConfig {
                     ),
                 ));
             }
+            if let Err(error) = crate::assertion::validate_key_id(&assertion_key_id) {
+                errors.push((
+                    Self::EXIT_SCHEMA,
+                    format!("invalid gateway assertion current key ID: {error}"),
+                ));
+            }
+        } else if self.auth.gateway_assertion_key_id.is_some()
+            || std::env::var("VOLTA_GATEWAY_ASSERTION_KEY_ID").is_ok()
+        {
+            errors.push((
+                Self::EXIT_SCHEMA,
+                "gateway assertion key ID requires a current assertion secret".into(),
+            ));
+        }
+        let (previous_key_id, previous_secret) = self.auth.effective_gateway_assertion_previous();
+        match (&previous_key_id, &previous_secret) {
+            (Some(key_id), Some(secret)) => {
+                if assertion_secret.is_none() {
+                    errors.push((
+                        Self::EXIT_SCHEMA,
+                        "previous gateway assertion key requires a current key".into(),
+                    ));
+                }
+                if secret.len() < crate::assertion::MIN_SECRET_LEN {
+                    errors.push((
+                        Self::EXIT_SCHEMA,
+                        format!(
+                            "previous gateway assertion secret must be at least {} bytes",
+                            crate::assertion::MIN_SECRET_LEN
+                        ),
+                    ));
+                }
+                if let Err(error) = crate::assertion::validate_key_id(key_id) {
+                    errors.push((
+                        Self::EXIT_SCHEMA,
+                        format!("invalid gateway assertion previous key ID: {error}"),
+                    ));
+                }
+                if key_id == &assertion_key_id {
+                    errors.push((
+                        Self::EXIT_SCHEMA,
+                        "current and previous gateway assertion key IDs must differ".into(),
+                    ));
+                }
+            }
+            (None, None) => {}
+            _ => errors.push((
+                Self::EXIT_SCHEMA,
+                "previous gateway assertion key ID and secret must be configured together".into(),
+            )),
         }
         if self.plugins.iter().any(|plugin| plugin.name == "monetizer")
             && assertion_secret.is_none()
@@ -1289,6 +1373,57 @@ routing:
         let cfg: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
         let errs = cfg.validate().unwrap_err();
         assert!(errs.iter().any(|e| e.contains("no backends")));
+    }
+
+    #[test]
+    fn validate_accepts_gateway_assertion_dual_key_rotation() {
+        let yaml = r#"
+server:
+  port: 8080
+auth:
+  volta_url: "http://localhost:7070"
+  gateway_assertion_key_id: "2026-09"
+  gateway_assertion_secret: "current-current-current-current-1234"
+  gateway_assertion_previous_key_id: "2026-08"
+  gateway_assertion_previous_secret: "previous-previous-previous-prev-1234"
+routing:
+  - host: "example.com"
+    backend: "http://a:3000"
+"#;
+        let cfg: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_incomplete_or_ambiguous_assertion_rotation() {
+        let incomplete = r#"
+server: { port: 8080 }
+auth:
+  volta_url: "http://localhost:7070"
+  gateway_assertion_key_id: "2026-09"
+  gateway_assertion_secret: "current-current-current-current-1234"
+  gateway_assertion_previous_key_id: "2026-08"
+routing:
+  - host: "example.com"
+    backend: "http://a:3000"
+"#;
+        let cfg: GatewayConfig = serde_yaml::from_str(incomplete).unwrap();
+        assert!(cfg
+            .validate()
+            .unwrap_err()
+            .iter()
+            .any(|error| error.contains("configured together")));
+
+        let duplicate_id = incomplete.replace(
+            "gateway_assertion_previous_key_id: \"2026-08\"",
+            "gateway_assertion_previous_key_id: \"2026-09\"\n  gateway_assertion_previous_secret: \"previous-previous-previous-prev-1234\"",
+        );
+        let cfg: GatewayConfig = serde_yaml::from_str(&duplicate_id).unwrap();
+        assert!(cfg
+            .validate()
+            .unwrap_err()
+            .iter()
+            .any(|error| error.contains("must differ")));
     }
 
     #[test]
