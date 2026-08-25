@@ -1,0 +1,31 @@
+server:
+  port: 8185
+  read_timeout_secs: 10
+  request_timeout_secs: 30
+
+auth:
+  volta_url: http://localhost:7070
+  verify_path: /auth/verify
+  timeout_ms: 500
+  pool_max_idle: 32
+
+routing:
+  # E2E test: volta-auth-proxy is both auth provider AND backend
+  - host: localhost
+    backend: http://localhost:7070
+    app_id: app-volta
+
+  - host: console.unlaxer.org
+    backend: http://localhost:3001
+    app_id: app-console
+
+rate_limit:
+  requests_per_second: 100
+
+healthcheck:
+  interval_secs: 30
+  path: /healthz
+
+logging:
+  level: info
+  format: json
