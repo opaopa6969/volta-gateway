@@ -107,7 +107,7 @@ pub async fn serve_tls(
                     if req.uri().path() == "/metrics" {
                         // DD-005 縮退運転: auth フォールバック発動回数を追加で公開。
                         let body = format!(
-                            "{}# HELP auth_degraded_total Auth degraded-mode fallbacks (auth-proxy down, served via in-process JWT)\n# TYPE auth_degraded_total counter\nauth_degraded_total {}\n",
+                            "{}# HELP auth_degraded_total Auth degraded-mode fallbacks (auth-server down, served via in-process JWT)\n# TYPE auth_degraded_total counter\nauth_degraded_total {}\n",
                             metrics.render(),
                             volta_health.degraded_total(),
                         );

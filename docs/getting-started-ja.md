@@ -3,17 +3,16 @@
 # volta-gateway Getting Started (日本語)
 
 `git clone` から実際にリクエストが通るところまでを 1 つの端末で完結する手順。
-3 つの構成を扱う:
+Rustによる2つの構成を扱う:
 
-1. **Gateway + Java auth-proxy** (旧構成)
-2. **Gateway + Rust auth-server** (推奨構成)
-3. **統合バイナリ `volta-bin`** (gateway + auth-core in-process、HTTP ホップ 0)
+1. **Gateway + Rust auth-server** (サポートする本番構成)
+2. **統合バイナリ `volta-bin`** (gateway + auth-core in-process 検証)
 
 ## 0. 前提
 
 - Rust 1.75+ (edition 2021)
 - PostgreSQL 13+ (auth-core 機能使用時)
-- Docker (任意 — 統合テスト / Java sidecar 起動用)
+- Docker (任意 — 統合テスト用)
 - 任意の HTTP バックエンド。無ければ同梱の `mock_backend` を使う
 
 ## 1. Clone & build
@@ -37,7 +36,7 @@ server:
   port: 8080
 
 auth:
-  volta_url: http://localhost:7070   # auth-server または Java auth-proxy
+  volta_url: http://localhost:7070   # Rust auth-server
   timeout_ms: 500                    # fail-closed: 認証側ダウン → 502
 
 routing:
@@ -76,8 +75,8 @@ curl -H "Host: app.localhost" http://localhost:8080/api/hi
 
 ## 4. 本物の auth-server (Rust) に切り替え
 
-`auth-server` は Java と 1:1 互換の Axum サービス ([`parity-ja.md`](parity-ja.md))。
-PostgreSQL 必須。
+`auth-server` は正となるRust製の認証サービス。PostgreSQL 必須。
+旧実装との対比表は[履歴追跡用](parity-ja.md)としてのみ残す。
 
 ```bash
 # Postgres 起動
@@ -114,9 +113,10 @@ auth:
   cookie_name: volta_session
 ```
 
-このモードでは 126 本のルート (login, MFA, etc.) は**公開しない**。
-既存セッションの**検証のみ**。完全なフローが必要なら `auth-server` を別途
-立てるか、移行期は Java sidecar を併置する。
+このモードでは認証ルート (login, MFA, etc.) は**公開しない**。
+既存セッションの**検証のみ**。完全なフローには `auth-server` を別途立てる。
+ローカルJWT検証は明示的な縮退運転用であり、通常時のオンライン認可を暗黙に
+置き換えてはならない。
 
 ## 6. パブリックルート、CORS、ロードバランシング
 

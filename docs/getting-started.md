@@ -3,17 +3,16 @@
 # Getting Started with volta-gateway
 
 This guide walks you from `git clone` to a working request through the
-gateway. The whole loop fits in one terminal, and it covers three layouts:
+gateway. The whole loop fits in one terminal, and it covers two Rust layouts:
 
-1. **Gateway + Java auth-proxy** (legacy topology).
-2. **Gateway + Rust auth-server** (replacement topology — recommended).
-3. **Unified `volta-bin`** (gateway + auth-core in-process, no HTTP roundtrip).
+1. **Gateway + Rust auth-server** (supported production topology).
+2. **Unified `volta-bin`** (gateway + auth-core in-process verification).
 
 ## 0. Prerequisites
 
 - Rust 1.75+ (edition 2021)
 - PostgreSQL 13+ (for auth-core features)
-- Docker (optional — for integration tests and the `volta-auth-proxy` sidecar)
+- Docker (optional — for integration tests)
 - A backend HTTP service to route to. If you don't have one, use the
   `mock_backend` example shipped with the repo.
 
@@ -38,7 +37,7 @@ server:
   port: 8080
 
 auth:
-  volta_url: http://localhost:7070   # auth-server (or Java auth-proxy)
+  volta_url: http://localhost:7070   # Rust auth-server
   timeout_ms: 500                    # fail-closed: auth down → 502
 
 routing:
@@ -78,8 +77,8 @@ Forwarded → Completed) with `durationMicros` for each hop.
 
 ## 4. Swap to the real auth-server (Rust)
 
-`auth-server` is the Java-parity Axum service (see [`parity.md`](parity.md)).
-It needs PostgreSQL.
+`auth-server` is the authoritative Rust identity service. It needs PostgreSQL.
+The old parity table is retained only as [historical traceability](parity.md).
 
 ```bash
 # Start Postgres
@@ -116,9 +115,10 @@ auth:
   cookie_name: volta_session
 ```
 
-This mode does **not** expose the 126 routes (login, MFA, etc.) — it only
+This mode does **not** expose the identity routes (login, MFA, etc.) — it only
 *verifies* existing sessions. Pair it with an `auth-server` instance for the
-full flow, or keep the Java sidecar during migration.
+full flow. Local JWT verification is an explicit degraded-mode fallback; it
+must not silently replace online authorization in normal operation.
 
 ## 6. Public routes, CORS, load balancing
 

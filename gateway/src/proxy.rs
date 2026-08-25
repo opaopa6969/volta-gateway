@@ -102,6 +102,18 @@ pub struct RouteInfo {
 /// host → RouteInfo
 pub type RoutingTable = HashMap<String, RouteInfo>;
 
+/// Match an auth-bypass prefix at a path-segment boundary.
+pub fn bypass_path_matches(path: &str, prefix: &str) -> bool {
+    if path == prefix {
+        return true;
+    }
+    if prefix.ends_with('/') {
+        return path.starts_with(prefix);
+    }
+    path.strip_prefix(prefix)
+        .is_some_and(|remainder| remainder.starts_with('/'))
+}
+
 /// Round-robin backend selector with health-aware routing.
 /// Dead backends are skipped. Health is tracked per-backend URL.
 #[derive(Clone)]
@@ -516,14 +528,26 @@ pub struct ProxyService {
     pub metrics: Arc<crate::metrics::Metrics>,
     pub plugin_manager: Arc<crate::plugin::PluginManager>,
     pub response_cache: crate::cache::ResponseCache,
+    assertion_signer: Option<crate::assertion::GatewayAssertionSigner>,
 }
 
 impl ProxyService {
+    #[allow(dead_code)]
     pub fn new(
         volta: VoltaAuthClient,
         hot: Arc<ArcSwap<HotState>>,
         metrics: Arc<crate::metrics::Metrics>,
         plugin_manager: Arc<crate::plugin::PluginManager>,
+    ) -> Self {
+        Self::new_with_assertion(volta, hot, metrics, plugin_manager, None)
+    }
+
+    pub fn new_with_assertion(
+        volta: VoltaAuthClient,
+        hot: Arc<ArcSwap<HotState>>,
+        metrics: Arc<crate::metrics::Metrics>,
+        plugin_manager: Arc<crate::plugin::PluginManager>,
+        assertion_signer: Option<crate::assertion::GatewayAssertionSigner>,
     ) -> Self {
         let backend_client = Client::builder(TokioExecutor::new())
             .pool_max_idle_per_host(64)
@@ -542,6 +566,7 @@ impl ProxyService {
             backend_selector: BackendSelector::new(),
             circuit_breaker: CircuitBreaker::new(5, 30),
             response_cache: crate::cache::ResponseCache::new(10_000),
+            assertion_signer,
         }
     }
 
@@ -814,7 +839,7 @@ impl ProxyService {
         let bypass_match = route_info.as_ref().and_then(|r| {
             r.bypass_paths
                 .iter()
-                .find(|bp| uri_path.starts_with(&bp.prefix))
+                .find(|bp| bypass_path_matches(&uri_path, &bp.prefix))
                 .cloned()
         });
         let skip_auth = is_public || bypass_match.is_some();
@@ -869,6 +894,52 @@ impl ProxyService {
             }
         };
 
+        if let Some(min_role) = route_info
+            .as_ref()
+            .and_then(|route| route.min_role.as_deref())
+        {
+            if skip_auth {
+                warn!(state = "DENIED", host = %host, min_role = %min_role, "min_role cannot be combined with auth bypass");
+                return error_response_with_pages(
+                    StatusCode::FORBIDDEN,
+                    &request_id,
+                    &hot.error_pages,
+                );
+            } else {
+                let required = min_role.trim().to_ascii_uppercase();
+                let policy = volta_auth_core::policy::PolicyEngine::default_policy();
+                if !policy.hierarchy().iter().any(|role| role == &required) {
+                    warn!(state = "DENIED", host = %host, min_role = %min_role, "invalid dynamic min_role");
+                    return error_response_with_pages(
+                        StatusCode::FORBIDDEN,
+                        &request_id,
+                        &hot.error_pages,
+                    );
+                }
+                let roles: Vec<String> = volta_headers
+                    .get("x-volta-roles")
+                    .map(|value| {
+                        value
+                            .split(',')
+                            .map(|role| role.trim().to_ascii_uppercase())
+                            .filter(|role| !role.is_empty())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if !matches!(
+                    policy.enforce_min_role(&roles, &required),
+                    volta_auth_core::policy::PolicyResult::Allow
+                ) {
+                    info!(state = "DENIED", host = %host, min_role = %required, "minimum role not satisfied");
+                    return error_response_with_pages(
+                        StatusCode::FORBIDDEN,
+                        &request_id,
+                        &hot.error_pages,
+                    );
+                }
+            }
+        }
+
         // ─── SM Phase 2: resume with auth data (sync) ───────
         {
             let mut eng = engine.lock().unwrap();
@@ -889,11 +960,12 @@ impl ProxyService {
         }
 
         // ─── Plugin: request phase ──────────────────────────
-        {
+        let (plugin_add_headers, plugin_remove_headers) = {
             // GW-60: Merge volta_headers into plugin context so plugins can access X-Volta-*
             let mut plugin_headers: HashMap<String, String> = req
                 .headers()
                 .iter()
+                .filter(|(k, _)| !k.as_str().starts_with("x-volta-"))
                 .filter_map(|(k, v)| {
                     v.to_str()
                         .ok()
@@ -925,7 +997,8 @@ impl ProxyService {
                     .body(resp_body.map_err(|e| match e {}).boxed())
                     .unwrap();
             }
-        }
+            (plugin_ctx.add_headers, plugin_ctx.remove_headers)
+        };
 
         // ─── #10: Geo-based access control (CF-IPCountry) ────
         if let Some(ri) = route_info.as_ref() {
@@ -954,7 +1027,13 @@ impl ProxyService {
 
         // ─── Cache lookup (#8) ──────────────────────────────
         let cache_config = route_info.as_ref().and_then(|r| r.cache.as_ref());
-        let cache_enabled = cache_config.map(|c| c.enabled).unwrap_or(false);
+        // Route cache is shared across callers, so it is restricted to routes
+        // that skip authentication for every request. Keep this runtime guard
+        // even though static config validation enforces the same invariant:
+        // dynamic config sources and hot reloads must also fail safe.
+        let cache_enabled = is_public
+            && crate::cache::is_shared_cache_request(req.headers())
+            && cache_config.map(|c| c.enabled).unwrap_or(false);
         let cache_method_ok = cache_config
             .map(|c| {
                 c.methods
@@ -1045,6 +1124,10 @@ impl ProxyService {
             .and_then(|r| r.request_headers.as_ref())
             .map(|rh| rh.remove.iter().map(|s| s.to_lowercase()).collect())
             .unwrap_or_default();
+        let plugin_remove_headers: Vec<String> = plugin_remove_headers
+            .into_iter()
+            .map(|name| name.to_ascii_lowercase())
+            .collect();
         // #48: Strip client X-Volta-* (forgery prevention) + #53: hop-by-hop headers
         const HOP_BY_HOP: &[&str] = &[
             "connection",
@@ -1055,13 +1138,23 @@ impl ProxyService {
             "trailer",
             "transfer-encoding",
         ];
+        const CLIENT_IP_HEADERS: &[&str] = &[
+            "forwarded",
+            "x-forwarded-for",
+            "x-forwarded-host",
+            "x-forwarded-proto",
+            "x-real-ip",
+            "cf-connecting-ip",
+        ];
         let req_headers: Vec<_> = req
             .headers()
             .iter()
             .filter(|(name, _)| *name != "host")
             .filter(|(name, _)| !name.as_str().starts_with("x-volta-"))
             .filter(|(name, _)| !HOP_BY_HOP.contains(&name.as_str()))
+            .filter(|(name, _)| !CLIENT_IP_HEADERS.contains(&name.as_str()))
             .filter(|(name, _)| !remove_headers.contains(&name.as_str().to_string()))
+            .filter(|(name, _)| !plugin_remove_headers.contains(&name.as_str().to_string()))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
@@ -1079,10 +1172,10 @@ impl ProxyService {
                 .and_then(|v| v.to_str().ok())
             {
                 Some(existing) => format!("{}, {}", existing, client_ip),
-                None => client_ip,
+                None => client_ip.clone(),
             }
         } else {
-            client_ip // ignore client-supplied XFF
+            client_ip.clone() // ignore client-supplied XFF
         };
 
         let is_idempotent = matches!(req_method.as_str(), "GET" | "HEAD" | "OPTIONS");
@@ -1097,8 +1190,14 @@ impl ProxyService {
         for (key, value) in &volta_headers {
             backend_req = backend_req.header(key.as_str(), value.as_str());
         }
+        for (key, value) in &plugin_add_headers {
+            if !key.to_ascii_lowercase().starts_with("x-volta-") {
+                backend_req = backend_req.header(key.as_str(), value.as_str());
+            }
+        }
         backend_req = backend_req
             .header("X-Request-Id", &request_id)
+            .header("X-Real-IP", &client_ip)
             .header("X-Forwarded-For", &xff)
             .header("X-Forwarded-Host", &host)
             .header("X-Forwarded-Proto", proto)
@@ -1108,9 +1207,33 @@ impl ProxyService {
         if let Some(ri) = route_info.as_ref() {
             if let Some(ref rh) = ri.request_headers {
                 for (name, value) in &rh.add {
-                    backend_req = backend_req.header(name.as_str(), value.as_str());
+                    if !name.to_ascii_lowercase().starts_with("x-volta-") {
+                        backend_req = backend_req.header(name.as_str(), value.as_str());
+                    }
                 }
             }
+        }
+
+        if let Some(signer) = &self.assertion_signer {
+            let assertion = signer.sign_now(
+                req_method.as_str(),
+                &path_and_query,
+                volta_headers
+                    .get("x-volta-user-id")
+                    .map(String::as_str)
+                    .unwrap_or(""),
+                volta_headers
+                    .get("x-volta-tenant-id")
+                    .map(String::as_str)
+                    .unwrap_or(""),
+                volta_headers
+                    .get("x-volta-roles")
+                    .map(String::as_str)
+                    .unwrap_or(""),
+            );
+            backend_req = backend_req
+                .header(crate::assertion::TIMESTAMP_HEADER, assertion.timestamp)
+                .header(crate::assertion::SIGNATURE_HEADER, assertion.signature);
         }
 
         let backend_req = match backend_req.body(req.into_body()) {
@@ -1153,11 +1276,38 @@ impl ProxyService {
                 for (key, value) in &volta_headers {
                     retry_req = retry_req.header(key.as_str(), value.as_str());
                 }
+                for (key, value) in &plugin_add_headers {
+                    if !key.to_ascii_lowercase().starts_with("x-volta-") {
+                        retry_req = retry_req.header(key.as_str(), value.as_str());
+                    }
+                }
                 retry_req = retry_req
                     .header("X-Request-Id", &request_id)
+                    .header("X-Real-IP", &client_ip)
                     .header("X-Forwarded-For", &xff)
                     .header("X-Forwarded-Host", &host)
                     .header("X-Forwarded-Proto", proto);
+                if let Some(signer) = &self.assertion_signer {
+                    let assertion = signer.sign_now(
+                        req_method.as_str(),
+                        &path_and_query,
+                        volta_headers
+                            .get("x-volta-user-id")
+                            .map(String::as_str)
+                            .unwrap_or(""),
+                        volta_headers
+                            .get("x-volta-tenant-id")
+                            .map(String::as_str)
+                            .unwrap_or(""),
+                        volta_headers
+                            .get("x-volta-roles")
+                            .map(String::as_str)
+                            .unwrap_or(""),
+                    );
+                    retry_req = retry_req
+                        .header(crate::assertion::TIMESTAMP_HEADER, assertion.timestamp)
+                        .header(crate::assertion::SIGNATURE_HEADER, assertion.signature);
+                }
                 let retry_req = retry_req.body(Empty::<Bytes>::new()).unwrap();
                 tokio::time::timeout(
                     std::time::Duration::from_secs(30),
@@ -1460,12 +1610,10 @@ impl ProxyService {
                 }
 
                 // Cache store
-                let cache_control = parts
-                    .headers
-                    .get("cache-control")
-                    .and_then(|v| v.to_str().ok());
                 let max_body = cache_config.map(|c| c.max_body_size).unwrap_or(10_485_760);
-                if crate::cache::is_cacheable(cache_control) && body_bytes.len() <= max_body {
+                if crate::cache::is_response_cacheable(&parts.headers)
+                    && body_bytes.len() <= max_body
+                {
                     let ttl = std::time::Duration::from_secs(
                         cache_config.map(|c| c.ttl_secs).unwrap_or(300),
                     );

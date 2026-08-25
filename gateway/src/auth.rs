@@ -108,12 +108,12 @@ pub struct VoltaAuthClient {
     /// #33: Short-lived auth cache (cookie hash → result). TTL = 5s.
     auth_cache: Arc<Mutex<HashMap<u64, AuthCacheEntry>>>,
     cache_ttl: Duration,
-    /// DD-005 Phase 0: In-process JWT session verifier (optional).
+    /// DD-005: In-process JWT session verifier for degraded fallback (optional).
     /// RS256(jwks/pem) → HS256(secret) chain, keyed off the session cookie.
     session_verifier: Option<SessionMultiVerifier>,
     /// #51: Public-facing auth URL for redirect allowlist (e.g. https://auth.example.com).
     auth_public_url: Option<String>,
-    /// DD-005 縮退運転: auth-proxy ダウン時に in-process JWT 検証へフォールバックする。
+    /// DD-005 縮退運転: auth-server ダウン時に in-process JWT 検証へフォールバックする。
     /// デフォルト off（fail-closed のまま）。env `VOLTA_AUTH_DEGRADED_MODE=true` で opt-in。
     degraded_mode: bool,
     /// 縮退フォールバック発動回数（メトリクス auth_degraded_total）。
@@ -134,8 +134,11 @@ pub struct VoltaAuthClient {
 fn auth_cache_key(
     cookie: Option<&str>,
     host: &str,
+    uri: &str,
+    proto: &str,
     app_id: Option<&str>,
     min_role: Option<&str>,
+    client_ip: Option<&str>,
     bearer: Option<&str>,
 ) -> u64 {
     use std::collections::hash_map::DefaultHasher;
@@ -143,8 +146,11 @@ fn auth_cache_key(
     let mut h = DefaultHasher::new();
     cookie.unwrap_or("").hash(&mut h);
     host.hash(&mut h);
+    uri.hash(&mut h);
+    proto.hash(&mut h);
     app_id.unwrap_or("").hash(&mut h);
     min_role.unwrap_or("").hash(&mut h);
+    client_ip.unwrap_or("").hash(&mut h);
     bearer.unwrap_or("").hash(&mut h);
     h.finish()
 }
@@ -156,7 +162,7 @@ impl VoltaAuthClient {
             .build_http();
 
         // DD-005: Build the in-process verifier chain (RS256 jwks/pem → HS256).
-        // auth-proxy issues RS256 (iss=volta-auth, aud=volta-apps); HS256 stays
+        // auth-server issues RS256 (iss=volta-auth, aud=volta-apps); HS256 stays
         // as a backward-compat fallback when a shared secret is configured.
         let cookie_name = config.cookie_name.as_deref().unwrap_or("__volta_session");
         let mut builder = MultiVerifier::builder();
@@ -221,9 +227,9 @@ impl VoltaAuthClient {
         if degraded_mode {
             if session_verifier.is_some() {
                 tracing::warn!(
-                    "auth degraded mode ENABLED: on auth-proxy failure, requests with a valid \
+                    "auth degraded mode ENABLED: on auth-server failure, requests with a valid \
                      in-process-verifiable session JWT will be allowed (existing sessions only; \
-                     new logins still require auth-proxy)"
+                     new logins still require auth-server)"
                 );
             } else {
                 tracing::warn!(
@@ -256,6 +262,9 @@ impl VoltaAuthClient {
     /// Spawn the JWKS background refresher when a `jwks_url` is configured.
     /// Call once at startup (after the tokio runtime is up). No-op otherwise.
     pub fn spawn_jwks_refresher(&self) {
+        if !self.degraded_mode {
+            return;
+        }
         if let Some(verifier) = self.session_verifier.as_ref() {
             if let Some(jwks) = verifier.jwks() {
                 tracing::info!(jwks_url = jwks.url(), "starting JWKS background refresher");
@@ -265,7 +274,7 @@ impl VoltaAuthClient {
     }
 
     /// DD-005 縮退運転のフォールバック判定。
-    /// auth-proxy 由来の `AuthResult::Error` を受け取り、
+    /// auth-server 由来の `AuthResult::Error` を受け取り、
     /// - degraded_mode off → そのまま fail-closed（Error を返す）
     /// - degraded_mode on + 有効セッション JWT → Authenticated（warn ログ + メトリクス）
     /// - degraded_mode on + JWT 無し/期限切れ/検証失敗 → fail-closed（Error を維持）
@@ -291,12 +300,12 @@ impl VoltaAuthClient {
                     host = %host,
                     auth_error = %err_msg,
                     auth_degraded_total = n,
-                    "auth degraded fallback: auth-proxy down, allowing request via in-process \
+                    "auth degraded fallback: auth-server down, allowing request via in-process \
                      session JWT verify (existing session)"
                 );
                 AuthResult::Authenticated(headers)
             }
-            // JWT 無し/期限切れ/検証失敗 → auth-proxy 無しでは新規認可できないため fail-closed。
+            // JWT 無し/期限切れ/検証失敗 → auth-server 無しでは新規認可できないため fail-closed。
             _ => AuthResult::Error(err_msg),
         }
     }
@@ -322,29 +331,10 @@ impl VoltaAuthClient {
         // API を叩く用途にしか使えていなかった。
         bearer: Option<&str>,
     ) -> AuthResult {
-        // DD-005 Phase 0: In-process JWT verify (skip HTTP roundtrip).
-        // async path → JWKS may force-refresh on a cold cache / kid miss.
-        if let Some(ref verifier) = self.session_verifier {
-            match verifier.verify_cookie_async(cookie).await {
-                SessionResult::Valid(headers) => {
-                    tracing::trace!(host = %host, "auth: in-process JWT verify OK");
-                    return AuthResult::Authenticated(headers);
-                }
-                SessionResult::Expired => {
-                    return AuthResult::Redirect("/login".into());
-                }
-                SessionResult::Invalid(e) => {
-                    tracing::debug!(host = %host, error = %e, "auth: JWT invalid, falling back to HTTP");
-                    // Fall through to HTTP verify — token may be in a format auth-core doesn't handle
-                }
-                SessionResult::NoSession => {
-                    // No session cookie — fall through to HTTP verify (may redirect to login)
-                }
-            }
-        }
-
         // #33: Auth cache lookup
-        let cache_key = auth_cache_key(cookie, host, app_id, min_role, bearer);
+        let cache_key = auth_cache_key(
+            cookie, host, uri, proto, app_id, min_role, client_ip, bearer,
+        );
         {
             let cache = self.auth_cache.lock().unwrap();
             if let Some(entry) = cache.get(&cache_key) {
@@ -438,7 +428,7 @@ impl VoltaAuthClient {
             Err(_) => AuthResult::Error("volta auth timeout".into()),
         };
 
-        // DD-005 縮退運転: auth-proxy がダウン（timeout/5xx → AuthResult::Error）した場合、
+        // DD-005 縮退運転: auth-server がダウン（timeout/5xx → AuthResult::Error）した場合、
         // degraded_mode が有効かつ有効なセッション JWT を持つリクエストだけ in-process 検証で通す。
         // JWT 無し/期限切れ/検証失敗は従来通り fail-closed（Error を維持）。
         let auth_result = match auth_result {
@@ -483,8 +473,8 @@ impl VoltaAuthClient {
     }
 }
 
-/// #51: Sanitize redirect URL — only allow relative paths or auth-proxy origin.
-/// Prevents open redirect attacks via compromised auth-proxy responses.
+/// #51: Sanitize redirect URL — only allow relative paths or auth-server origin.
+/// Prevents open redirect attacks via compromised auth-server responses.
 fn sanitize_redirect(url: &str, auth_public_url: Option<&str>) -> String {
     // Relative paths are always safe
     if url.starts_with('/') && !url.starts_with("//") {
@@ -540,7 +530,48 @@ mod degraded_tests {
             jwks_url: None,
             jwt_issuer: None,
             jwt_audience: None,
+            gateway_assertion_secret: None,
         }
+    }
+
+    #[test]
+    fn auth_cache_key_separates_uri_and_client_ip() {
+        let base = auth_cache_key(
+            Some("session=s"),
+            "app.test",
+            "/public",
+            "https",
+            Some("app"),
+            Some("MEMBER"),
+            Some("192.0.2.1"),
+            None,
+        );
+        assert_ne!(
+            base,
+            auth_cache_key(
+                Some("session=s"),
+                "app.test",
+                "/admin",
+                "https",
+                Some("app"),
+                Some("MEMBER"),
+                Some("192.0.2.1"),
+                None,
+            )
+        );
+        assert_ne!(
+            base,
+            auth_cache_key(
+                Some("session=s"),
+                "app.test",
+                "/public",
+                "https",
+                Some("app"),
+                Some("MEMBER"),
+                Some("192.0.2.2"),
+                None,
+            )
+        );
     }
 
     /// Build a client with degraded_mode forced to a known value (bypasses env).
@@ -630,9 +661,9 @@ mod degraded_tests {
         assert_eq!(c.degraded_total(), 0);
     }
 
-    // ── end-to-end via check(): auth-proxy unreachable ────────────
-    // jwt_secret 設定時、有効 JWT は Phase 0 の早期 in-process 検証で通る
-    // （auth-proxy ダウンに依存せず生存する）ことを確認。
+    // ── end-to-end via check(): auth-server unreachable ────────────
+    // In-process verification is only used after the online verifier fails and
+    // degraded_mode explicitly permits fallback.
 
     #[tokio::test]
     async fn check_valid_session_survives_proxy_down() {
@@ -643,14 +674,26 @@ mod degraded_tests {
             .await;
         assert!(
             matches!(r, AuthResult::Authenticated(_)),
-            "valid session must survive auth-proxy outage"
+            "valid session must survive auth-server outage"
+        );
+    }
+
+    #[tokio::test]
+    async fn check_valid_session_does_not_skip_online_verify_when_degraded_off() {
+        let c = client(false);
+        let cookie = valid_cookie();
+        let r = c
+            .check("h", "/", "https", Some(&cookie), None, None, None, None)
+            .await;
+        assert!(
+            matches!(r, AuthResult::Error(_)),
+            "a locally valid JWT must not bypass the online verifier"
         );
     }
 
     #[tokio::test]
     async fn check_no_session_proxy_down_fail_closed_when_off() {
         let c = client(false);
-        // クッキー無し → Phase 0 は NoSession で fall-through → HTTP 失敗 → degraded off → Error
         let r = c
             .check("h", "/", "https", None, None, None, None, None)
             .await;
@@ -767,7 +810,7 @@ mod degraded_tests {
         let mut c = VoltaAuthClient::new(&rs256_config());
         c.degraded_mode = true;
         let cookie = rs256_cookie(Some("volta-auth"), Some("volta-apps"));
-        // auth-proxy unreachable → Phase 0 in-process RS256 verify must pass.
+        // Online verifier is unreachable, so degraded fallback verifies RS256.
         let r = c
             .check("h", "/", "https", Some(&cookie), None, None, None, None)
             .await;
@@ -867,7 +910,17 @@ mod degraded_tests {
 
 #[cfg(test)]
 mod cache_key_tests {
-    use super::auth_cache_key;
+    use super::auth_cache_key as full_auth_cache_key;
+
+    fn auth_cache_key(
+        cookie: Option<&str>,
+        host: &str,
+        app_id: Option<&str>,
+        min_role: Option<&str>,
+        bearer: Option<&str>,
+    ) -> u64 {
+        full_auth_cache_key(cookie, host, "/", "https", app_id, min_role, None, bearer)
+    }
 
     /// 一時アクセスで最も踏みやすい穴の回帰テスト。
     ///

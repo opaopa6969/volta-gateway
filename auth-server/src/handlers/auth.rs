@@ -13,6 +13,7 @@ use crate::error::{no_cache_headers, ApiError};
 use crate::helpers::{
     clear_session_cookie, extract_session_id, is_json_accept, set_session_cookie,
 };
+use crate::local_bypass::PeerIp;
 use crate::state::AppState;
 use volta_auth_core::store::{
     MembershipStore, MfaStore, PasskeyStore, SessionStepUpStore, SessionStore, TenantStore,
@@ -53,7 +54,12 @@ async fn publish_logout_event(state: &AppState, session_id: &str) {
 ///
 /// The bypass only fires when there is no session so that authenticated LAN
 /// users still get their real user headers and MFA enforcement.
-pub async fn verify(State(state): State<AppState>, headers: HeaderMap, jar: CookieJar) -> Response {
+pub async fn verify(
+    State(state): State<AppState>,
+    PeerIp(peer_ip): PeerIp,
+    headers: HeaderMap,
+    jar: CookieJar,
+) -> Response {
     let forwarded_host = headers
         .get("x-forwarded-host")
         .and_then(|v| v.to_str().ok());
@@ -381,7 +387,7 @@ pub async fn verify(State(state): State<AppState>, headers: HeaderMap, jar: Cook
     }
 
     // ── No session: local-network bypass (P1.3) ───────────────
-    if state.local_bypass.matches_request(&headers, None) {
+    if state.local_bypass.matches_request(&headers, peer_ip) {
         let mut resp = StatusCode::OK.into_response();
         resp.headers_mut()
             .insert("x-volta-auth-source", "local-bypass".parse().unwrap());
