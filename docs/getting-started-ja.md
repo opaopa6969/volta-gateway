@@ -3,10 +3,12 @@
 # volta-gateway Getting Started (日本語)
 
 `git clone` から実際にリクエストが通るところまでを 1 つの端末で完結する手順。
-Rustによる2つの構成を扱う:
+サポートするRust構成を扱う:
 
 1. **Gateway + Rust auth-server** (サポートする本番構成)
-2. **統合バイナリ `volta-bin`** (gateway + auth-core in-process 検証)
+
+`volta-bin` crate は現時点ではコンポーネント／flow の実験的smoke checkであり、
+gatewayを起動しないためデプロイ構成には含めない。
 
 ## 0. 前提
 
@@ -95,28 +97,18 @@ cargo run --release -p volta-gateway -- my-config.yaml
 (`IDP_PROVIDER`, `IDP_CLIENT_ID`, `IDP_CLIENT_SECRET`) は
 [`auth-server/README.md`](../auth-server/README.md) に一覧あり。
 
-## 5. 統合バイナリ — 認証ホップ 0
+## 5. 実験用 `volta-bin` scaffold
 
-`volta-bin/` クレート（パッケージ名は `volta`）は gateway と `auth-core` を 1 プロセスに束ねる。認証検査は
-~1 µs の in-process 関数呼び出しになり、HTTP ラウンドトリップ (~250 µs) を
-完全排除。
+`volta-bin/` クレート（パッケージ名は `volta`）は、現時点ではauth-coreの
+コンポーネントとflow定義がbuildできることを確認する。HTTP gatewayは起動しない。
 
 ```bash
 cargo run --release -p volta -- my-config.yaml
 ```
 
-有効化するには:
-
-```yaml
-auth:
-  jwt_secret: "${JWT_SECRET}"   # in-process JWT 検証
-  cookie_name: volta_session
-```
-
-このモードでは認証ルート (login, MFA, etc.) は**公開しない**。
-既存セッションの**検証のみ**。完全なフローには `auth-server` を別途立てる。
-ローカルJWT検証は明示的な縮退運転用であり、通常時のオンライン認可を暗黙に
-置き換えてはならない。
+gateway + auth-server の代替デプロイとして使用しないこと。in-process認可は
+将来実装であり、サポートするgatewayでのローカルJWT検証は明示的な縮退運転時に
+限られる。
 
 ## 6. パブリックルート、CORS、ロードバランシング
 

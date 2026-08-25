@@ -1,9 +1,7 @@
-//! volta — unified binary (gateway + auth-core in-process).
+//! volta — experimental auth component/flow smoke check.
 //!
-//! Single binary that runs:
-//! - HTTP reverse proxy (volta-gateway)
-//! - In-process JWT auth verification (volta-auth-core)
-//! - All tramli SM flows (OIDC, MFA, Passkey, Invite)
+//! This crate does not currently launch volta-gateway. The supported runtime
+//! remains the Rust `volta-gateway` + `volta-auth-server` processes.
 //!
 //! Usage: volta config.yaml
 //!        volta --validate config.yaml
@@ -58,15 +56,14 @@ fn main() {
         println!("Usage: volta <config.yaml>");
         println!("       volta --validate <config.yaml>");
         println!();
-        println!("This binary includes volta-gateway + volta-auth-core.");
-        println!("All auth flows run in-process (no HTTP roundtrip).");
+        println!("Experimental smoke check only; it does not launch volta-gateway.");
         std::process::exit(0);
     }
 
-    println!("Starting volta-gateway with in-process auth...");
-    println!("(Full integration pending — use `volta-gateway` binary for now)");
+    println!("Smoke check complete.");
+    println!("Use volta-gateway + volta-auth-server for the supported runtime.");
 
     // TODO: Launch gateway with auth-core wired in
-    // The plumbing is: gateway's VoltaAuthClient checks auth-core first,
-    // falls back to HTTP volta-auth-proxy for flows not yet in Rust.
+    // Any future in-process mode must preserve online revocation, tenant,
+    // MFA, and policy semantics; it must not reintroduce Java auth-proxy.
 }

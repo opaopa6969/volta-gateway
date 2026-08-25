@@ -381,7 +381,7 @@ volta-gateway/
   gateway/                HTTP reverse proxy (30+ features)
   auth-core/              Auth library — JWT, session, OIDC/MFA/Passkey SM flows
   auth-server/            Axum auth API — ~126-route Rust identity service
-  volta-bin/              Unified binary (gateway + auth-core in-process)
+  volta-bin/              Experimental auth component/flow smoke-check scaffold
   tools/traefik-to-volta/ Config converter CLI
 ```
 
@@ -416,9 +416,11 @@ cargo test -p volta-auth-core
 cargo test -p volta-auth-core --features postgres -- --ignored
 ```
 
-### Unified binary (volta-bin)
+### Experimental `volta-bin` scaffold
 
-Single binary combining gateway + auth-core (the `volta-bin/` crate, package name `volta`). Auth checks run in-process (~1μs) instead of HTTP roundtrip (~250μs).
+The `volta-bin/` crate currently checks that auth-core components and flows
+construct successfully. It does not launch the HTTP gateway and is not a
+supported deployment topology.
 
 > ⚠️ **Status: not functional yet (#86).** `volta-bin/src/main.rs` is a 60-line
 > startup check — it verifies that the auth-core components construct and that

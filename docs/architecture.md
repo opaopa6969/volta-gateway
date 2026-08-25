@@ -19,7 +19,7 @@ volta-gateway/                       Cargo workspace root
 ├── gateway/          HTTP reverse proxy (126 routes in auth-server → forwarded)
 ├── auth-core/        Auth library — JWT, session, OIDC/MFA/Passkey SM flows
 ├── auth-server/      Axum HTTP API — Rust identity and authorization service
-├── volta-bin/        Unified binary (gateway + auth-core in-process)
+├── volta-bin/        Experimental auth component/flow smoke-check scaffold
 └── tools/
     └── traefik-to-volta/  Historical import/migration CLI (not runtime)
 ```

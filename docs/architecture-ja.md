@@ -18,7 +18,7 @@ volta-gateway/                       Cargo ワークスペースルート
 ├── gateway/          HTTP リバースプロキシ (auth-server の 126 ルートを前段で捌く)
 ├── auth-core/        認証ライブラリ — JWT/セッション/OIDC・MFA・Passkey SM フロー
 ├── auth-server/      Axum HTTP API — Rust製の認証・認可サービス
-├── volta-bin/        統合バイナリ (gateway + auth-core in-process)
+├── volta-bin/        実験用authコンポーネント／flow smoke-check scaffold
 └── tools/
     └── traefik-to-volta/  履歴的な設定取込・移行CLI (ランタイムではない)
 ```

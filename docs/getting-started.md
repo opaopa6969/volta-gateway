@@ -3,10 +3,12 @@
 # Getting Started with volta-gateway
 
 This guide walks you from `git clone` to a working request through the
-gateway. The whole loop fits in one terminal, and it covers two Rust layouts:
+gateway. The supported loop fits in one terminal:
 
 1. **Gateway + Rust auth-server** (supported production topology).
-2. **Unified `volta-bin`** (gateway + auth-core in-process verification).
+
+The `volta-bin` crate is currently an experimental component/flow smoke check;
+it does not launch the gateway and is not a deployment topology.
 
 ## 0. Prerequisites
 
@@ -97,28 +99,19 @@ Visit `http://localhost:8080/login` to kick off an OIDC flow. Configure the
 IdP env vars (`IDP_PROVIDER`, `IDP_CLIENT_ID`, `IDP_CLIENT_SECRET`) as listed
 in [`auth-server/README.md`](../auth-server/README.md).
 
-## 5. Unified binary — zero auth hop
+## 5. Experimental `volta-bin` scaffold
 
-The `volta-bin/` crate (package name `volta`) bundles the gateway and
-`auth-core` into one process. Auth checks become ~1 µs in-process function
-calls instead of a ~250 µs HTTP roundtrip.
+The `volta-bin/` crate (package name `volta`) currently verifies that auth-core
+components and flow definitions build. It does not start an HTTP gateway.
 
 ```bash
 cargo run --release -p volta -- my-config.yaml
 ```
 
-Enable in config:
-
-```yaml
-auth:
-  jwt_secret: "${JWT_SECRET}"   # in-process JWT verification
-  cookie_name: volta_session
-```
-
-This mode does **not** expose the identity routes (login, MFA, etc.) — it only
-*verifies* existing sessions. Pair it with an `auth-server` instance for the
-full flow. Local JWT verification is an explicit degraded-mode fallback; it
-must not silently replace online authorization in normal operation.
+Do not use this command as a deployment substitute for gateway + auth-server.
+In-process authorization remains future work. In the supported gateway,
+local JWT verification is only an explicit degraded-mode fallback and never
+silently replaces normal online authorization.
 
 ## 6. Public routes, CORS, load balancing
 

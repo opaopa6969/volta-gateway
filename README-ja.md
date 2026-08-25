@@ -351,7 +351,7 @@ volta-gateway/
   gateway/                HTTP リバースプロキシ (30+ 機能)
   auth-core/              認証ライブラリ — JWT / セッション / OIDC・MFA・Passkey SM フロー
   auth-server/            Axum 認証 API — 約 126 ルートのRust認証サービス
-  volta-bin/              統合バイナリ (gateway + auth-core in-process)
+  volta-bin/              実験用authコンポーネント／flow smoke-check scaffold
   tools/traefik-to-volta/ 設定変換 CLI
 ```
 
