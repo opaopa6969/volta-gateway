@@ -632,11 +632,9 @@ mod assertion_tests {
                 .await;
         });
 
-        let signer = GatewayAssertionSigner::new_with_key_id(
-            "2026-08",
-            "0123456789abcdef0123456789abcdef",
-        )
-        .unwrap();
+        let signer =
+            GatewayAssertionSigner::new_with_key_id("2026-08", "0123456789abcdef0123456789abcdef")
+                .unwrap();
         let plugin = Monetizer::new_with_assertion(
             format!("http://{addr}/__monetizer/verify"),
             "config-1".into(),

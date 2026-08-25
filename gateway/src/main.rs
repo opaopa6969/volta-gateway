@@ -314,12 +314,20 @@ async fn main() {
                 config.auth.effective_gateway_assertion_key_id(),
                 secret,
             )
-                .expect("gateway assertion secret was validated before startup")
+            .expect("gateway assertion secret was validated before startup")
         });
     if let Some(signer) = &assertion_signer {
-        info!(key_id = signer.key_id(), "gateway assertion signing enabled");
+        info!(
+            key_id = signer.key_id(),
+            "gateway assertion signing enabled"
+        );
     }
-    if config.auth.effective_gateway_assertion_previous().0.is_some() {
+    if config
+        .auth
+        .effective_gateway_assertion_previous()
+        .0
+        .is_some()
+    {
         info!("gateway assertion previous key configured for consumer rotation compatibility");
     }
     let plugin_mgr = Arc::new(plugin::PluginManager::load_from_config_with_assertion(

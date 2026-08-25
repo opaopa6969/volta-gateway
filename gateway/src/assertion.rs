@@ -212,12 +212,11 @@ mod tests {
             "current-current-current-current-12",
         )
         .unwrap();
-        let previous = GatewayAssertionSigner::new_with_key_id(
-            "2026-08",
-            "previous-previous-previous-prev12",
-        )
-        .unwrap();
-        let verifier = GatewayAssertionVerifier::new(current.clone(), Some(previous.clone())).unwrap();
+        let previous =
+            GatewayAssertionSigner::new_with_key_id("2026-08", "previous-previous-previous-prev12")
+                .unwrap();
+        let verifier =
+            GatewayAssertionVerifier::new(current.clone(), Some(previous.clone())).unwrap();
         for signer in [current, previous] {
             let assertion = signer.sign_at(1_700_000_000, "POST", "/billing", "u", "t", "ADMIN");
             verifier
@@ -239,16 +238,12 @@ mod tests {
 
     #[test]
     fn verifier_fails_closed_for_unknown_or_missing_key_id_during_rotation() {
-        let current = GatewayAssertionSigner::new_with_key_id(
-            "current",
-            "0123456789abcdef0123456789abcdef",
-        )
-        .unwrap();
-        let previous = GatewayAssertionSigner::new_with_key_id(
-            "previous",
-            "abcdef0123456789abcdef0123456789",
-        )
-        .unwrap();
+        let current =
+            GatewayAssertionSigner::new_with_key_id("current", "0123456789abcdef0123456789abcdef")
+                .unwrap();
+        let previous =
+            GatewayAssertionSigner::new_with_key_id("previous", "abcdef0123456789abcdef0123456789")
+                .unwrap();
         let assertion = current.sign_at(100, "GET", "/", "", "", "");
         let verifier = GatewayAssertionVerifier::new(current, Some(previous)).unwrap();
         for key_id in [None, Some("unknown")] {

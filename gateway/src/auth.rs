@@ -309,7 +309,6 @@ impl VoltaAuthClient {
         bearer: Option<&str>,
         allow_degraded_fallback: bool,
     ) -> AuthResult {
-
         let url = format!("{}{}", self.base_url, self.verify_path);
 
         let mut builder = Request::builder()
