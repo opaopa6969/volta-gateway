@@ -894,16 +894,27 @@ impl ProxyService {
             }
         };
 
-        if let Some(min_role) = route_info.as_ref().and_then(|route| route.min_role.as_deref()) {
+        if let Some(min_role) = route_info
+            .as_ref()
+            .and_then(|route| route.min_role.as_deref())
+        {
             if skip_auth {
                 warn!(state = "DENIED", host = %host, min_role = %min_role, "min_role cannot be combined with auth bypass");
-                return error_response_with_pages(StatusCode::FORBIDDEN, &request_id, &hot.error_pages);
+                return error_response_with_pages(
+                    StatusCode::FORBIDDEN,
+                    &request_id,
+                    &hot.error_pages,
+                );
             } else {
                 let required = min_role.trim().to_ascii_uppercase();
                 let policy = volta_auth_core::policy::PolicyEngine::default_policy();
                 if !policy.hierarchy().iter().any(|role| role == &required) {
                     warn!(state = "DENIED", host = %host, min_role = %min_role, "invalid dynamic min_role");
-                    return error_response_with_pages(StatusCode::FORBIDDEN, &request_id, &hot.error_pages);
+                    return error_response_with_pages(
+                        StatusCode::FORBIDDEN,
+                        &request_id,
+                        &hot.error_pages,
+                    );
                 }
                 let roles: Vec<String> = volta_headers
                     .get("x-volta-roles")
@@ -920,7 +931,11 @@ impl ProxyService {
                     volta_auth_core::policy::PolicyResult::Allow
                 ) {
                     info!(state = "DENIED", host = %host, min_role = %required, "minimum role not satisfied");
-                    return error_response_with_pages(StatusCode::FORBIDDEN, &request_id, &hot.error_pages);
+                    return error_response_with_pages(
+                        StatusCode::FORBIDDEN,
+                        &request_id,
+                        &hot.error_pages,
+                    );
                 }
             }
         }
@@ -1131,7 +1146,9 @@ impl ProxyService {
             "x-real-ip",
             "cf-connecting-ip",
         ];
-        let req_headers: Vec<_> = req.headers().iter()
+        let req_headers: Vec<_> = req
+            .headers()
+            .iter()
             .filter(|(name, _)| *name != "host")
             .filter(|(name, _)| !name.as_str().starts_with("x-volta-"))
             .filter(|(name, _)| !HOP_BY_HOP.contains(&name.as_str()))
@@ -1291,9 +1308,7 @@ impl ProxyService {
                         .header(crate::assertion::TIMESTAMP_HEADER, assertion.timestamp)
                         .header(crate::assertion::SIGNATURE_HEADER, assertion.signature);
                 }
-                let retry_req = retry_req
-                    .body(Empty::<Bytes>::new())
-                    .unwrap();
+                let retry_req = retry_req.body(Empty::<Bytes>::new()).unwrap();
                 tokio::time::timeout(
                     std::time::Duration::from_secs(30),
                     self.retry_client.request(retry_req),

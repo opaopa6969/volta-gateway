@@ -696,8 +696,8 @@ impl GatewayConfig {
             }
             if let Some(min_role) = r.min_role.as_deref() {
                 let role = min_role.trim().to_ascii_uppercase();
-                let valid = ["OWNER", "ADMIN", "OPERATOR", "MEMBER", "VIEWER"]
-                    .contains(&role.as_str());
+                let valid =
+                    ["OWNER", "ADMIN", "OPERATOR", "MEMBER", "VIEWER"].contains(&role.as_str());
                 if !valid {
                     errors.push((
                         Self::EXIT_SCHEMA,

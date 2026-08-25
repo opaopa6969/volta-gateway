@@ -24,8 +24,7 @@ use axum::http::{request::Parts, HeaderMap};
 use ipnet::IpNet;
 
 #[cfg(test)]
-const TEST_CIDRS: &str =
-    "192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,100.64.0.0/10,127.0.0.1/32";
+const TEST_CIDRS: &str = "192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,100.64.0.0/10,127.0.0.1/32";
 
 #[derive(Clone, Debug, Default)]
 pub struct LocalNetworkBypass {
@@ -44,10 +43,7 @@ where
 {
     type Rejection = Infallible;
 
-    async fn from_request_parts(
-        parts: &mut Parts,
-        _state: &S,
-    ) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
         Ok(Self(
             parts
                 .extensions
@@ -88,8 +84,7 @@ impl LocalNetworkBypass {
 
     pub fn from_env() -> Self {
         let cidrs = std::env::var("LOCAL_BYPASS_CIDRS").unwrap_or_default();
-        let trusted_proxies =
-            std::env::var("LOCAL_BYPASS_TRUSTED_PROXY_CIDRS").unwrap_or_default();
+        let trusted_proxies = std::env::var("LOCAL_BYPASS_TRUSTED_PROXY_CIDRS").unwrap_or_default();
         Self::new(&cidrs).with_trusted_proxies(&trusted_proxies)
     }
 
@@ -249,9 +244,7 @@ mod tests {
 
         let app = Router::new()
             .route("/auth/verify", get(probe))
-            .with_state(
-                LocalNetworkBypass::new(TEST_CIDRS).with_trusted_proxies("0.0.0.0/0"),
-            );
+            .with_state(LocalNetworkBypass::new(TEST_CIDRS).with_trusted_proxies("0.0.0.0/0"));
         let response = app
             .oneshot(
                 Request::builder()

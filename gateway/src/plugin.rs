@@ -271,9 +271,10 @@ pub mod builtin {
             };
             let handle = tokio::runtime::Handle::current();
             let http = self.http.clone();
-            let assertion = self.assertion_signer.as_ref().map(|signer| {
-                signer.sign_now("GET", &path_with_query, "", "", "")
-            });
+            let assertion = self
+                .assertion_signer
+                .as_ref()
+                .map(|signer| signer.sign_now("GET", &path_with_query, "", "", ""));
             tokio::task::block_in_place(|| {
                 handle.block_on(async {
                     let mut request = http.get(parsed_url);
@@ -282,7 +283,9 @@ pub mod builtin {
                             .header(crate::assertion::TIMESTAMP_HEADER, assertion.timestamp)
                             .header(crate::assertion::SIGNATURE_HEADER, assertion.signature);
                     }
-                    let resp = request.send().await
+                    let resp = request
+                        .send()
+                        .await
                         .map_err(|e| format!("monetizer verify request failed: {}", e))?;
                     if !resp.status().is_success() {
                         return Err(format!("monetizer verify returned {}", resp.status()));

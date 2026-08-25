@@ -148,11 +148,15 @@ fn personalized_response_headers_are_not_cacheable() {
 fn credentialed_public_requests_bypass_shared_cache() {
     let mut cookie_request = hyper::HeaderMap::new();
     cookie_request.insert("cookie", "theme=private".parse().unwrap());
-    assert!(!volta_gateway::cache::is_shared_cache_request(&cookie_request));
+    assert!(!volta_gateway::cache::is_shared_cache_request(
+        &cookie_request
+    ));
 
     let mut bearer_request = hyper::HeaderMap::new();
     bearer_request.insert("authorization", "Bearer secret".parse().unwrap());
-    assert!(!volta_gateway::cache::is_shared_cache_request(&bearer_request));
+    assert!(!volta_gateway::cache::is_shared_cache_request(
+        &bearer_request
+    ));
 
     assert!(volta_gateway::cache::is_shared_cache_request(
         &hyper::HeaderMap::new()
@@ -534,14 +538,19 @@ plugins:
 "#;
     let config: volta_gateway::config::GatewayConfig = serde_yaml::from_str(yaml).unwrap();
     let errors = config.validate().unwrap_err();
-    assert!(errors.iter().any(|error| error.contains("monetizer plugin requires")));
+    assert!(errors
+        .iter()
+        .any(|error| error.contains("monetizer plugin requires")));
 }
 
 #[test]
 fn min_role_rejects_unknown_role_and_public_combination() {
     for (extra, expected) in [
         ("min_role: SUPERUSER", "invalid min_role"),
-        ("public: true\n    min_role: MEMBER", "cannot combine public"),
+        (
+            "public: true\n    min_role: MEMBER",
+            "cannot combine public",
+        ),
         (
             "min_role: MEMBER\n    auth_bypass_paths:\n      - prefix: /hooks",
             "cannot combine min_role",

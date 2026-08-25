@@ -919,9 +919,7 @@ mod cache_key_tests {
         min_role: Option<&str>,
         bearer: Option<&str>,
     ) -> u64 {
-        full_auth_cache_key(
-            cookie, host, "/", "https", app_id, min_role, None, bearer,
-        )
+        full_auth_cache_key(cookie, host, "/", "https", app_id, min_role, None, bearer)
     }
 
     /// 一時アクセスで最も踏みやすい穴の回帰テスト。

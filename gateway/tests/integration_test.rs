@@ -16,8 +16,8 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto;
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use tokio::net::TcpListener;
 
 use volta_gateway::auth::VoltaAuthClient;
@@ -109,10 +109,9 @@ fn make_proxy(auth_addr: SocketAddr, backend_addr: SocketAddr, host: &str) -> Pr
     let hot = Arc::new(ArcSwap::from_pointee(HotState::new(Arc::new(routing))));
     let metrics = Arc::new(volta_gateway::metrics::Metrics::new());
     let plugins = Arc::new(volta_gateway::plugin::PluginManager::new());
-    let signer = volta_gateway::assertion::GatewayAssertionSigner::new(
-        "0123456789abcdef0123456789abcdef",
-    )
-    .unwrap();
+    let signer =
+        volta_gateway::assertion::GatewayAssertionSigner::new("0123456789abcdef0123456789abcdef")
+            .unwrap();
     ProxyService::new_with_assertion(volta, hot, metrics, plugins, Some(signer))
 }
 
@@ -186,9 +185,7 @@ fn make_proxy_with_min_role(
     let proxy = make_proxy(auth_addr, backend_addr, host);
     let mut routing = (*proxy.hot.load_full().routing).clone();
     routing.get_mut(host).unwrap().min_role = Some(min_role.into());
-    proxy
-        .hot
-        .store(Arc::new(HotState::new(Arc::new(routing))));
+    proxy.hot.store(Arc::new(HotState::new(Arc::new(routing))));
     proxy
 }
 
@@ -323,10 +320,8 @@ async fn proxy_returns_403_on_auth_denied() {
 
 #[tokio::test]
 async fn proxy_enforces_min_role_hierarchy() {
-    let (backend_addr, _bh) = mock_server(|_req| {
-        Response::builder().status(200).body(empty_body()).unwrap()
-    })
-    .await;
+    let (backend_addr, _bh) =
+        mock_server(|_req| Response::builder().status(200).body(empty_body()).unwrap()).await;
     let (auth_addr, _ah) = mock_server(|req| {
         let role = if req
             .headers()
@@ -710,16 +705,12 @@ async fn proxy_public_route_skips_auth() {
 
 #[tokio::test]
 async fn dynamic_public_route_with_min_role_fails_closed() {
-    let (backend_addr, _bh) = mock_server(|_req| {
-        Response::builder().status(200).body(empty_body()).unwrap()
-    })
-    .await;
+    let (backend_addr, _bh) =
+        mock_server(|_req| Response::builder().status(200).body(empty_body()).unwrap()).await;
     let proxy = make_proxy_public(backend_addr, "bad-role.test.com");
     let mut routing = (*proxy.hot.load_full().routing).clone();
     routing.get_mut("bad-role.test.com").unwrap().min_role = Some("MEMBER".into());
-    proxy
-        .hot
-        .store(Arc::new(HotState::new(Arc::new(routing))));
+    proxy.hot.store(Arc::new(HotState::new(Arc::new(routing))));
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy_addr = listener.local_addr().unwrap();
@@ -781,7 +772,12 @@ async fn credentialed_public_requests_do_not_reuse_shared_cache() {
     let client: hyper_util::client::legacy::Client<_, Empty<Bytes>> =
         hyper_util::client::legacy::Client::builder(TokioExecutor::new()).build_http();
 
-    for credential in [None, None, Some(("cookie", "session=private")), Some(("authorization", "Bearer private"))] {
+    for credential in [
+        None,
+        None,
+        Some(("cookie", "session=private")),
+        Some(("authorization", "Bearer private")),
+    ] {
         let mut request = Request::builder()
             .uri(format!("http://{proxy_addr}/asset"))
             .header("host", "public-cache.test.com")
@@ -789,7 +785,10 @@ async fn credentialed_public_requests_do_not_reuse_shared_cache() {
         if let Some((name, value)) = credential {
             request = request.header(name, value);
         }
-        let response = client.request(request.body(Empty::new()).unwrap()).await.unwrap();
+        let response = client
+            .request(request.body(Empty::new()).unwrap())
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let _ = response.into_body().collect().await.unwrap();
     }

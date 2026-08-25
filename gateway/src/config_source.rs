@@ -293,7 +293,10 @@ impl ServicesJsonSource {
             geo_allowlist: vec![],
             geo_denylist: vec![],
             public,
-            min_role: svc.access.as_ref().and_then(|access| access.min_role.clone()),
+            min_role: svc
+                .access
+                .as_ref()
+                .and_then(|access| access.min_role.clone()),
             auth_bypass_paths: bypass_paths,
             mirror: None,
             timeout_secs: None,
