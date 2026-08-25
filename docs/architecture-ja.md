@@ -5,6 +5,11 @@
 > [README](../README-ja.md) の補足文書。ここでは「各パーツがどう噛み合うか」を記す。
 > 中心には tramli FlowEngine、その周りにルーティング、auth-server の 8 マージ構成、
 > プラグインシステム、レートリミッタ多層が並ぶ。
+>
+> **ランタイム方針 (2026-08-25):** サポート構成は `volta-gateway` と
+> `volta-auth-server` の Rust-only。以下の Java `volta-auth-proxy` と Traefik への
+> 言及は来歴または移行用ツールであり、現行ランタイムの選択肢ではない。
+> [基盤仕様](rust-only-foundation-spec.md) を正とする。
 
 ## 1. ワークスペース構成
 
@@ -12,10 +17,10 @@
 volta-gateway/                       Cargo ワークスペースルート
 ├── gateway/          HTTP リバースプロキシ (auth-server の 126 ルートを前段で捌く)
 ├── auth-core/        認証ライブラリ — JWT/セッション/OIDC・MFA・Passkey SM フロー
-├── auth-server/      Axum HTTP API — Java volta-auth-proxy の 1:1 置き換え
+├── auth-server/      Axum HTTP API — Rust製の認証・認可サービス
 ├── volta-bin/        統合バイナリ (gateway + auth-core in-process)
 └── tools/
-    └── traefik-to-volta/  Traefik → volta 設定変換 CLI
+    └── traefik-to-volta/  履歴的な設定取込・移行CLI (ランタイムではない)
 ```
 
 共通依存: `tramli = "3.8"` と `tramli-plugins = "3.6.1"` を gateway・auth-core 双方で
@@ -78,7 +83,7 @@ engine.resume_and_execute(&flow_id, resp_data)?;            // 同期 ~300ns、�
 map (exact + wildcard) を `ArcSwap` で包んだもの。各 `RouteTarget` の中身:
 
 - `backend` / `backends` (ラウンドロビン / 重み付き)
-- optional `path_prefix` (例: `/saml/*` を Java sidecar に転送 — DD-005)
+- optional `path_prefix` (一部パスを別のRustバックエンドへ転送)
 - `public`, `auth_bypass_paths`, `cors_origins`, `timeout_secs`
 - `geo_allowlist` / `geo_denylist` (CF-IPCountry)
 - `strip_prefix` / `add_prefix`、ヘッダ add/remove ルール
@@ -121,8 +126,8 @@ Router::new()
 
 **なぜこの形か?** Axum の `route_layer` はサブルータ**内部**のルートにしか適用されない。
 ブルートフォース対象の敏感なエンドポイントだけを個別サブルータに置いて `RateLimiter` を
-付与すれば、他の ~80 ルートに余計なミドルウェアコストを払わずに済む。Java 側の
-per-endpoint `@RateLimit(limit=N, window=60s)` と 1:1 対応する。
+付与すれば、他の ~80 ルートに余計なミドルウェアコストを払わずに済む。各エンドポイントの
+制限値は、廃止したJava実装との比較で初期検証されたものを引き継いでいる。
 
 各リミッタは `RateLimiter::new("oidc", 30, Duration::from_secs(60))` インスタンスで、
 `limit_by_ip` ミドルウェアによりクライアント IP を key とする。
@@ -152,8 +157,8 @@ per-endpoint `@RateLimit(limit=N, window=60s)` と 1:1 対応する。
 
 ## 6. auth-core フローライブラリ
 
-`auth-core/src/flow/` には Java `volta-auth-proxy` から 1:1 ポートした 4 つの tramli
-`FlowDefinition` がある:
+`auth-core/src/flow/` には 4 つの tramli `FlowDefinition` がある。初期の挙動は
+廃止したJava実装から移植したが、現在はRust実装を正とする:
 
 | ファイル            | 用途 |
 |---------------------|------|
