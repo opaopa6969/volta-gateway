@@ -6,6 +6,7 @@
 //! Only GET/HEAD responses are cached. Cache-Control: no-store is respected.
 
 use bytes::Bytes;
+use hyper::HeaderMap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -148,7 +149,29 @@ impl ResponseCache {
 /// Check if response should be cached based on Cache-Control header.
 pub fn is_cacheable(cache_control: Option<&str>) -> bool {
     match cache_control {
-        Some(cc) => !cc.contains("no-store") && !cc.contains("private"),
+        Some(cc) => {
+            let cc = cc.to_ascii_lowercase();
+            !cc.contains("no-store") && !cc.contains("private")
+        }
         None => true,
     }
+}
+
+/// Conservative shared-cache policy. Personalized/cookie-setting responses and
+/// responses varying on request headers must never enter the route-wide cache.
+pub fn is_response_cacheable(headers: &HeaderMap) -> bool {
+    is_cacheable(
+        headers
+            .get("cache-control")
+            .and_then(|value| value.to_str().ok()),
+    ) && !headers.contains_key("set-cookie")
+        && !headers.contains_key("www-authenticate")
+        && !headers.contains_key("proxy-authenticate")
+        && !headers.contains_key("vary")
+}
+
+/// Shared route cache must not serve or store a request carrying ambient or
+/// explicit credentials, even when the route itself is marked public.
+pub fn is_shared_cache_request(headers: &HeaderMap) -> bool {
+    !headers.contains_key("cookie") && !headers.contains_key("authorization")
 }

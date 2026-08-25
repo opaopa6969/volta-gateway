@@ -15,14 +15,20 @@ pub enum PolicyResult {
 /// Role-based policy engine with hierarchy and permissions.
 #[derive(Clone)]
 pub struct PolicyEngine {
-    hierarchy: Vec<String>,  // highest first: [OWNER, ADMIN, MEMBER, VIEWER]
+    hierarchy: Vec<String>,  // highest first: [OWNER, ADMIN, OPERATOR, MEMBER, VIEWER]
     effective_permissions: HashMap<String, HashSet<String>>,
 }
 
 impl PolicyEngine {
-    /// Create with default volta policy (OWNER > ADMIN > MEMBER > VIEWER).
+    /// Create with default platform policy (OWNER > ADMIN > OPERATOR > MEMBER > VIEWER).
     pub fn default_policy() -> Self {
-        let hierarchy = vec!["OWNER".into(), "ADMIN".into(), "MEMBER".into(), "VIEWER".into()];
+        let hierarchy = vec![
+            "OWNER".into(),
+            "ADMIN".into(),
+            "OPERATOR".into(),
+            "MEMBER".into(),
+            "VIEWER".into(),
+        ];
         let mut perms: HashMap<String, HashSet<String>> = HashMap::new();
 
         // VIEWER
@@ -35,6 +41,11 @@ impl PolicyEngine {
             member.insert(p.to_string());
         }
         perms.insert("MEMBER".into(), member);
+
+        // OPERATOR inherits MEMBER. Operational permissions are currently
+        // enforced by the platform; this role's position is still required for
+        // consistent min-role comparisons at the gateway.
+        perms.insert("OPERATOR".into(), perms["MEMBER"].clone());
 
         // ADMIN inherits MEMBER
         let mut admin: HashSet<String> = perms["MEMBER"].clone();
@@ -113,7 +124,10 @@ mod tests {
     #[test]
     fn default_policy_hierarchy() {
         let policy = PolicyEngine::default_policy();
-        assert_eq!(policy.hierarchy(), &["OWNER", "ADMIN", "MEMBER", "VIEWER"]);
+        assert_eq!(
+            policy.hierarchy(),
+            &["OWNER", "ADMIN", "OPERATOR", "MEMBER", "VIEWER"]
+        );
     }
 
     #[test]
@@ -144,6 +158,8 @@ mod tests {
         assert!(policy.rank("ADMIN") < policy.rank("MEMBER"));
         assert!(policy.is_at_least("OWNER", "VIEWER"));
         assert!(!policy.is_at_least("VIEWER", "ADMIN"));
+        assert!(policy.is_at_least("OPERATOR", "MEMBER"));
+        assert!(!policy.is_at_least("MEMBER", "OPERATOR"));
     }
 
     #[test]

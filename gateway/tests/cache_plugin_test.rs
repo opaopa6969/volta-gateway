@@ -82,6 +82,35 @@ fn cache_control_no_store_not_cacheable() {
 }
 
 #[test]
+fn personalized_response_headers_are_not_cacheable() {
+    let mut headers = hyper::HeaderMap::new();
+    headers.insert("set-cookie", "session=secret".parse().unwrap());
+    assert!(!volta_gateway::cache::is_response_cacheable(&headers));
+
+    let mut headers = hyper::HeaderMap::new();
+    headers.insert("vary", "accept-language".parse().unwrap());
+    assert!(!volta_gateway::cache::is_response_cacheable(&headers));
+
+    let headers = hyper::HeaderMap::new();
+    assert!(volta_gateway::cache::is_response_cacheable(&headers));
+}
+
+#[test]
+fn credentialed_public_requests_bypass_shared_cache() {
+    let mut cookie_request = hyper::HeaderMap::new();
+    cookie_request.insert("cookie", "theme=private".parse().unwrap());
+    assert!(!volta_gateway::cache::is_shared_cache_request(&cookie_request));
+
+    let mut bearer_request = hyper::HeaderMap::new();
+    bearer_request.insert("authorization", "Bearer secret".parse().unwrap());
+    assert!(!volta_gateway::cache::is_shared_cache_request(&bearer_request));
+
+    assert!(volta_gateway::cache::is_shared_cache_request(
+        &hyper::HeaderMap::new()
+    ));
+}
+
+#[test]
 fn cache_stats() {
     let cache = volta_gateway::cache::ResponseCache::new(100);
     cache.put("k1".into(), 200, vec![], bytes::Bytes::new(), Duration::from_secs(300));
@@ -359,6 +388,63 @@ routing:
     let cache = route.cache.as_ref().unwrap();
     assert!(cache.enabled);
     assert_eq!(cache.ttl_secs, 600);
+}
+
+#[test]
+fn authenticated_route_cache_is_rejected() {
+    let yaml = r#"
+server:
+  port: 8080
+auth:
+  volta_url: http://localhost:7070
+routing:
+  - host: private.test.com
+    backend: http://localhost:3000
+    cache:
+      enabled: true
+"#;
+    let config: volta_gateway::config::GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+    let errors = config.validate().unwrap_err();
+    assert!(errors.iter().any(|error| error.contains("public: true")));
+}
+
+#[test]
+fn monetizer_plugin_requires_gateway_assertion_secret() {
+    let yaml = r#"
+server:
+  port: 8080
+auth:
+  volta_url: http://localhost:7070
+routing:
+  - host: app.test.com
+    backend: http://localhost:3000
+plugins:
+  - name: monetizer
+    config:
+      verify_url: http://monetizer:3001/__monetizer/verify
+"#;
+    let config: volta_gateway::config::GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+    let errors = config.validate().unwrap_err();
+    assert!(errors.iter().any(|error| error.contains("monetizer plugin requires")));
+}
+
+#[test]
+fn min_role_rejects_unknown_role_and_public_combination() {
+    for (extra, expected) in [
+        ("min_role: SUPERUSER", "invalid min_role"),
+        ("public: true\n    min_role: MEMBER", "cannot combine public"),
+        (
+            "min_role: MEMBER\n    auth_bypass_paths:\n      - prefix: /hooks",
+            "cannot combine min_role",
+        ),
+    ] {
+        let yaml = format!(
+            "server:\n  port: 8080\nauth:\n  volta_url: http://localhost:7070\nrouting:\n  - host: app.test.com\n    backend: http://localhost:3000\n    {extra}\n"
+        );
+        let config: volta_gateway::config::GatewayConfig = serde_yaml::from_str(&yaml).unwrap();
+        let errors = config.validate().unwrap_err();
+        assert!(errors.iter().any(|error| error.contains(expected)));
+    }
 }
 
 #[test]

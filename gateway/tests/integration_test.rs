@@ -2,7 +2,7 @@
 //!
 //! Each test spins up:
 //!   - Mock backend (echo server)
-//!   - Mock volta-auth-proxy
+//!   - Mock volta-auth-server
 //!   - volta-gateway ProxyService
 //! Then sends real HTTP requests and asserts responses.
 
@@ -17,6 +17,7 @@ use hyper_util::server::conn::auto;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::net::TcpListener;
 
 use volta_gateway::auth::VoltaAuthClient;
@@ -75,6 +76,7 @@ fn make_proxy(auth_addr: SocketAddr, backend_addr: SocketAddr, host: &str) -> Pr
         degraded_mode: false,
         jwt_public_key_pem: None,
         jwks_url: None,
+        gateway_assertion_secret: None,
         jwt_issuer: None,
         jwt_audience: None,
     };
@@ -87,6 +89,7 @@ fn make_proxy(auth_addr: SocketAddr, backend_addr: SocketAddr, host: &str) -> Pr
             weights: vec![], backends: vec![format!("http://{}", backend_addr)],
             app_id: Some("test-app".into()),
             public: false,
+            min_role: None,
             bypass_paths: vec![], mirror: None,
             path_prefix: None, strip_prefix: None, add_prefix: None,
             request_headers: None, response_headers: None,
@@ -98,7 +101,11 @@ fn make_proxy(auth_addr: SocketAddr, backend_addr: SocketAddr, host: &str) -> Pr
     let hot = Arc::new(ArcSwap::from_pointee(HotState::new(Arc::new(routing))));
     let metrics = Arc::new(volta_gateway::metrics::Metrics::new());
     let plugins = Arc::new(volta_gateway::plugin::PluginManager::new());
-    ProxyService::new(volta, hot, metrics, plugins)
+    let signer = volta_gateway::assertion::GatewayAssertionSigner::new(
+        "0123456789abcdef0123456789abcdef",
+    )
+    .unwrap();
+    ProxyService::new_with_assertion(volta, hot, metrics, plugins, Some(signer))
 }
 
 fn make_proxy_with_cors(auth_addr: SocketAddr, backend_addr: SocketAddr, host: &str, origins: Vec<String>) -> ProxyService {
@@ -113,6 +120,7 @@ fn make_proxy_with_cors(auth_addr: SocketAddr, backend_addr: SocketAddr, host: &
         degraded_mode: false,
         jwt_public_key_pem: None,
         jwks_url: None,
+        gateway_assertion_secret: None,
         jwt_issuer: None,
         jwt_audience: None,
     };
@@ -125,6 +133,7 @@ fn make_proxy_with_cors(auth_addr: SocketAddr, backend_addr: SocketAddr, host: &
             weights: vec![], backends: vec![format!("http://{}", backend_addr)],
             app_id: Some("test-app".into()),
             public: false,
+            min_role: None,
             bypass_paths: vec![], mirror: None,
             path_prefix: None, strip_prefix: None, add_prefix: None,
             request_headers: None, response_headers: None,
@@ -144,12 +153,42 @@ fn make_proxy_with_cors(auth_addr: SocketAddr, backend_addr: SocketAddr, host: &
     ProxyService::new(volta, hot, metrics, plugins)
 }
 
+fn make_proxy_with_min_role(
+    auth_addr: SocketAddr,
+    backend_addr: SocketAddr,
+    host: &str,
+    min_role: &str,
+) -> ProxyService {
+    let proxy = make_proxy(auth_addr, backend_addr, host);
+    let mut routing = (*proxy.hot.load_full().routing).clone();
+    routing.get_mut(host).unwrap().min_role = Some(min_role.into());
+    proxy
+        .hot
+        .store(Arc::new(HotState::new(Arc::new(routing))));
+    proxy
+}
+
 // ─── Tests ──────────────────────────────────────────────
 
 #[tokio::test]
 async fn proxy_forwards_to_backend() {
     // Mock backend: return 200 with body
-    let (backend_addr, _bh) = mock_server(|_req| {
+    let (backend_addr, _bh) = mock_server(|req| {
+        let timestamp = req
+            .headers()
+            .get("x-volta-assertion-timestamp")
+            .and_then(|value| value.to_str().ok())
+            .unwrap();
+        assert!(timestamp.parse::<u64>().is_ok());
+        let signature = req
+            .headers()
+            .get("x-volta-assertion-signature")
+            .and_then(|value| value.to_str().ok())
+            .unwrap();
+        assert!(signature.starts_with("v1="));
+        assert_ne!(signature, "v1=client-forgery");
+        assert_eq!(req.headers().get("x-real-ip").unwrap(), "127.0.0.1");
+        assert_eq!(req.headers().get("x-forwarded-for").unwrap(), "127.0.0.1");
         Response::builder()
             .status(200)
             .header("content-type", "application/json")
@@ -193,6 +232,10 @@ async fn proxy_forwards_to_backend() {
         .method("GET")
         .uri(format!("http://{}/api/test", proxy_addr))
         .header("host", "app.test.com")
+        .header("x-volta-assertion-timestamp", "1")
+        .header("x-volta-assertion-signature", "v1=client-forgery")
+        .header("x-real-ip", "10.0.0.7")
+        .header("x-forwarded-for", "10.0.0.8")
         .body(Empty::<Bytes>::new())
         .unwrap();
 
@@ -251,6 +294,70 @@ async fn proxy_returns_403_on_auth_denied() {
     let resp = client.request(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 
+    server.abort();
+}
+
+#[tokio::test]
+async fn proxy_enforces_min_role_hierarchy() {
+    let (backend_addr, _bh) = mock_server(|_req| {
+        Response::builder().status(200).body(empty_body()).unwrap()
+    })
+    .await;
+    let (auth_addr, _ah) = mock_server(|req| {
+        let role = if req
+            .headers()
+            .get("cookie")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|cookie| cookie.contains("operator"))
+        {
+            "OPERATOR"
+        } else {
+            "MEMBER"
+        };
+        Response::builder()
+            .status(200)
+            .header("x-volta-user-id", "user")
+            .header("x-volta-roles", role)
+            .body(empty_body())
+            .unwrap()
+    })
+    .await;
+    let proxy = make_proxy_with_min_role(auth_addr, backend_addr, "roles.test.com", "OPERATOR");
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = listener.local_addr().unwrap();
+    let proxy_clone = proxy.clone();
+    let server = tokio::spawn(async move {
+        let (stream, remote_addr) = listener.accept().await.unwrap();
+        let service = service_fn(move |req: Request<Incoming>| {
+            let proxy = proxy_clone.clone();
+            async move { Ok::<_, hyper::Error>(proxy.handle(req, remote_addr).await) }
+        });
+        let _ = auto::Builder::new(TokioExecutor::new())
+            .serve_connection(TokioIo::new(stream), service)
+            .await;
+    });
+    let client: hyper_util::client::legacy::Client<_, Empty<Bytes>> =
+        hyper_util::client::legacy::Client::builder(TokioExecutor::new()).build_http();
+
+    for (cookie, expected) in [
+        ("session=member", StatusCode::FORBIDDEN),
+        ("session=operator", StatusCode::OK),
+    ] {
+        let response = client
+            .request(
+                Request::builder()
+                    .uri(format!("http://{proxy_addr}/admin"))
+                    .header("host", "roles.test.com")
+                    .header("cookie", cookie)
+                    .body(Empty::new())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+        let _ = response.into_body().collect().await.unwrap();
+    }
     server.abort();
 }
 
@@ -432,6 +539,7 @@ fn make_proxy_public(backend_addr: SocketAddr, host: &str) -> ProxyService {
         degraded_mode: false,
         jwt_public_key_pem: None,
         jwks_url: None,
+        gateway_assertion_secret: None,
         jwt_issuer: None,
         jwt_audience: None,
     };
@@ -444,11 +552,20 @@ fn make_proxy_public(backend_addr: SocketAddr, host: &str) -> ProxyService {
             weights: vec![], backends: vec![format!("http://{}", backend_addr)],
             app_id: Some("public-app".into()),
             public: true,
+            min_role: None,
             bypass_paths: vec![], mirror: None,
             path_prefix: None, strip_prefix: None, add_prefix: None,
             request_headers: None, response_headers: None,
             geo_allowlist: vec![], geo_denylist: vec![],
-            timeout_secs: None, cache: None, backend_tls: None,
+            timeout_secs: None,
+            cache: Some(volta_gateway::cache::CacheConfig {
+                enabled: true,
+                ttl_secs: 300,
+                methods: vec!["GET".into()],
+                max_body_size: 1_048_576,
+                ignore_query: false,
+            }),
+            backend_tls: None,
         },
     );
 
@@ -470,6 +587,7 @@ fn make_proxy_with_bypass(auth_addr: SocketAddr, backend_addr: SocketAddr, host:
         degraded_mode: false,
         jwt_public_key_pem: None,
         jwks_url: None,
+        gateway_assertion_secret: None,
         jwt_issuer: None,
         jwt_audience: None,
     };
@@ -482,6 +600,7 @@ fn make_proxy_with_bypass(auth_addr: SocketAddr, backend_addr: SocketAddr, host:
             weights: vec![], backends: vec![format!("http://{}", backend_addr)],
             app_id: Some("bypass-app".into()),
             public: false,
+            min_role: None,
             bypass_paths: vec![volta_gateway::config::BypassPath {
                 prefix: "/webhooks/".into(),
                 backend: None,
@@ -543,6 +662,98 @@ async fn proxy_public_route_skips_auth() {
     let body = resp.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(body, r#"{"public":true}"#);
 
+    server.abort();
+}
+
+#[tokio::test]
+async fn dynamic_public_route_with_min_role_fails_closed() {
+    let (backend_addr, _bh) = mock_server(|_req| {
+        Response::builder().status(200).body(empty_body()).unwrap()
+    })
+    .await;
+    let proxy = make_proxy_public(backend_addr, "bad-role.test.com");
+    let mut routing = (*proxy.hot.load_full().routing).clone();
+    routing.get_mut("bad-role.test.com").unwrap().min_role = Some("MEMBER".into());
+    proxy
+        .hot
+        .store(Arc::new(HotState::new(Arc::new(routing))));
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = listener.local_addr().unwrap();
+    let proxy_clone = proxy.clone();
+    let server = tokio::spawn(async move {
+        let (stream, remote_addr) = listener.accept().await.unwrap();
+        let service = service_fn(move |req: Request<Incoming>| {
+            let proxy = proxy_clone.clone();
+            async move { Ok::<_, hyper::Error>(proxy.handle(req, remote_addr).await) }
+        });
+        let _ = auto::Builder::new(TokioExecutor::new())
+            .serve_connection(TokioIo::new(stream), service)
+            .await;
+    });
+    let client: hyper_util::client::legacy::Client<_, Empty<Bytes>> =
+        hyper_util::client::legacy::Client::builder(TokioExecutor::new()).build_http();
+    let response = client
+        .request(
+            Request::builder()
+                .uri(format!("http://{proxy_addr}/"))
+                .header("host", "bad-role.test.com")
+                .body(Empty::new())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    server.abort();
+}
+
+#[tokio::test]
+async fn credentialed_public_requests_do_not_reuse_shared_cache() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let backend_calls = calls.clone();
+    let (backend_addr, _bh) = mock_server(move |_req| {
+        backend_calls.fetch_add(1, Ordering::SeqCst);
+        Response::builder()
+            .status(200)
+            .header("content-type", "application/json")
+            .body(full_body(Bytes::from(r#"{"cached":true}"#)))
+            .unwrap()
+    })
+    .await;
+    let proxy = make_proxy_public(backend_addr, "public-cache.test.com");
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = listener.local_addr().unwrap();
+    let proxy_clone = proxy.clone();
+    let server = tokio::spawn(async move {
+        let (stream, remote_addr) = listener.accept().await.unwrap();
+        let service = service_fn(move |req: Request<Incoming>| {
+            let proxy = proxy_clone.clone();
+            async move { Ok::<_, hyper::Error>(proxy.handle(req, remote_addr).await) }
+        });
+        let _ = auto::Builder::new(TokioExecutor::new())
+            .serve_connection(TokioIo::new(stream), service)
+            .await;
+    });
+    let client: hyper_util::client::legacy::Client<_, Empty<Bytes>> =
+        hyper_util::client::legacy::Client::builder(TokioExecutor::new()).build_http();
+
+    for credential in [None, None, Some(("cookie", "session=private")), Some(("authorization", "Bearer private"))] {
+        let mut request = Request::builder()
+            .uri(format!("http://{proxy_addr}/asset"))
+            .header("host", "public-cache.test.com")
+            .header("accept-encoding", "gzip");
+        if let Some((name, value)) = credential {
+            request = request.header(name, value);
+        }
+        let response = client.request(request.body(Empty::new()).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let _ = response.into_body().collect().await.unwrap();
+    }
+
+    // Request 2 is a shared-cache hit. Cookie and Authorization requests both
+    // bypass lookup/store and therefore reach the backend independently.
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
     server.abort();
 }
 

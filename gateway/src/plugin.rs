@@ -166,6 +166,7 @@ pub mod builtin {
         pub user_header: String,
         cache: Arc<Mutex<HashMap<String, (MonetizerBilling, std::time::Instant)>>>,
         http: reqwest::Client,
+        assertion_signer: Option<crate::assertion::GatewayAssertionSigner>,
     }
 
     #[derive(Debug, Clone, serde::Deserialize)]
@@ -181,6 +182,16 @@ pub mod builtin {
 
     impl Monetizer {
         pub fn new(verify_url: String, config_id: String, cache_ttl_secs: u64, user_header: String) -> Self {
+            Self::new_with_assertion(verify_url, config_id, cache_ttl_secs, user_header, None)
+        }
+
+        pub fn new_with_assertion(
+            verify_url: String,
+            config_id: String,
+            cache_ttl_secs: u64,
+            user_header: String,
+            assertion_signer: Option<crate::assertion::GatewayAssertionSigner>,
+        ) -> Self {
             Self {
                 verify_url,
                 config_id,
@@ -191,6 +202,7 @@ pub mod builtin {
                     .timeout(std::time::Duration::from_secs(2))
                     .build()
                     .unwrap(),
+                assertion_signer,
             }
         }
 
@@ -222,11 +234,26 @@ pub mod builtin {
 
         fn fetch_billing(&self, user_id: &str) -> Result<MonetizerBilling, String> {
             let url = format!("{}?user={}&config={}", self.verify_url, user_id, self.config_id);
+            let parsed_url = reqwest::Url::parse(&url)
+                .map_err(|e| format!("invalid monetizer verify URL: {e}"))?;
+            let path_with_query = match parsed_url.query() {
+                Some(query) => format!("{}?{}", parsed_url.path(), query),
+                None => parsed_url.path().to_string(),
+            };
             let handle = tokio::runtime::Handle::current();
             let http = self.http.clone();
+            let assertion = self.assertion_signer.as_ref().map(|signer| {
+                signer.sign_now("GET", &path_with_query, "", "", "")
+            });
             tokio::task::block_in_place(|| {
                 handle.block_on(async {
-                    let resp = http.get(&url).send().await
+                    let mut request = http.get(parsed_url);
+                    if let Some(assertion) = assertion {
+                        request = request
+                            .header(crate::assertion::TIMESTAMP_HEADER, assertion.timestamp)
+                            .header(crate::assertion::SIGNATURE_HEADER, assertion.signature);
+                    }
+                    let resp = request.send().await
                         .map_err(|e| format!("monetizer verify request failed: {}", e))?;
                     if !resp.status().is_success() {
                         return Err(format!("monetizer verify returned {}", resp.status()));
@@ -322,6 +349,13 @@ impl PluginManager {
 
     /// Load built-in plugins from config.
     pub fn load_from_config(configs: &[PluginConfig]) -> Self {
+        Self::load_from_config_with_assertion(configs, None)
+    }
+
+    pub fn load_from_config_with_assertion(
+        configs: &[PluginConfig],
+        assertion_signer: Option<crate::assertion::GatewayAssertionSigner>,
+    ) -> Self {
         let mut mgr = Self::new();
         for config in configs {
             match config.name.as_str() {
@@ -356,8 +390,8 @@ impl PluginManager {
                         .and_then(|s| s.parse().ok()).unwrap_or(5);
                     let user_header = config.config.get("user_header")
                         .cloned().unwrap_or_else(|| "x-volta-user-id".into());
-                    mgr.register(config.clone(), Arc::new(builtin::Monetizer::new(
-                        verify_url, config_id, cache_ttl, user_header,
+                    mgr.register(config.clone(), Arc::new(builtin::Monetizer::new_with_assertion(
+                        verify_url, config_id, cache_ttl, user_header, assertion_signer.clone(),
                     )));
                 }
                 "header-injector" => {
@@ -415,5 +449,97 @@ impl PluginManager {
         self.plugins.iter()
             .map(|(c, s, _)| (c.name.clone(), format!("{:?}", s)))
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod assertion_tests {
+    use super::builtin::Monetizer;
+    use super::{Plugin, PluginContext};
+    use crate::assertion::GatewayAssertionSigner;
+    use bytes::Bytes;
+    use http_body_util::Full;
+    use hyper::body::Incoming;
+    use hyper::service::service_fn;
+    use hyper::{Request, Response};
+    use hyper_util::rt::{TokioExecutor, TokioIo};
+    use hyper_util::server::conn::auto;
+    use std::collections::HashMap;
+    use std::convert::Infallible;
+    use std::sync::{Arc, Mutex};
+    use tokio::net::TcpListener;
+    use tokio::sync::oneshot;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn monetizer_verify_call_carries_valid_gateway_assertion() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = oneshot::channel();
+        let tx = Arc::new(Mutex::new(Some(tx)));
+
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let service = service_fn(move |req: Request<Incoming>| {
+                let observed = (
+                    req.uri()
+                        .path_and_query()
+                        .map(|value| value.as_str().to_string())
+                        .unwrap(),
+                    req.headers()
+                        .get(crate::assertion::TIMESTAMP_HEADER)
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .to_string(),
+                    req.headers()
+                        .get(crate::assertion::SIGNATURE_HEADER)
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .to_string(),
+                );
+                if let Some(tx) = tx.lock().unwrap().take() {
+                    let _ = tx.send(observed);
+                }
+                async {
+                    Ok::<_, Infallible>(
+                        Response::builder()
+                            .header("content-type", "application/json")
+                            .body(Full::new(Bytes::from_static(
+                                br#"{"plan":"pro","status":"active","features":"x","showAds":"false","trialEnd":""}"#,
+                            )))
+                            .unwrap(),
+                    )
+                }
+            });
+            let _ = auto::Builder::new(TokioExecutor::new())
+                .serve_connection(TokioIo::new(stream), service)
+                .await;
+        });
+
+        let signer = GatewayAssertionSigner::new("0123456789abcdef0123456789abcdef").unwrap();
+        let plugin = Monetizer::new_with_assertion(
+            format!("http://{addr}/__monetizer/verify"),
+            "config-1".into(),
+            5,
+            "x-volta-user-id".into(),
+            Some(signer.clone()),
+        );
+        let mut context = PluginContext {
+            method: "GET".into(),
+            host: "app.test".into(),
+            path: "/".into(),
+            headers: HashMap::from([("x-volta-user-id".into(), "user-1".into())]),
+            client_ip: "192.0.2.1".into(),
+            reject: None,
+            add_headers: HashMap::new(),
+            remove_headers: Vec::new(),
+        };
+        plugin.on_request(&mut context).unwrap();
+
+        let (path, timestamp, signature) = rx.await.unwrap();
+        let expected = signer.sign_at(timestamp.parse().unwrap(), "GET", &path, "", "", "");
+        assert_eq!(signature, expected.signature);
+        assert_eq!(context.add_headers.get("X-Monetizer-Plan").unwrap(), "pro");
     }
 }

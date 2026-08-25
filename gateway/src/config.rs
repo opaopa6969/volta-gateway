@@ -245,41 +245,45 @@ pub struct AuthConfig {
     pub timeout_ms: u64,
     #[serde(default = "default_pool_max_idle")]
     pub pool_max_idle: usize,
-    /// JWT secret for in-process session verification (DD-005 Phase 0).
-    /// If set, gateway verifies session JWT locally before falling back to HTTP.
+    /// JWT secret for explicit degraded-mode session verification (DD-005).
+    /// This never replaces the normal online `/auth/verify` request.
     #[serde(default)]
     pub jwt_secret: Option<String>,
     /// Session cookie name (default: __volta_session).
     #[serde(default = "default_cookie_name")]
     pub cookie_name: Option<String>,
     /// Public-facing base URL of the auth proxy (e.g. https://auth.example.com).
-    /// Redirects from auth-proxy to this origin are allowed through sanitize_redirect.
+    /// Redirects from auth-server to this origin are allowed through sanitize_redirect.
     #[serde(default)]
     pub auth_public_url: Option<String>,
-    /// DD-005 縮退運転 (degraded mode): on auth-proxy failure, fall back to
+    /// DD-005 縮退運転 (degraded mode): on auth-server failure, fall back to
     /// in-process JWT verification for requests that carry a still-valid session.
     /// Default false (fail-closed). The env var `VOLTA_AUTH_DEGRADED_MODE`
     /// (1/true/yes/on) overrides this YAML value, mirroring `admin.token`.
     #[serde(default)]
     pub degraded_mode: bool,
     /// RS256 public key for in-process verification. Either an inline PEM
-    /// (`-----BEGIN PUBLIC KEY-----…`) or a path to a `.pem` file. auth-proxy
+    /// (`-----BEGIN PUBLIC KEY-----…`) or a path to a `.pem` file. auth-server
     /// issues RS256 tokens, so this (or `jwks_url`) is the production path.
     #[serde(default)]
     pub jwt_public_key_pem: Option<String>,
     /// JWKS endpoint URL for RS256 key discovery (e.g.
-    /// `http://auth-proxy:8080/.well-known/jwks.json`). When set it takes
+    /// `http://auth-server:7070/.well-known/jwks.json`). When set it takes
     /// precedence over `jwt_public_key_pem` and is refreshed on a TTL.
     #[serde(default)]
     pub jwks_url: Option<String>,
-    /// Expected `iss` claim for RS256 tokens (auth-proxy uses `volta-auth`).
+    /// Expected `iss` claim for RS256 tokens (auth-server uses `volta-auth`).
     /// When unset, the issuer is not enforced.
     #[serde(default)]
     pub jwt_issuer: Option<String>,
-    /// Expected `aud` claim for RS256 tokens (auth-proxy uses `volta-apps`).
+    /// Expected `aud` claim for RS256 tokens (auth-server uses `volta-apps`).
     /// When unset, the audience is not enforced.
     #[serde(default)]
     pub jwt_audience: Option<String>,
+    /// HMAC secret used to prove gateway origin to internal backends. The env
+    /// `VOLTA_GATEWAY_ASSERTION_SECRET` overrides this value when non-empty.
+    #[serde(default)]
+    pub gateway_assertion_secret: Option<String>,
 }
 
 impl AuthConfig {
@@ -294,6 +298,18 @@ impl AuthConfig {
             }
         }
         self.degraded_mode
+    }
+
+    pub fn effective_gateway_assertion_secret(&self) -> Option<String> {
+        if let Ok(secret) = std::env::var("VOLTA_GATEWAY_ASSERTION_SECRET") {
+            if !secret.is_empty() {
+                return Some(secret);
+            }
+        }
+        self.gateway_assertion_secret
+            .as_ref()
+            .filter(|secret| !secret.is_empty())
+            .cloned()
     }
 
     /// Resolve the RS256 public-key PEM bytes from `jwt_public_key_pem`, which
@@ -356,6 +372,9 @@ pub struct RouteEntry {
     /// Skip auth entirely for this route (e.g. auth server itself, public docs).
     #[serde(default)]
     pub public: bool,
+    /// Minimum platform role for authenticated requests.
+    #[serde(default)]
+    pub min_role: Option<String>,
     /// Paths that bypass auth (e.g. Slack webhooks). Optional backend override.
     #[serde(default)]
     pub auth_bypass_paths: Vec<BypassPath>,
@@ -552,6 +571,60 @@ impl GatewayConfig {
             if r.all_backends().is_empty() {
                 errors.push(format!("routing host '{}' has no backends", r.host));
             }
+            if !r.public && r.cache.as_ref().is_some_and(|cache| cache.enabled) {
+                errors.push(format!(
+                    "routing host '{}' enables response cache on an authenticated route; cache is allowed only with public: true",
+                    r.host
+                ));
+            }
+            if let Some(min_role) = r.min_role.as_deref() {
+                let role = min_role.trim().to_ascii_uppercase();
+                let valid = ["OWNER", "ADMIN", "OPERATOR", "MEMBER", "VIEWER"]
+                    .contains(&role.as_str());
+                if !valid {
+                    errors.push(format!(
+                        "routing host '{}' has invalid min_role '{}'; expected OWNER, ADMIN, OPERATOR, MEMBER, or VIEWER",
+                        r.host, min_role
+                    ));
+                }
+                if r.public {
+                    errors.push(format!(
+                        "routing host '{}' cannot combine public: true with min_role",
+                        r.host
+                    ));
+                }
+                if !r.auth_bypass_paths.is_empty() {
+                    errors.push(format!(
+                        "routing host '{}' cannot combine min_role with auth_bypass_paths",
+                        r.host
+                    ));
+                }
+            }
+            for bypass in &r.auth_bypass_paths {
+                if bypass.prefix.is_empty() || !bypass.prefix.starts_with('/') {
+                    errors.push(format!(
+                        "routing host '{}' has invalid auth_bypass_paths prefix '{}'; it must start with '/'",
+                        r.host, bypass.prefix
+                    ));
+                }
+            }
+        }
+        let assertion_secret = self.auth.effective_gateway_assertion_secret();
+        if let Some(secret) = &assertion_secret {
+            if secret.len() < crate::assertion::MIN_SECRET_LEN {
+                errors.push(format!(
+                    "auth.gateway_assertion_secret / VOLTA_GATEWAY_ASSERTION_SECRET must be at least {} bytes",
+                    crate::assertion::MIN_SECRET_LEN
+                ));
+            }
+        }
+        if self.plugins.iter().any(|plugin| plugin.name == "monetizer")
+            && assertion_secret.is_none()
+        {
+            errors.push(
+                "monetizer plugin requires auth.gateway_assertion_secret or VOLTA_GATEWAY_ASSERTION_SECRET"
+                    .into(),
+            );
         }
         if errors.is_empty() { Ok(()) } else { Err(errors) }
     }
@@ -566,6 +639,7 @@ impl GatewayConfig {
                 weights: r.all_weights(),
                 app_id: r.app_id.clone(),
                 public: r.public,
+                min_role: r.min_role.clone(),
                 bypass_paths: r.auth_bypass_paths.clone(),
                 mirror: r.mirror.clone(),
                 path_prefix: r.path_prefix.clone(),
@@ -625,6 +699,7 @@ mod tests {
             geo_allowlist: vec![],
             geo_denylist: vec![],
             public: false,
+            min_role: None,
             auth_bypass_paths: vec![],
             mirror: None,
             timeout_secs: None,
@@ -649,6 +724,7 @@ mod tests {
             geo_allowlist: vec![],
             geo_denylist: vec![],
             public: false,
+            min_role: None,
             auth_bypass_paths: vec![],
             mirror: None,
             timeout_secs: None,
@@ -715,6 +791,7 @@ routing:
             geo_allowlist: vec![],
             geo_denylist: vec![],
             public: false,
+            min_role: None,
             auth_bypass_paths: vec![],
             mirror: None,
             timeout_secs: None,
@@ -742,6 +819,7 @@ routing:
             geo_allowlist: vec![],
             geo_denylist: vec![],
             public: false,
+            min_role: None,
             auth_bypass_paths: vec![],
             mirror: None,
             timeout_secs: None,

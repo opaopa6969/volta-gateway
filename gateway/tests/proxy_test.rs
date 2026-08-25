@@ -4,6 +4,17 @@ use std::time::{Duration, Instant};
 
 use volta_gateway::proxy::{ErrorPages, CorsTable};
 
+#[test]
+fn auth_bypass_prefix_is_segment_bounded() {
+    use volta_gateway::proxy::bypass_path_matches;
+
+    assert!(bypass_path_matches("/health", "/health"));
+    assert!(bypass_path_matches("/health/ready", "/health"));
+    assert!(!bypass_path_matches("/healthz", "/health"));
+    assert!(!bypass_path_matches("/health-secret", "/health"));
+    assert!(bypass_path_matches("/hooks/stripe", "/hooks/"));
+}
+
 // ─── Circuit Breaker Tests ─────────────────────────────
 
 /// Minimal circuit breaker reimplementation for unit testing
