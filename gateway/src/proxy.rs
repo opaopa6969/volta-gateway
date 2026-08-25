@@ -742,11 +742,20 @@ impl ProxyService {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
-        let proto = if req.uri().scheme_str() == Some("https") {
-            "https"
-        } else {
-            "http"
-        };
+        let proto = req
+            .headers()
+            .get("x-forwarded-proto")
+            .and_then(|v| v.to_str().ok())
+            .filter(|s| s.eq_ignore_ascii_case("https"))
+            .map(|_| "https")
+            .or_else(|| {
+                if req.uri().scheme_str() == Some("https") {
+                    Some("https")
+                } else {
+                    None
+                }
+            })
+            .unwrap_or("http");
 
         let req_data = RequestData {
             host: host.clone(),

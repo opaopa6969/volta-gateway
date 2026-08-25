@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "@unlaxer/dxe-suite": "file:../DxE-suite"
+  }
+}
