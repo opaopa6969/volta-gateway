@@ -58,6 +58,19 @@ outside their replay window, and must compare MAC bytes in constant time.
 Production backends that consume `X-Volta-User-Id`, `X-Volta-Tenant-Id`, or
 `X-Volta-Roles` must configure this secret and reject unsigned requests.
 
+Cross-service test vector:
+
+```text
+secret: 0123456789abcdef0123456789abcdef
+timestamp: 1700000000
+method: GET
+path/query: /v1/items?q=1
+user: user-1
+tenant: tenant-1
+roles: ADMIN,MEMBER
+signature: v1=bb4fb0ab85dbaf12f10b29e2fe436b2d5eeb6d836c40255fed4a9fd41cd5f568
+```
+
 ## Route authorization
 
 `min_role` uses `OWNER > ADMIN > OPERATOR > MEMBER > VIEWER` and is enforced

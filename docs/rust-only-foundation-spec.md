@@ -43,8 +43,9 @@ Gateway-to-backend identity is authenticated with these headers:
 - `X-Volta-Assertion-Timestamp`: Unix timestamp in seconds.
 - `X-Volta-Assertion-Signature`: `v1=<lowercase hex HMAC-SHA256>`.
 
-The HMAC key is supplied through `VOLTA_GATEWAY_ASSERTION_SECRET` and must be
-at least 32 bytes. It is not stored in route configuration or `services.json`.
+The HMAC key is supplied through `VOLTA_GATEWAY_ASSERTION_SECRET` (recommended)
+or `auth.gateway_assertion_secret` and must be at least 32 bytes. It is never
+stored in route configuration or `services.json`.
 
 The UTF-8 canonical payload is:
 
@@ -75,9 +76,13 @@ the consumer.
   not silently replace online checks because revocation, tenant suspension,
   MFA state, and policy changes are server-side decisions.
 - A cached authorization result may have a short bounded TTL, but its key must
-  include every policy input: session, host, application, and relevant route.
+  include every policy input: session, host, application, URI, scheme, and
+  resolved client IP.
 - Bypass paths use exact or segment-bounded matching. Health endpoints must use
   exact matching.
+- `min_role` is enforced by the gateway using
+  `OWNER > ADMIN > OPERATOR > MEMBER > VIEWER`; a public or bypassed request
+  cannot carry a role requirement.
 
 ## 5. Response cache behavior
 
@@ -86,6 +91,8 @@ the consumer.
   public routes.
 - `Set-Cookie` responses and responses marked `private` or `no-store` are never
   cached.
+- Requests carrying `Cookie` or `Authorization` never use the shared cache,
+  even on public routes.
 - A future authenticated cache must declare `public`, `tenant`, or `user`
   scope and include that scope's identity in the key.
 
@@ -108,7 +115,7 @@ Every desired-state mutation follows:
 ```text
 authenticate -> validate complete service -> atomic desired-state write
 -> render temporary gateway config -> gateway validate
--> atomic replace -> reload -> health/convergence check -> audit result
+-> atomic replace -> reload -> bounded health/convergence check -> audit result
 ```
 
 An API must not report a successful converged change while route generation or

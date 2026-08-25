@@ -13,45 +13,50 @@ Make the Rust-only Volta stack safe for other services to depend on. Java
 
 ### VGW-SEC-001 — Trusted identity hop
 
-- [ ] Strip client assertion headers at the edge.
-- [ ] Sign forwarded identity with gateway assertion v1.
-- [ ] Sign gateway monetizer-plugin calls.
-- [ ] Add tamper, expiry, path, method, user, tenant, and role tests.
-- [ ] Document secret generation and rotation.
+- [x] Strip client assertion headers at the edge.
+- [x] Sign forwarded identity with gateway assertion v1.
+- [x] Sign gateway monetizer-plugin calls.
+- [x] Add a shared Rust/TypeScript contract vector and tamper/replay tests.
+- [ ] Add key IDs and overlapping-key rotation; generation and current
+      single-key operation are documented.
 
 ### VAUTH-SEC-001 — Safe client IP and bypass
 
-- [ ] Disable local-network bypass by default.
-- [ ] Use forwarding headers only for configured trusted peers.
-- [ ] Add direct-header-spoof regression tests.
-- [ ] Expose bypass activation and usage as startup/audit signals.
+- [x] Disable local-network bypass by default.
+- [x] Use forwarding headers only for configured trusted peers.
+- [x] Add direct-header-spoof regression tests.
+- [x] Expose bypass activation at startup and mark bypassed responses.
 
 ### VGW-CACHE-001 — Cache isolation
 
-- [ ] Reject shared response cache on protected routes.
-- [ ] Reject `Set-Cookie`, `private`, and `no-store` responses.
-- [ ] Add two-user isolation tests.
+- [x] Reject shared response cache on protected routes.
+- [x] Reject credentialed requests and `Set-Cookie`, `private`, `no-store`,
+      `Vary`, and authentication-challenge responses.
+- [x] Add credential-isolation regression tests.
 - [ ] Design explicit tenant/user cache scopes before enabling them.
 
 ### VAUTH-REV-001 — Online authorization semantics
 
-- [ ] Make local JWT verification degraded-mode-only.
-- [ ] Test session revocation, tenant suspension, role change, and MFA change.
-- [ ] Define maximum offline authorization window.
+- [x] Make local JWT verification degraded-mode-only.
+- [ ] Add database-backed revocation, suspension, role-change, and MFA-change
+      end-to-end cases.
+- [ ] Define the production maximum offline authorization window.
 
 ### MON-SEC-001 — Monetizer boundary
 
-- [ ] Verify gateway assertion on authenticated and internal APIs.
-- [ ] Reject inactive plan listing and checkout.
-- [ ] Claim webhook events atomically before side effects.
-- [ ] Add tenant-owned configuration migration design.
+- [x] Verify gateway assertion on authenticated and internal APIs.
+- [x] Reject inactive plan listing and checkout.
+- [x] Claim webhook events atomically and make persisted effects replay-safe.
+- [x] Add a tenant-owned configuration migration issue and staged design.
 
 ### VPLAT-OPS-001 — Atomic convergence
 
-- [ ] Validate every API/CLI mutation with the same complete schema.
-- [ ] Await gateway regeneration and surface failures to callers.
-- [ ] Apply gateway config through temp/validate/atomic replace.
-- [ ] Add managed-route ownership and safe deletion.
+- [x] Validate every API/CLI mutation with the same complete schema.
+- [x] Await gateway regeneration and surface failures to callers.
+- [x] Apply gateway config through temp/validate/atomic replace, bounded health
+      verification, and rollback/reload.
+- [x] Add managed-route ownership and snapshot-guarded safe deletion. Existing
+      routes are not inferred as owned during bootstrap.
 - [ ] Remove Traefik actions from active UI/API/runbooks.
 
 ## Acceptance criteria
