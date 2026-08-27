@@ -20,6 +20,7 @@ PostgreSQL
 # 環境変数
 export DATABASE_URL=postgres://localhost/volta
 export JWT_SECRET=your-secret-key
+export KEY_CIPHER_MASTER_KEY=your-independent-encryption-key
 export IDP_PROVIDER=google
 export IDP_CLIENT_ID=your-google-client-id
 export IDP_CLIENT_SECRET=your-google-client-secret
@@ -35,6 +36,7 @@ cargo run --release -p volta-auth-server
 | `PORT` | 7070 | HTTP ポート |
 | `DATABASE_URL` | postgres://localhost/volta | PostgreSQL 接続 URL |
 | `JWT_SECRET` | `volta-dev-secret-change-me-in-prod` | JWT 署名シークレット (HS256)。本番では必ず変更 |
+| `KEY_CIPHER_MASTER_KEY` | (`JWT_SECRET` に fallback、WARN を記録) | PKCE verifier・TOTP secret 等の保存データ暗号鍵。本番では JWT 署名鍵と分離する |
 | `SESSION_TTL_SECONDS` | 28800 (8h) | セッション有効期間 |
 | `COOKIE_DOMAIN` | (空) | Cookie の Domain 属性 |
 | `FORCE_SECURE_COOKIE` | false | HTTPS なしでも Secure フラグ |
@@ -45,6 +47,23 @@ cargo run --release -p volta-auth-server
 | `IDP_CLIENT_SECRET` | (空) | OAuth2 Client Secret |
 | `SAML_SKIP_SIGNATURE` | false | SAML 署名検証スキップ (開発用) |
 | `OUTBOX_POLL_SECS` | 5 | Webhook 配信 worker ポーリング間隔 |
+
+### 保存データ暗号鍵の分離と移行
+
+本番では `KEY_CIPHER_MASTER_KEY` を必ず設定し、`JWT_SECRET` と用途を分離する。
+未設定時は後方互換のため `JWT_SECRET` を暗号鍵として使うが、起動時に WARN を記録する。
+この fallback は移行期間専用であり、新規環境の既定運用ではない。
+
+既存環境が fallback を使っている場合は、次の順序なら既存暗号文を失わずに分離できる。
+
+1. 現在の `JWT_SECRET` と**同じ値**を `KEY_CIPHER_MASTER_KEY` に設定し、`JWT_SECRET` は変更せず再起動する。
+2. 既存の TOTP 認証と進行中の OIDC フローが復号でき、fallback WARN が消えたことを確認する。
+3. `KEY_CIPHER_MASTER_KEY` を維持したまま `JWT_SECRET` だけを新しい値へ rotate する。既存 JWT session は無効になるため、利用者の再ログインを計画する。
+
+`KEY_CIPHER_MASTER_KEY` 自体を変更すると既存暗号文は復号できなくなる。現行実装は
+旧鍵との二重読みや一括再暗号化を提供しないため、保存済み secret の再登録・再暗号化計画なしに
+この値を rotate してはならない。鍵は secret manager で保管し、十分なランダム値
+（例: `openssl rand -hex 32`）を使う。
 
 ## エンドポイント一覧 (126 routes)
 
