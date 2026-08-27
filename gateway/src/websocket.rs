@@ -95,7 +95,7 @@ pub async fn handle_websocket(
         || route
             .bypass_paths
             .iter()
-            .any(|bp| uri_path.starts_with(&bp.prefix));
+            .any(|bp| crate::proxy::bypass_path_matches(&uri_path, &bp.prefix));
 
     if !skip_auth {
         let real_client_ip = if !trusted_proxies.is_empty()
@@ -145,7 +145,7 @@ pub async fn handle_websocket(
     let bypass_backend = route
         .bypass_paths
         .iter()
-        .find(|bp| uri_path.starts_with(&bp.prefix))
+        .find(|bp| crate::proxy::bypass_path_matches(&uri_path, &bp.prefix))
         .and_then(|bp| bp.backend.clone());
 
     // Select backend (round-robin, or bypass override)

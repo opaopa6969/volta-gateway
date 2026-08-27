@@ -102,6 +102,41 @@ pub struct RouteInfo {
 /// host → RouteInfo
 pub type RoutingTable = HashMap<String, RouteInfo>;
 
+/// Match an auth-bypass prefix at a path-segment boundary (volta-platform#61 C-1).
+///
+/// Plain `starts_with` let `/health` bypass `/healthz`, `/healthcheck-internal`, etc.
+/// A prefix without a trailing slash matches the path itself or a sub-path only.
+pub fn bypass_path_matches(path: &str, prefix: &str) -> bool {
+    if path == prefix {
+        return true;
+    }
+    if prefix.ends_with('/') {
+        return path.starts_with(prefix);
+    }
+    path.strip_prefix(prefix)
+        .is_some_and(|remainder| remainder.starts_with('/'))
+}
+
+#[cfg(test)]
+mod bypass_match_tests {
+    use super::bypass_path_matches;
+
+    #[test]
+    fn exact_and_subpath_match() {
+        assert!(bypass_path_matches("/health", "/health"));
+        assert!(bypass_path_matches("/health/live", "/health"));
+        assert!(bypass_path_matches("/api/slack/events", "/api/slack/"));
+    }
+
+    #[test]
+    fn sibling_paths_do_not_match() {
+        assert!(!bypass_path_matches("/healthz", "/health"));
+        assert!(!bypass_path_matches("/healthcheck-internal", "/health"));
+        assert!(!bypass_path_matches("/api/slackbot", "/api/slack"));
+        assert!(!bypass_path_matches("/", "/health"));
+    }
+}
+
 /// Round-robin backend selector with health-aware routing.
 /// Dead backends are skipped. Health is tracked per-backend URL.
 #[derive(Clone)]
@@ -814,7 +849,7 @@ impl ProxyService {
         let bypass_match = route_info.as_ref().and_then(|r| {
             r.bypass_paths
                 .iter()
-                .find(|bp| uri_path.starts_with(&bp.prefix))
+                .find(|bp| bypass_path_matches(&uri_path, &bp.prefix))
                 .cloned()
         });
         let skip_auth = is_public || bypass_match.is_some();
