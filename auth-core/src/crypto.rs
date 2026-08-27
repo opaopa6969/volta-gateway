@@ -80,9 +80,18 @@ impl KeyCipher {
     /// do not want to boot with a silently-random key because that would
     /// invalidate existing ciphertexts on every restart.
     pub fn from_env() -> Self {
-        let master = std::env::var("KEY_CIPHER_MASTER_KEY")
-            .or_else(|_| std::env::var("JWT_SECRET"))
-            .expect("KEY_CIPHER_MASTER_KEY (or JWT_SECRET) must be set");
+        let (master, using_jwt_fallback) = resolve_master_key(
+            std::env::var("KEY_CIPHER_MASTER_KEY").ok(),
+            std::env::var("JWT_SECRET").ok(),
+        )
+        .expect("KEY_CIPHER_MASTER_KEY (or JWT_SECRET) must be set");
+        if using_jwt_fallback {
+            tracing::warn!(
+                fallback_key = "JWT_SECRET",
+                dedicated_key = "KEY_CIPHER_MASTER_KEY",
+                "JWT signing key is also being used for at-rest encryption; set KEY_CIPHER_MASTER_KEY to separate key usage before rotating JWT_SECRET"
+            );
+        }
         Self::from_master(master.as_bytes())
     }
 
@@ -120,12 +129,38 @@ impl KeyCipher {
     }
 }
 
+fn resolve_master_key(
+    dedicated_key: Option<String>,
+    jwt_secret: Option<String>,
+) -> Option<(String, bool)> {
+    dedicated_key
+        .map(|key| (key, false))
+        .or_else(|| jwt_secret.map(|key| (key, true)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn fixture() -> KeyCipher {
         KeyCipher::from_master(b"test-master")
+    }
+
+    #[test]
+    fn dedicated_master_key_takes_precedence() {
+        assert_eq!(
+            resolve_master_key(Some("dedicated".into()), Some("jwt".into())),
+            Some(("dedicated".into(), false))
+        );
+    }
+
+    #[test]
+    fn jwt_secret_fallback_is_reported() {
+        assert_eq!(
+            resolve_master_key(None, Some("jwt".into())),
+            Some(("jwt".into(), true))
+        );
+        assert_eq!(resolve_master_key(None, None), None);
     }
 
     #[test]
