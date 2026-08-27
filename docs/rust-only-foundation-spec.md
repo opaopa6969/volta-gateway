@@ -81,8 +81,10 @@ the consumer.
 - Bypass paths use exact or segment-bounded matching. Health endpoints must use
   exact matching.
 - `min_role` is enforced by the gateway using
-  `OWNER > ADMIN > OPERATOR > MEMBER > VIEWER`; a public or bypassed request
-  cannot carry a role requirement.
+  `OWNER > ADMIN > OPERATOR > MEMBER > VIEWER`. It is the route default and
+  may combine with `auth_bypass_paths`; a matching bypass path skips both
+  authentication and the `min_role` check. Only `public: true` combined with
+  `min_role` fails closed (route-wide skip conflicts with a role requirement).
 
 ## 5. Response cache behavior
 

@@ -35,7 +35,8 @@ The supported foundation is `volta-gateway` plus `volta-auth-server`. Java
   [gateway-auth-trust-contract.md](../gateway-auth-trust-contract.md).
 - Client-supplied assertion and identity headers never reach a backend.
 - `min_role` is propagated and enforced with the five-role platform hierarchy;
-  invalid/public/bypass combinations fail closed.
+  invalid/public combinations fail closed. `min_role` + `auth_bypass_paths` is
+  allowed and a matching bypass path skips both auth and `min_role`.
 - Auth-bypass matching is segment-bounded and auth decision cache keys include
   URI, scheme, and resolved client IP.
 

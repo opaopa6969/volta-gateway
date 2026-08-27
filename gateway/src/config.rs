@@ -749,15 +749,12 @@ impl GatewayConfig {
                         ),
                     ));
                 }
-                if !r.auth_bypass_paths.is_empty() {
-                    errors.push((
-                        Self::EXIT_SCHEMA,
-                        format!(
-                            "routing host '{}' cannot combine min_role with auth_bypass_paths",
-                            r.host
-                        ),
-                    ));
-                }
+                // `min_role` + `auth_bypass_paths` は併用を許可する:
+                // `min_role` は route 既定値、`auth_bypass_paths` はそのパスだけ認証を
+                // 省く例外（health 外形監視等）。併用時、bypass に当たったパスは
+                // 認証ごと skip し `min_role` も適用しない（proxy.rs / websocket.rs 参照）。
+                // #126: 5814607 で導入された併用拒否は本番設定（volta-platform 生成器）
+                // を起動不能にするため撤回。`public: true` との排他のみ残す。
             }
             for bypass in &r.auth_bypass_paths {
                 if bypass.prefix.is_empty() || !bypass.prefix.starts_with('/') {

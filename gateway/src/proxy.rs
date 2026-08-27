@@ -856,6 +856,7 @@ impl ProxyService {
 
         // Override backend if bypass_path has a backend override
         let backend_url = bypass_match
+            .as_ref()
             .and_then(|bp| bp.backend.clone())
             .unwrap_or(backend_url);
 
@@ -913,13 +914,21 @@ impl ProxyService {
             .as_ref()
             .and_then(|route| route.min_role.as_deref())
         {
-            if skip_auth {
-                warn!(state = "DENIED", host = %host, min_role = %min_role, "min_role cannot be combined with auth bypass");
+            if is_public {
+                // `public: true` と `min_role` の併用は意味衝突するため fail-closed。
+                // 通常は validation で弾かれるが、動的ルーティング更新
+                // (hot-reload 等) で後から入り得るので実行時にも拒否する。
+                warn!(state = "DENIED", host = %host, min_role = %min_role, "min_role cannot be combined with public route");
                 return error_response_with_pages(
                     StatusCode::FORBIDDEN,
                     &request_id,
                     &hot.error_pages,
                 );
+            } else if bypass_match.is_some() {
+                // `min_role` + `auth_bypass_paths` 併用時、bypass path に当たった
+                // リクエストは認証ごと skip し `min_role` も適用しない。
+                // #126: health 外形監視等で bypass が必要なため、`min_role`
+                // チェックを飛ばして下流へ流す。
             } else {
                 let required = min_role.trim().to_ascii_uppercase();
                 let policy = volta_auth_core::policy::PolicyEngine::default_policy();

@@ -75,8 +75,11 @@ signature: v1=bb4fb0ab85dbaf12f10b29e2fe436b2d5eeb6d836c40255fed4a9fd41cd5f568
 
 `min_role` uses `OWNER > ADMIN > OPERATOR > MEMBER > VIEWER` and is enforced
 only after a successful online/degraded authentication result. Unknown roles
-fail config validation. A runtime route that combines `min_role` with
-`public: true` or an auth-bypass match fails closed with 403.
+fail config validation. `min_role` may be combined with `auth_bypass_paths`:
+the `min_role` is the route default, and a matching bypass path skips both
+authentication and the `min_role` check (health external probes etc.). Only
+`public: true` combined with `min_role` fails closed with 403 (it is a
+route-wide auth skip and conflicts with a role requirement).
 
 Auth-bypass prefixes match path-segment boundaries: `/health` matches
 `/health` and `/health/ready`, but not `/healthz` or `/health-secret`.

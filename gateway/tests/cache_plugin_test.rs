@@ -551,10 +551,6 @@ fn min_role_rejects_unknown_role_and_public_combination() {
             "public: true\n    min_role: MEMBER",
             "cannot combine public",
         ),
-        (
-            "min_role: MEMBER\n    auth_bypass_paths:\n      - prefix: /hooks",
-            "cannot combine min_role",
-        ),
     ] {
         let yaml = format!(
             "server:\n  port: 8080\nauth:\n  volta_url: http://localhost:7070\nrouting:\n  - host: app.test.com\n    backend: http://localhost:3000\n    {extra}\n"
@@ -563,6 +559,19 @@ fn min_role_rejects_unknown_role_and_public_combination() {
         let errors = config.validate().unwrap_err();
         assert!(errors.iter().any(|error| error.contains(expected)));
     }
+}
+
+/// #126: `min_role` + `auth_bypass_paths` の併用は許可される。
+/// `min_role` は route 既定値、`auth_bypass_paths` はそのパスだけ認証を省く例外
+/// (health 外形監視等)。5814607 で導入された併用拒否は本番設定を起動不能にするため撤回。
+#[test]
+fn min_role_with_auth_bypass_paths_is_allowed() {
+    let yaml = "server:\n  port: 8080\nauth:\n  volta_url: http://localhost:7070\nrouting:\n  - host: app.test.com\n    backend: http://localhost:3000\n    min_role: MEMBER\n    auth_bypass_paths:\n      - prefix: /healthz\n";
+    let config: volta_gateway::config::GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+    // 併用は valid: validation はエラーを返さない
+    config
+        .validate()
+        .expect("min_role + auth_bypass_paths should be allowed");
 }
 
 #[test]

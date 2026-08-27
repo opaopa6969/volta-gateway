@@ -96,14 +96,19 @@ pub async fn handle_websocket(
     let skip_auth = route.public || bypass_match.is_some();
     let min_role = route.min_role.as_deref();
 
-    if skip_auth && min_role.is_some() {
+    if route.public && min_role.is_some() {
+        // `public: true` と `min_role` の併用は意味衝突するため fail-closed。
+        // 通常は validation で弾かれるが、動的ルーティング更新で後から入り得る
+        // ので実行時にも拒否する。
         warn!(
             state = "WS_DENIED",
             host = %host,
-            "min_role cannot be combined with WebSocket auth bypass"
+            "min_role cannot be combined with public route"
         );
         return error_response(StatusCode::FORBIDDEN, &request_id);
     }
+    // `bypass_paths` + `min_role` は併用可能 (#126): bypass path に当たった
+    // リクエストは認証ごと skip し `min_role` も適用しない。
 
     let volta_headers = if !skip_auth {
         let real_client_ip = if !trusted_proxies.is_empty()
@@ -153,26 +158,31 @@ pub async fn handle_websocket(
     };
 
     if let Some(min_role) = min_role {
-        let required = min_role.trim().to_ascii_uppercase();
-        let policy = volta_auth_core::policy::PolicyEngine::default_policy();
-        let valid_role = policy.hierarchy().iter().any(|role| role == &required);
-        let roles: Vec<String> = volta_headers
-            .get("x-volta-roles")
-            .map(|value| {
-                value
-                    .split(',')
-                    .map(|role| role.trim().to_ascii_uppercase())
-                    .filter(|role| !role.is_empty())
-                    .collect()
-            })
-            .unwrap_or_default();
-        if !valid_role
-            || !matches!(
-                policy.enforce_min_role(&roles, &required),
-                volta_auth_core::policy::PolicyResult::Allow
-            )
-        {
-            return error_response(StatusCode::FORBIDDEN, &request_id);
+        if bypass_match.is_some() {
+            // bypass path に当たったリクエストは認証ごと skip し `min_role` も適用しない (#126)。
+            // `route.public` + `min_role` の組み合わせは前段で 403 return 済み。
+        } else {
+            let required = min_role.trim().to_ascii_uppercase();
+            let policy = volta_auth_core::policy::PolicyEngine::default_policy();
+            let valid_role = policy.hierarchy().iter().any(|role| role == &required);
+            let roles: Vec<String> = volta_headers
+                .get("x-volta-roles")
+                .map(|value| {
+                    value
+                        .split(',')
+                        .map(|role| role.trim().to_ascii_uppercase())
+                        .filter(|role| !role.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !valid_role
+                || !matches!(
+                    policy.enforce_min_role(&roles, &required),
+                    volta_auth_core::policy::PolicyResult::Allow
+                )
+            {
+                return error_response(StatusCode::FORBIDDEN, &request_id);
+            }
         }
     }
 
