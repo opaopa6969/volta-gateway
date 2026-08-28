@@ -77,6 +77,31 @@ impl ConfigStore {
         build_effective(&inner.base, &inner.overlay)
     }
 
+    /// Validate a JSON merge patch *without* persisting or committing it.
+    ///
+    /// Performs the same merge → build → validate pipeline as
+    /// [`apply_patch`](Self::apply_patch) but leaves the in-memory overlay
+    /// and the on-disk overlay file untouched. This is the "dry-run" mode
+    /// used by `POST /admin/config/validate` so the admin UI can preview
+    /// the effect (and any validation errors) before saving.
+    ///
+    /// Returns the effective config that *would* result and the hot/restart
+    /// classification, so the caller can show the impact preview.
+    pub fn validate_patch(
+        &self,
+        patch: &Value,
+    ) -> Result<(GatewayConfig, ApplyResult), Vec<String>> {
+        let inner = self.inner.lock().unwrap();
+
+        let mut candidate = inner.overlay.clone();
+        deep_merge(&mut candidate, patch);
+
+        let effective = build_effective(&inner.base, &candidate).map_err(|e| vec![e])?;
+        effective.validate()?;
+
+        Ok((effective, classify_patch(patch)))
+    }
+
     /// Apply a JSON merge patch: merge → build → validate → persist → commit.
     /// On any failure the in-memory overlay and the file are left untouched.
     /// Returns the new effective config and the hot/restart classification.
@@ -396,6 +421,74 @@ routing:
         let reverted = store.clear_overlay().unwrap();
         assert_eq!(reverted.routing.len(), 1);
         assert_eq!(reverted.routing[0].host, "example.com");
+    }
+
+    // ── validate_patch (dry-run) ─────────────────────────────────
+
+    #[test]
+    fn validate_patch_accepts_valid_without_persisting() {
+        let dir = tmp_dir();
+        let overlay_path = dir.join("gw.overlay.json");
+        let store = store_in(&dir);
+
+        let patch = serde_json::json!({
+            "routing": [
+                {"host": "example.com", "backend": "http://127.0.0.1:3000"},
+                {"host": "new.example.com", "backend": "http://127.0.0.1:9000"}
+            ]
+        });
+
+        let (effective, result) = store.validate_patch(&patch).unwrap();
+        assert_eq!(effective.routing.len(), 2);
+        assert!(effective
+            .routing
+            .iter()
+            .any(|r| r.host == "new.example.com"));
+        assert_eq!(result.hot_applied, vec!["routing".to_string()]);
+
+        // Overlay must NOT be persisted or committed.
+        assert!(
+            !overlay_path.exists(),
+            "validate must not write overlay file"
+        );
+        let current = store.effective_config().unwrap();
+        assert_eq!(
+            current.routing.len(),
+            1,
+            "validate must not change effective config"
+        );
+        assert_eq!(current.routing[0].host, "example.com");
+    }
+
+    #[test]
+    fn validate_patch_rejects_invalid_without_persisting() {
+        let dir = tmp_dir();
+        let store = store_in(&dir);
+
+        let bad = store.validate_patch(&serde_json::json!({"routing": []}));
+        assert!(bad.is_err(), "empty routing must fail validation");
+
+        // Effective config is still the original single route.
+        let eff = store.effective_config().unwrap();
+        assert_eq!(eff.routing.len(), 1);
+        assert_eq!(eff.routing[0].host, "example.com");
+    }
+
+    #[test]
+    fn validate_patch_classifies_like_apply_patch() {
+        let dir = tmp_dir();
+        let store = store_in(&dir);
+
+        let patch = serde_json::json!({"server": {"port": 9090}});
+
+        let (_eff_v, result_v) = store.validate_patch(&patch).unwrap();
+        assert_eq!(result_v.requires_restart, vec!["server".to_string()]);
+        assert!(result_v.hot_applied.is_empty());
+
+        // apply_patch should classify the same way.
+        let (_eff_a, result_a) = store.apply_patch(patch).unwrap();
+        assert_eq!(result_a.requires_restart, result_v.requires_restart);
+        assert_eq!(result_a.hot_applied, result_v.hot_applied);
     }
 
     // ── classify_patch ───────────────────────────────────────────
