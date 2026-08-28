@@ -45,9 +45,9 @@ async fn publish_logout_event(state: &AppState, session_id: &str) {
 /// Order mirrors Java `AuthFlowHandler.verify` (`99a2769` + `4006ee7`):
 ///   1. Require forwarded headers from the gateway.
 ///   2. If a session cookie is present → resolve session:
-///       a. session invalid/expired → redirect to /login
-///       b. MFA pending → 302 to /mfa/challenge
-///       c. OK → 200 + `X-Volta-*` headers
+///      - session invalid/expired → redirect to /login
+///      - MFA pending → 302 to /mfa/challenge
+///      - OK → 200 + `X-Volta-*` headers
 ///   3. No session → local-network bypass: if the caller's IP is LAN/Tailscale,
 ///      return 200 anonymous with `X-Volta-Auth-Source: local-bypass` (P1.3).
 ///   4. No session + external IP → redirect to /login.

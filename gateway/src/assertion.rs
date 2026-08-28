@@ -25,12 +25,20 @@ pub struct GatewayAssertion {
 }
 
 #[derive(Clone)]
+#[allow(
+    dead_code,
+    reason = "rotation-ready verifier API; wired in a future release alongside GatewayAssertionSigner"
+)]
 pub struct GatewayAssertionVerifier {
     current: GatewayAssertionSigner,
     previous: Option<GatewayAssertionSigner>,
 }
 
 impl GatewayAssertionSigner {
+    #[allow(
+        dead_code,
+        reason = "convenience constructor for default key ID; used by tests and future verifier wiring"
+    )]
     pub fn new(secret: impl AsRef<[u8]>) -> Result<Self, String> {
         Self::new_with_key_id(LEGACY_KEY_ID, secret)
     }
@@ -105,6 +113,10 @@ impl GatewayAssertionSigner {
 }
 
 impl GatewayAssertionVerifier {
+    #[allow(
+        dead_code,
+        reason = "rotation-ready verifier API; wired in a future release"
+    )]
     pub fn new(
         current: GatewayAssertionSigner,
         previous: Option<GatewayAssertionSigner>,
@@ -119,6 +131,10 @@ impl GatewayAssertionVerifier {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(
+        dead_code,
+        reason = "rotation-ready verifier API; wired in a future release"
+    )]
     pub fn verify_at(
         &self,
         key_id: Option<&str>,

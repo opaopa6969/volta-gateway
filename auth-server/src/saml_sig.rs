@@ -69,7 +69,7 @@ pub fn check_structure(xml: &str) -> Result<(), SigStructureError> {
         return Err(SigStructureError::ExternalReference);
     }
     if let Some(alg) = extract_sig_algorithm(xml) {
-        if !ALLOWED_SIG_ALGS.iter().any(|a| *a == alg.as_str()) {
+        if !ALLOWED_SIG_ALGS.contains(&alg.as_str()) {
             return Err(SigStructureError::UnsupportedAlgorithm(alg));
         }
     }

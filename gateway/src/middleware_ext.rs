@@ -139,6 +139,12 @@ pub struct ExtensionManager {
     extensions: Vec<(String, Arc<dyn MiddlewareExtension>)>,
 }
 
+impl Default for ExtensionManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ExtensionManager {
     pub fn new() -> Self {
         Self {

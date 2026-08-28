@@ -73,6 +73,10 @@ fn scope_has(scope: &str, want: &str) -> bool {
 ///   Ok(Some(jkt))   — valid proof → key thumbprint to bind / match
 ///   Err(response)   — a proof was supplied but is invalid (400 invalid_dpop_proof)
 /// `access_token` is `Some` at resource endpoints (enforces the `ath` binding).
+#[allow(
+    clippy::result_large_err,
+    reason = "axum Response<Body> is 128 bytes by design; boxing would force callers to unwrap on every error path"
+)]
 fn verify_dpop(
     headers: &HeaderMap,
     htm: &str,
@@ -129,6 +133,10 @@ fn redirect_with(redirect_uri: &str, params: &[(&str, &str)]) -> Response {
 
 /// Token-endpoint DPoP check (used by `manage::oauth_token`). `Ok(None)` = no
 /// proof; `Ok(Some(jkt))` = bind the token; `Err(resp)` = invalid proof (400).
+#[allow(
+    clippy::result_large_err,
+    reason = "axum Response<Body> is 128 bytes by design; boxing would force callers to unwrap on every error path"
+)]
 pub fn token_dpop_jkt(s: &AppState, headers: &HeaderMap) -> Result<Option<String>, Response> {
     let htu = format!("{}/oauth/token", s.base_url);
     verify_dpop(headers, "POST", &htu, None)
@@ -336,17 +344,14 @@ fn consent_screen(
         })
         .collect();
     let fields = format!(
-        "{}{}{}{}{}{}",
+        "{}{}{}{}{}{}{}",
         hidden("client_id", &client.client_id),
         hidden("redirect_uri", redirect_uri),
         hidden("scope", scope),
         hidden("state", q.state.as_deref().unwrap_or("")),
         hidden("nonce", q.nonce.as_deref().unwrap_or("")),
-        format!(
-            "{}{}",
-            hidden("code_challenge", code_challenge),
-            hidden("code_challenge_method", ccm)
-        ),
+        hidden("code_challenge", code_challenge),
+        hidden("code_challenge_method", ccm),
     );
     let html = CONSENT_HTML
         .replace("__CLIENT__", &html_escape(&client.name))
@@ -551,7 +556,7 @@ pub async fn token_authorization_code(
                     )
                 }
             };
-            if &sha256_base64url(verifier) != challenge {
+            if sha256_base64url(verifier) != challenge {
                 return oauth_err(
                     StatusCode::BAD_REQUEST,
                     "invalid_grant",
@@ -766,6 +771,10 @@ pub async fn token_refresh(
 
 /// Mint access (+ id, + rotating refresh) tokens. `family` = Some for a refresh
 /// rotation (continue the family), None for a fresh authorization_code grant.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "token mint inputs are independent; a struct would just reshuffle them without reducing surface area"
+)]
 async fn issue_tokens(
     s: &AppState,
     client: &OAuthClientRecord,

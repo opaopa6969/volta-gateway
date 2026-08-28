@@ -47,10 +47,7 @@ pub async fn saml_login(
             ApiError::bad_request("IDP_INVALID", "SAML エントリーポイントが未設定です。")
         })?;
 
-    let request_id = format!(
-        "_{}",
-        Uuid::new_v4().to_string().replace('-', "")[..16].to_string()
-    );
+    let request_id = format!("_{}", &Uuid::new_v4().to_string().replace('-', "")[..16]);
     let relay = saml::encode_relay_state(&saml::RelayState {
         tenant_id: Some(tenant_id_str),
         return_to: q.return_to,

@@ -1109,6 +1109,103 @@ impl GatewayConfig {
     }
 }
 
+fn default_port() -> u16 {
+    8080
+}
+fn default_read_timeout() -> u64 {
+    10
+}
+fn default_request_timeout() -> u64 {
+    30
+}
+fn default_drain_timeout() -> u64 {
+    30
+}
+fn default_volta_url() -> String {
+    "http://localhost:7070".into()
+}
+fn default_verify_path() -> String {
+    "/auth/verify".into()
+}
+fn default_auth_timeout() -> u64 {
+    500
+}
+fn default_pool_max_idle() -> usize {
+    32
+}
+fn default_cookie_name() -> Option<String> {
+    Some("__volta_session".into())
+}
+fn default_rps() -> u32 {
+    1000
+}
+fn default_per_ip_rps() -> u32 {
+    100
+}
+fn default_pool_idle() -> usize {
+    64
+}
+fn default_idle_timeout() -> u64 {
+    90
+}
+fn default_hc_interval() -> u64 {
+    30
+}
+fn default_hc_path() -> String {
+    "/healthz".into()
+}
+fn default_log_level() -> String {
+    "info".into()
+}
+fn default_log_format() -> String {
+    "json".into()
+}
+fn default_tls_port() -> u16 {
+    443
+}
+fn default_acme_cache() -> String {
+    "./acme-cache".into()
+}
+fn default_l4_proto() -> String {
+    "tcp".into()
+}
+fn default_sample_rate() -> f64 {
+    1.0
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            requests_per_second: default_rps(),
+            per_ip_rps: default_per_ip_rps(),
+        }
+    }
+}
+impl Default for BackendPoolConfig {
+    fn default() -> Self {
+        Self {
+            max_idle_per_host: default_pool_idle(),
+            idle_timeout_secs: default_idle_timeout(),
+        }
+    }
+}
+impl Default for HealthCheckConfig {
+    fn default() -> Self {
+        Self {
+            interval_secs: default_hc_interval(),
+            path: default_hc_path(),
+        }
+    }
+}
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            level: default_log_level(),
+            format: default_log_format(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2050,102 +2147,5 @@ routing:
         let route = &cfg.routing[0];
         assert_eq!(route.backends[0].weight, 80);
         assert_eq!(route.backends[1].weight, 20);
-    }
-}
-
-fn default_port() -> u16 {
-    8080
-}
-fn default_read_timeout() -> u64 {
-    10
-}
-fn default_request_timeout() -> u64 {
-    30
-}
-fn default_drain_timeout() -> u64 {
-    30
-}
-fn default_volta_url() -> String {
-    "http://localhost:7070".into()
-}
-fn default_verify_path() -> String {
-    "/auth/verify".into()
-}
-fn default_auth_timeout() -> u64 {
-    500
-}
-fn default_pool_max_idle() -> usize {
-    32
-}
-fn default_cookie_name() -> Option<String> {
-    Some("__volta_session".into())
-}
-fn default_rps() -> u32 {
-    1000
-}
-fn default_per_ip_rps() -> u32 {
-    100
-}
-fn default_pool_idle() -> usize {
-    64
-}
-fn default_idle_timeout() -> u64 {
-    90
-}
-fn default_hc_interval() -> u64 {
-    30
-}
-fn default_hc_path() -> String {
-    "/healthz".into()
-}
-fn default_log_level() -> String {
-    "info".into()
-}
-fn default_log_format() -> String {
-    "json".into()
-}
-fn default_tls_port() -> u16 {
-    443
-}
-fn default_acme_cache() -> String {
-    "./acme-cache".into()
-}
-fn default_l4_proto() -> String {
-    "tcp".into()
-}
-fn default_sample_rate() -> f64 {
-    1.0
-}
-
-impl Default for RateLimitConfig {
-    fn default() -> Self {
-        Self {
-            requests_per_second: default_rps(),
-            per_ip_rps: default_per_ip_rps(),
-        }
-    }
-}
-impl Default for BackendPoolConfig {
-    fn default() -> Self {
-        Self {
-            max_idle_per_host: default_pool_idle(),
-            idle_timeout_secs: default_idle_timeout(),
-        }
-    }
-}
-impl Default for HealthCheckConfig {
-    fn default() -> Self {
-        Self {
-            interval_secs: default_hc_interval(),
-            path: default_hc_path(),
-        }
-    }
-}
-impl Default for LoggingConfig {
-    fn default() -> Self {
-        Self {
-            level: default_log_level(),
-            format: default_log_format(),
-        }
     }
 }

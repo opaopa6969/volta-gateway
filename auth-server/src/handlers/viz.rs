@@ -804,6 +804,71 @@ pub fn flow_descriptors() -> [volta_auth_core::flow::validate::FlowDescriptor; 1
     ]
 }
 
+/// GET /api/v1/admin/flows/{flow_id}/transitions — flow replay (ADMIN only).
+///
+/// Mirrors Java `VizRouter#listTransitions`. Returns every transition the flow
+/// went through, ordered oldest-first. 404 when the flow does not exist;
+/// transitions alone may legitimately be empty.
+pub async fn flow_transitions(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(flow_id): Path<Uuid>,
+) -> Result<Response, ApiError> {
+    let _ = require_admin(&state, &jar).await?;
+
+    let exists: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM auth_flows WHERE id = $1")
+        .bind(flow_id)
+        .fetch_optional(state.db.pool())
+        .await
+        .map_err(|e| ApiError::internal(&e.to_string()))?;
+
+    if exists.is_none() {
+        return Err(ApiError::bad_request("NOT_FOUND", "flow not found"));
+    }
+
+    #[allow(
+        clippy::type_complexity,
+        reason = "sqlx query_as tuple mirrors SQL column order; aliasing would obscure the mapping"
+    )]
+    let rows: Vec<(
+        i64,
+        Option<String>,
+        String,
+        String,
+        Option<serde_json::Value>,
+        Option<String>,
+        chrono::DateTime<chrono::Utc>,
+    )> = sqlx::query_as(
+        "SELECT id, from_state, to_state, trigger, context_snapshot, error_detail, created_at \
+             FROM auth_flow_transitions WHERE flow_id = $1 ORDER BY created_at ASC",
+    )
+    .bind(flow_id)
+    .fetch_all(state.db.pool())
+    .await
+    .map_err(|e| ApiError::internal(&e.to_string()))?;
+
+    let transitions: Vec<_> = rows
+        .into_iter()
+        .map(|(id, from, to, trigger, ctx, err, at)| {
+            serde_json::json!({
+                "id": id,
+                "from_state": from,
+                "to_state": to,
+                "trigger": trigger,
+                "context_snapshot": ctx,
+                "error_detail": err,
+                "created_at": at.to_rfc3339(),
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "flow_id": flow_id,
+        "transitions": transitions,
+    }))
+    .into_response())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -901,65 +966,4 @@ mod tests {
             }
         }
     }
-}
-
-/// GET /api/v1/admin/flows/{flow_id}/transitions — flow replay (ADMIN only).
-///
-/// Mirrors Java `VizRouter#listTransitions`. Returns every transition the flow
-/// went through, ordered oldest-first. 404 when the flow does not exist;
-/// transitions alone may legitimately be empty.
-pub async fn flow_transitions(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    Path(flow_id): Path<Uuid>,
-) -> Result<Response, ApiError> {
-    let _ = require_admin(&state, &jar).await?;
-
-    let exists: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM auth_flows WHERE id = $1")
-        .bind(flow_id)
-        .fetch_optional(state.db.pool())
-        .await
-        .map_err(|e| ApiError::internal(&e.to_string()))?;
-
-    if exists.is_none() {
-        return Err(ApiError::bad_request("NOT_FOUND", "flow not found"));
-    }
-
-    let rows: Vec<(
-        i64,
-        Option<String>,
-        String,
-        String,
-        Option<serde_json::Value>,
-        Option<String>,
-        chrono::DateTime<chrono::Utc>,
-    )> = sqlx::query_as(
-        "SELECT id, from_state, to_state, trigger, context_snapshot, error_detail, created_at \
-             FROM auth_flow_transitions WHERE flow_id = $1 ORDER BY created_at ASC",
-    )
-    .bind(flow_id)
-    .fetch_all(state.db.pool())
-    .await
-    .map_err(|e| ApiError::internal(&e.to_string()))?;
-
-    let transitions: Vec<_> = rows
-        .into_iter()
-        .map(|(id, from, to, trigger, ctx, err, at)| {
-            serde_json::json!({
-                "id": id,
-                "from_state": from,
-                "to_state": to,
-                "trigger": trigger,
-                "context_snapshot": ctx,
-                "error_detail": err,
-                "created_at": at.to_rfc3339(),
-            })
-        })
-        .collect();
-
-    Ok(Json(serde_json::json!({
-        "flow_id": flow_id,
-        "transitions": transitions,
-    }))
-    .into_response())
 }

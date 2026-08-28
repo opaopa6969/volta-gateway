@@ -66,7 +66,7 @@ fn run_health_check(port: u16) -> i32 {
     // Host は routing に載っていないものを使う。routing にある Host を送ると
     // backend へ proxy されてしまい、**gateway 自身ではなく backend の健康を
     // 見てしまう**（dc4b098 で直した挙動そのもの）。
-    let req = format!("GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    let req = "GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n".to_string();
     if let Err(e) = stream.write_all(req.as_bytes()) {
         eprintln!("health check: write failed: {e}");
         return 1;
@@ -168,7 +168,6 @@ async fn main() {
     }
 
     // #39: Access log file output (spawned after config load, uses _guard to keep writer alive)
-    let _access_log_guard: Option<tracing_appender::non_blocking::WorkerGuard>;
 
     // #36: --validate dry-run mode
     let args: Vec<String> = std::env::args().collect();
@@ -259,31 +258,32 @@ async fn main() {
     }
 
     // #39: Access log file writer (if configured)
-    _access_log_guard = if let Some(ref al) = config.access_log {
-        if al.enabled {
-            if let Some(ref path) = al.path {
-                let dir = std::path::Path::new(path)
-                    .parent()
-                    .unwrap_or(std::path::Path::new("."));
-                let filename = std::path::Path::new(path)
-                    .file_name()
-                    .and_then(|f| f.to_str())
-                    .unwrap_or("access.log");
-                let appender = tracing_appender::rolling::daily(dir, filename);
-                let (writer, guard) = tracing_appender::non_blocking(appender);
-                // Spawn a task that writes ACCESS log lines to the file
-                let _writer = writer; // kept alive via guard
-                info!(path = path, "access log file enabled");
-                Some(guard)
+    let _access_log_guard: Option<tracing_appender::non_blocking::WorkerGuard> =
+        if let Some(ref al) = config.access_log {
+            if al.enabled {
+                if let Some(ref path) = al.path {
+                    let dir = std::path::Path::new(path)
+                        .parent()
+                        .unwrap_or(std::path::Path::new("."));
+                    let filename = std::path::Path::new(path)
+                        .file_name()
+                        .and_then(|f| f.to_str())
+                        .unwrap_or("access.log");
+                    let appender = tracing_appender::rolling::daily(dir, filename);
+                    let (writer, guard) = tracing_appender::non_blocking(appender);
+                    // Spawn a task that writes ACCESS log lines to the file
+                    let _writer = writer; // kept alive via guard
+                    info!(path = path, "access log file enabled");
+                    Some(guard)
+                } else {
+                    None
+                }
             } else {
                 None
             }
         } else {
             None
-        }
-    } else {
-        None
-    };
+        };
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.server.port));
     let routing = Arc::new(config.routing_table());
@@ -680,8 +680,8 @@ async fn main() {
                         let hot = hot_admin.load();
                         let host_routed = hot.routing.contains_key(&host)
                             || host
-                                .splitn(2, '.')
-                                .nth(1)
+                                .split_once('.')
+                                .map(|x| x.1)
                                 .map(|d| hot.routing.contains_key(&format!("*.{d}")))
                                 .unwrap_or(false);
                         lifecycle::admin_is_gateway_admin(host_routed)

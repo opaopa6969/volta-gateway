@@ -484,7 +484,7 @@ async fn complete_oidc(
     // Backlog P1 #4: verify id_token when the IdP config declares an issuer.
     // Providers without `issuer_url` (plain OAuth2 like GitHub) keep the old
     // `userinfo`-only path.
-    let id_token_sub: Option<String> = if let (Some(ref id_token), Some(ref issuer)) = (
+    let id_token_sub: Option<String> = if let (Some(id_token), Some(issuer)) = (
         token_resp.id_token.as_ref(),
         state.idp.config().issuer_url.as_ref(),
     ) {

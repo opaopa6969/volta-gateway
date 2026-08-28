@@ -213,6 +213,12 @@ pub struct TokenService {
     flow_def: Arc<FlowDefinition<TokenState>>,
 }
 
+impl Default for TokenService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TokenService {
     pub fn new() -> Self {
         Self {

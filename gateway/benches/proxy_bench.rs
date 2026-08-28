@@ -192,8 +192,8 @@ fn bench_routing_lookup(c: &mut Criterion) {
         b.iter(|| {
             let host = "sub.example.com";
             routing.get(host).or_else(|| {
-                host.splitn(2, '.')
-                    .nth(1)
+                host.split_once('.')
+                    .map(|x| x.1)
                     .and_then(|d| routing.get(&format!("*.{d}")))
             })
         })
@@ -213,6 +213,10 @@ fn bench_compression_check(c: &mut Criterion) {
 }
 
 // tramli 3.6.1: NoopTelemetrySink for measuring pure SM overhead vs observability overhead
+#[allow(
+    dead_code,
+    reason = "not in criterion_group yet; kept for future comparison runs"
+)]
 fn bench_sm_with_noop_telemetry(c: &mut Criterion) {
     let routing = test_routing();
     let flow_def = flow::build_proxy_flow(routing);

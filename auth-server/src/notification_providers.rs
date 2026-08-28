@@ -199,83 +199,6 @@ pub fn build_email_sender() -> Arc<dyn NotificationSender> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn renders_known_templates() {
-        let t = NotificationTemplate::new("email-verification").var("token", "TOK123");
-        let (subject, body) = render(&t);
-        assert!(subject.contains("確認"));
-        assert!(body.contains("TOK123"));
-
-        let t = NotificationTemplate::new("mfa-code").var("code", "654321");
-        let (_s, body) = render(&t);
-        assert!(body.contains("654321"));
-    }
-
-    #[test]
-    fn explicit_subject_body_take_precedence() {
-        let mut t = NotificationTemplate::new("anything");
-        t.subject = Some("S".into());
-        t.body = Some("B".into());
-        assert_eq!(render(&t), ("S".to_string(), "B".to_string()));
-    }
-
-    #[test]
-    fn build_email_sender_defaults_to_log_sink() {
-        // No env set → LOG sink, channel EMAIL, never panics.
-        std::env::remove_var("NOTIFICATION_EMAIL_PROVIDER");
-        let s = build_email_sender();
-        assert_eq!(s.channel(), NotificationChannel::Email);
-        assert_eq!(s.provider(), NotificationProvider::Log);
-    }
-
-    #[test]
-    fn build_email_sender_dummy_selectable() {
-        std::env::set_var("NOTIFICATION_EMAIL_PROVIDER", "DUMMY");
-        let s = build_email_sender();
-        assert_eq!(s.provider(), NotificationProvider::DummyEmail);
-        std::env::remove_var("NOTIFICATION_EMAIL_PROVIDER");
-    }
-
-    #[test]
-    fn sms_sender_defaults_to_log_and_dummy_selectable() {
-        std::env::remove_var("NOTIFICATION_SMS_PROVIDER");
-        assert_eq!(build_sms_sender().provider(), NotificationProvider::Log);
-        assert_eq!(build_sms_sender().channel(), NotificationChannel::Sms);
-        std::env::set_var("NOTIFICATION_SMS_PROVIDER", "DUMMY");
-        assert_eq!(
-            build_sms_sender().provider(),
-            NotificationProvider::DummySms
-        );
-        std::env::remove_var("NOTIFICATION_SMS_PROVIDER");
-    }
-
-    #[test]
-    fn line_sender_defaults_to_log_and_dummy_selectable() {
-        std::env::remove_var("NOTIFICATION_LINE_PROVIDER");
-        assert_eq!(build_line_sender().provider(), NotificationProvider::Log);
-        assert_eq!(build_line_sender().channel(), NotificationChannel::Line);
-        std::env::set_var("NOTIFICATION_LINE_PROVIDER", "DUMMY");
-        assert_eq!(
-            build_line_sender().provider(),
-            NotificationProvider::DummyLine
-        );
-        std::env::remove_var("NOTIFICATION_LINE_PROVIDER");
-    }
-
-    #[test]
-    fn twilio_requires_full_creds() {
-        std::env::set_var("NOTIFICATION_SMS_PROVIDER", "TWILIO");
-        std::env::remove_var("TWILIO_ACCOUNT_SID");
-        // Missing creds → graceful LOG fallback (never panics).
-        assert_eq!(build_sms_sender().provider(), NotificationProvider::Log);
-        std::env::remove_var("NOTIFICATION_SMS_PROVIDER");
-    }
-}
-
 // ─── SMS / LINE providers (Phase 1 follow-up) ──────────────────────────────
 
 use volta_auth_core::notification::NotificationProvider as P;
@@ -465,5 +388,82 @@ pub fn build_line_sender() -> Arc<dyn NotificationSender> {
         },
         "DUMMY" => Arc::new(DummySender::new(NotificationChannel::Line)),
         _ => Arc::new(LogSender::new(NotificationChannel::Line)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn renders_known_templates() {
+        let t = NotificationTemplate::new("email-verification").var("token", "TOK123");
+        let (subject, body) = render(&t);
+        assert!(subject.contains("確認"));
+        assert!(body.contains("TOK123"));
+
+        let t = NotificationTemplate::new("mfa-code").var("code", "654321");
+        let (_s, body) = render(&t);
+        assert!(body.contains("654321"));
+    }
+
+    #[test]
+    fn explicit_subject_body_take_precedence() {
+        let mut t = NotificationTemplate::new("anything");
+        t.subject = Some("S".into());
+        t.body = Some("B".into());
+        assert_eq!(render(&t), ("S".to_string(), "B".to_string()));
+    }
+
+    #[test]
+    fn build_email_sender_defaults_to_log_sink() {
+        // No env set → LOG sink, channel EMAIL, never panics.
+        std::env::remove_var("NOTIFICATION_EMAIL_PROVIDER");
+        let s = build_email_sender();
+        assert_eq!(s.channel(), NotificationChannel::Email);
+        assert_eq!(s.provider(), NotificationProvider::Log);
+    }
+
+    #[test]
+    fn build_email_sender_dummy_selectable() {
+        std::env::set_var("NOTIFICATION_EMAIL_PROVIDER", "DUMMY");
+        let s = build_email_sender();
+        assert_eq!(s.provider(), NotificationProvider::DummyEmail);
+        std::env::remove_var("NOTIFICATION_EMAIL_PROVIDER");
+    }
+
+    #[test]
+    fn sms_sender_defaults_to_log_and_dummy_selectable() {
+        std::env::remove_var("NOTIFICATION_SMS_PROVIDER");
+        assert_eq!(build_sms_sender().provider(), NotificationProvider::Log);
+        assert_eq!(build_sms_sender().channel(), NotificationChannel::Sms);
+        std::env::set_var("NOTIFICATION_SMS_PROVIDER", "DUMMY");
+        assert_eq!(
+            build_sms_sender().provider(),
+            NotificationProvider::DummySms
+        );
+        std::env::remove_var("NOTIFICATION_SMS_PROVIDER");
+    }
+
+    #[test]
+    fn line_sender_defaults_to_log_and_dummy_selectable() {
+        std::env::remove_var("NOTIFICATION_LINE_PROVIDER");
+        assert_eq!(build_line_sender().provider(), NotificationProvider::Log);
+        assert_eq!(build_line_sender().channel(), NotificationChannel::Line);
+        std::env::set_var("NOTIFICATION_LINE_PROVIDER", "DUMMY");
+        assert_eq!(
+            build_line_sender().provider(),
+            NotificationProvider::DummyLine
+        );
+        std::env::remove_var("NOTIFICATION_LINE_PROVIDER");
+    }
+
+    #[test]
+    fn twilio_requires_full_creds() {
+        std::env::set_var("NOTIFICATION_SMS_PROVIDER", "TWILIO");
+        std::env::remove_var("TWILIO_ACCOUNT_SID");
+        // Missing creds → graceful LOG fallback (never panics).
+        assert_eq!(build_sms_sender().provider(), NotificationProvider::Log);
+        std::env::remove_var("NOTIFICATION_SMS_PROVIDER");
     }
 }

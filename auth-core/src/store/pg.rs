@@ -1977,6 +1977,10 @@ impl RiskDeviceStore for PgStore {
 
 impl PgStore {
     /// `(items, total)` — users list with optional `q` (email/display_name) filter.
+    #[allow(
+        clippy::type_complexity,
+        reason = "sqlx query_as tuple mirrors SQL column order; aliasing would obscure the mapping"
+    )]
     pub async fn list_users_paginated(
         &self,
         q: Option<&str>,
@@ -2026,6 +2030,10 @@ impl PgStore {
     }
 
     /// `(items, total)` — sessions list, optionally filtered by user_id.
+    #[allow(
+        clippy::type_complexity,
+        reason = "sqlx query_as tuple mirrors SQL column order; aliasing would obscure the mapping"
+    )]
     pub async fn list_sessions_paginated(
         &self,
         user_id: Option<&str>,
@@ -2079,6 +2087,14 @@ impl PgStore {
     }
 
     /// `(items, total)` — audit log with from/to/event filters.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "pagination + filter params are naturally separate; grouping would obscure the SQL mapping"
+    )]
+    #[allow(
+        clippy::type_complexity,
+        reason = "sqlx query_as tuple mirrors SQL column order; aliasing would obscure the mapping"
+    )]
     pub async fn list_audit_paginated(
         &self,
         tenant_id: Uuid,
@@ -2138,6 +2154,10 @@ impl PgStore {
     }
 
     /// `(items, total)` — tenant members list.
+    #[allow(
+        clippy::type_complexity,
+        reason = "sqlx query_as tuple mirrors SQL column order; aliasing would obscure the mapping"
+    )]
     pub async fn list_members_paginated(
         &self,
         tenant_id: Uuid,
@@ -2235,6 +2255,10 @@ impl PgStore {
     }
 
     /// `(items, total)` — invitations list, filtered by status (pending / used / expired).
+    #[allow(
+        clippy::type_complexity,
+        reason = "sqlx query_as tuple mirrors SQL column order; aliasing would obscure the mapping"
+    )]
     pub async fn list_invitations_paginated(
         &self,
         tenant_id: Uuid,

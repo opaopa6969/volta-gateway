@@ -91,8 +91,8 @@ impl StateProcessor<ProxyState> for RequestValidator {
 
         let known = self.routing.contains_key(&req.host) || {
             req.host
-                .splitn(2, '.')
-                .nth(1)
+                .split_once('.')
+                .map(|x| x.1)
                 .map(|domain| self.routing.contains_key(&format!("*.{domain}")))
                 .unwrap_or(false)
         };
@@ -137,8 +137,8 @@ impl StateProcessor<ProxyState> for RoutingResolver {
             .routing
             .get(&host)
             .or_else(|| {
-                host.splitn(2, '.')
-                    .nth(1)
+                host.split_once('.')
+                    .map(|x| x.1)
                     .and_then(|domain| self.routing.get(&format!("*.{domain}")))
             })
             .ok_or_else(|| FlowError::new("BAD_REQUEST", "No route"))?
