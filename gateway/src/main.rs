@@ -948,6 +948,45 @@ async fn main() {
                                     }
                                 }
                             }
+                            // Validate a patch without persisting or hot-swapping.
+                            // BT-CP-5: dry-run / validate mode for the admin UI.
+                            "/admin/config/validate" if req.method() == hyper::Method::POST => {
+                                let bytes = match req.into_body().collect().await {
+                                    Ok(b) => b.to_bytes(),
+                                    Err(_) => {
+                                        return Ok(json_resp(
+                                            400,
+                                            r#"{"error":"failed to read request body"}"#.into(),
+                                        ))
+                                    }
+                                };
+                                let patch: serde_json::Value = match serde_json::from_slice(&bytes)
+                                {
+                                    Ok(v) => v,
+                                    Err(e) => {
+                                        let body = serde_json::json!({"error": format!("invalid JSON: {}", e)});
+                                        return Ok(json_resp(400, body.to_string()));
+                                    }
+                                };
+                                match store_admin.validate_patch(&patch) {
+                                    Ok((_effective, result)) => {
+                                        let body = serde_json::json!({
+                                            "status": "valid",
+                                            "hot_applied": result.hot_applied,
+                                            "requires_restart": result.requires_restart,
+                                        });
+                                        return Ok(json_resp(200, body.to_string()));
+                                    }
+                                    Err(errors) => {
+                                        let body = serde_json::json!({
+                                            "status": "invalid",
+                                            "error": "validation failed",
+                                            "details": errors,
+                                        });
+                                        return Ok(json_resp(400, body.to_string()));
+                                    }
+                                }
+                            }
                             // Drop all API-driven changes; revert to the hand-written YAML.
                             "/admin/config/overlay" if req.method() == hyper::Method::DELETE => {
                                 match store_admin.clear_overlay() {
