@@ -94,6 +94,7 @@ pub async fn handle_websocket(
         .iter()
         .find(|bp| crate::proxy::bypass_path_matches(&uri_path, &bp.prefix));
     let skip_auth = route.public || bypass_match.is_some();
+    let is_soft_auth = route.soft_auth;
     let min_role = route.min_role.as_deref();
 
     if route.public && min_role.is_some() {
@@ -111,46 +112,89 @@ pub async fn handle_websocket(
     // リクエストは認証ごと skip し `min_role` も適用しない。
 
     let volta_headers = if !skip_auth {
-        let real_client_ip = if !trusted_proxies.is_empty()
-            && trusted_proxies
-                .iter()
-                .any(|net| net.contains(&remote_addr.ip()))
-        {
-            req.headers()
-                .get("cf-connecting-ip")
-                .or_else(|| req.headers().get("x-real-ip"))
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<std::net::IpAddr>().ok())
-                .unwrap_or(remote_addr.ip())
+        if is_soft_auth {
+            // #71: soft-auth — try auth, but never reject. On success inject
+            // X-Volta-*; on failure/missing session pass through anonymously.
+            let real_client_ip = if !trusted_proxies.is_empty()
+                && trusted_proxies
+                    .iter()
+                    .any(|net| net.contains(&remote_addr.ip()))
+            {
+                req.headers()
+                    .get("cf-connecting-ip")
+                    .or_else(|| req.headers().get("x-real-ip"))
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<std::net::IpAddr>().ok())
+                    .unwrap_or(remote_addr.ip())
+            } else {
+                remote_addr.ip()
+            };
+            let client_ip_str = real_client_ip.to_string();
+            let auth = volta
+                .check_with_degraded_policy(
+                    &host,
+                    &uri_path,
+                    "https",
+                    cookie.as_deref(),
+                    route.app_id.as_deref(),
+                    min_role,
+                    Some(&client_ip_str),
+                    bearer.as_deref(),
+                    true, // soft-auth: always allow degraded fallback (fail-open)
+                )
+                .await;
+            match auth {
+                AuthResult::Authenticated(headers) => {
+                    info!(state = "WS_SOFT_AUTH_OK", host = %host);
+                    headers
+                }
+                AuthResult::Redirect(_) | AuthResult::Denied | AuthResult::Error(_) => {
+                    info!(state = "WS_SOFT_AUTH_ANON", host = %host);
+                    HashMap::new()
+                }
+            }
         } else {
-            remote_addr.ip()
-        };
-        let client_ip_str = real_client_ip.to_string();
-        let auth = volta
-            .check_with_degraded_policy(
-                &host,
-                &uri_path,
-                "https",
-                cookie.as_deref(),
-                route.app_id.as_deref(),
-                min_role,
-                Some(&client_ip_str),
-                bearer.as_deref(),
-                min_role.is_none(),
-            )
-            .await;
-        match auth {
-            AuthResult::Authenticated(headers) => headers,
-            AuthResult::Redirect(loc) => {
-                info!(state = "WS_REDIRECT", host = %host);
-                return redirect_response(&loc, &request_id);
-            }
-            AuthResult::Denied => {
-                return error_response(StatusCode::FORBIDDEN, &request_id);
-            }
-            AuthResult::Error(msg) => {
-                warn!(state = "WS_BAD_GATEWAY", reason = %msg);
-                return error_response(StatusCode::BAD_GATEWAY, &request_id);
+            let real_client_ip = if !trusted_proxies.is_empty()
+                && trusted_proxies
+                    .iter()
+                    .any(|net| net.contains(&remote_addr.ip()))
+            {
+                req.headers()
+                    .get("cf-connecting-ip")
+                    .or_else(|| req.headers().get("x-real-ip"))
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<std::net::IpAddr>().ok())
+                    .unwrap_or(remote_addr.ip())
+            } else {
+                remote_addr.ip()
+            };
+            let client_ip_str = real_client_ip.to_string();
+            let auth = volta
+                .check_with_degraded_policy(
+                    &host,
+                    &uri_path,
+                    "https",
+                    cookie.as_deref(),
+                    route.app_id.as_deref(),
+                    min_role,
+                    Some(&client_ip_str),
+                    bearer.as_deref(),
+                    min_role.is_none(),
+                )
+                .await;
+            match auth {
+                AuthResult::Authenticated(headers) => headers,
+                AuthResult::Redirect(loc) => {
+                    info!(state = "WS_REDIRECT", host = %host);
+                    return redirect_response(&loc, &request_id);
+                }
+                AuthResult::Denied => {
+                    return error_response(StatusCode::FORBIDDEN, &request_id);
+                }
+                AuthResult::Error(msg) => {
+                    warn!(state = "WS_BAD_GATEWAY", reason = %msg);
+                    return error_response(StatusCode::BAD_GATEWAY, &request_id);
+                }
             }
         }
     } else {

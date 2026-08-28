@@ -63,6 +63,9 @@ pub struct ServiceEntry {
     pub port: Option<u16>,
     #[serde(default)]
     pub public: Option<bool>,
+    /// #71: soft-auth (optional authentication) route mode.
+    #[serde(default)]
+    pub soft_auth: Option<bool>,
     #[serde(default)]
     pub auth_bypass_paths: Option<Vec<String>>,
     #[serde(default)]
@@ -131,6 +134,9 @@ pub struct ConsoleAccess {
     pub visibility: Option<String>,
     #[serde(default)]
     pub public: Option<bool>,
+    /// #71: soft-auth (optional authentication) route mode.
+    #[serde(default, rename = "softAuth")]
+    pub soft_auth: Option<bool>,
     #[serde(default, rename = "minRole")]
     pub min_role: Option<String>,
 }
@@ -257,11 +263,18 @@ impl ServicesJsonSource {
                 a.public == Some(true) || a.visibility.as_deref() == Some("public")
             });
 
+        // #71: soft_auth from access.softAuth (console keyed format).
+        let soft_auth = svc
+            .access
+            .as_ref()
+            .and_then(|a| a.soft_auth)
+            .unwrap_or(false);
+
         // app_id (X-Volta-App-Id for ForwardAuth): set the service key when the
         // service is authenticated and not public.
         let authenticated =
             cf.is_some_and(|cf| cf.authentication.is_some() || cf.auth_required == Some(true));
-        let app_id = if authenticated && !public {
+        let app_id = if authenticated && !public && !soft_auth {
             Some(key.to_string())
         } else {
             None
@@ -293,11 +306,13 @@ impl ServicesJsonSource {
             geo_allowlist: vec![],
             geo_denylist: vec![],
             public,
+            soft_auth,
             min_role: svc
                 .access
                 .as_ref()
                 .and_then(|access| access.min_role.clone()),
             auth_bypass_paths: bypass_paths,
+            auth_rules: vec![],
             mirror: None,
             timeout_secs: None,
             cache: None,
@@ -344,8 +359,10 @@ impl ServicesJsonSource {
                 geo_allowlist: vec![],
                 geo_denylist: vec![],
                 public: svc.public.unwrap_or(false),
+                soft_auth: svc.soft_auth.unwrap_or(false),
                 min_role: svc.min_role,
                 auth_bypass_paths: bypass_paths,
+                auth_rules: vec![],
                 mirror: None,
                 timeout_secs: None,
                 cache: None,
@@ -459,6 +476,12 @@ impl DockerLabelsSource {
             .map(|v| v == "true")
             .unwrap_or(false);
 
+        // #71: soft-auth via Docker label `volta.soft_auth`.
+        let soft_auth = labels
+            .get("volta.soft_auth")
+            .map(|v| v == "true")
+            .unwrap_or(false);
+
         let cors: Vec<String> = labels
             .get("volta.cors_origins")
             .map(|s| s.split(',').map(|s| s.trim().to_string()).collect())
@@ -491,8 +514,10 @@ impl DockerLabelsSource {
             geo_allowlist: vec![],
             geo_denylist: vec![],
             public,
+            soft_auth,
             min_role: labels.get("volta.min_role").cloned(),
             auth_bypass_paths: bypass,
+            auth_rules: vec![],
             mirror: None,
             timeout_secs: None,
             cache: None,
@@ -779,8 +804,10 @@ pub fn spawn_watchers(
                         weights: route.all_weights(),
                         app_id: route.app_id.clone(),
                         public: route.public,
+                        soft_auth: route.soft_auth,
                         min_role: route.min_role.clone(),
                         bypass_paths: route.auth_bypass_paths.clone(),
+                        auth_rules: route.auth_rules.clone(),
                         mirror: route.mirror.clone(),
                         path_prefix: route.path_prefix.clone(),
                         strip_prefix: route.strip_prefix.clone(),
