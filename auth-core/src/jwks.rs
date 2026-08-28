@@ -10,6 +10,7 @@
 //!   1. RS256 via JWKS (kid lookup; force-refresh on kid miss)
 //!   2. RS256 via static public-key PEM
 //!   3. HS256 via shared secret
+//!
 //! First success wins; if all are absent/invalid the token is rejected.
 //!
 //! The JWKS cache is TTL-based and refreshed both lazily (on `verify_async`
@@ -392,13 +393,13 @@ impl MultiVerifierBuilder {
 
     /// Add an RS256 public-key PEM source. On a malformed PEM the builder is
     /// returned unchanged alongside the error so the caller can continue.
-    pub fn rsa_pem(mut self, pem: &[u8]) -> Result<Self, (Self, String)> {
+    pub fn rsa_pem(mut self, pem: &[u8]) -> Result<Self, Box<(Self, String)>> {
         match DecodingKey::from_rsa_pem(pem) {
             Ok(key) => {
                 self.rsa_pem = Some(Arc::new(key));
                 Ok(self)
             }
-            Err(e) => Err((self, format!("invalid RSA PEM: {e}"))),
+            Err(e) => Err(Box::new((self, format!("invalid RSA PEM: {e}")))),
         }
     }
 
@@ -491,7 +492,7 @@ mod tests {
     fn rs256_pem_verifies_valid_token() {
         let v = MultiVerifier::builder()
             .rsa_pem(RSA_PUB.as_bytes())
-            .map_err(|(_, e)| e)
+            .map_err(|b| b.1)
             .unwrap()
             .build();
         let token = rs256_token(None, None, None);
@@ -503,7 +504,7 @@ mod tests {
     fn rs256_pem_detects_tampering() {
         let v = MultiVerifier::builder()
             .rsa_pem(RSA_PUB.as_bytes())
-            .map_err(|(_, e)| e)
+            .map_err(|b| b.1)
             .unwrap()
             .build();
         let token = rs256_token(None, None, None);
@@ -526,7 +527,7 @@ mod tests {
     fn rs256_validates_issuer_and_audience() {
         let v = MultiVerifier::builder()
             .rsa_pem(RSA_PUB.as_bytes())
-            .map_err(|(_, e)| e)
+            .map_err(|b| b.1)
             .unwrap()
             .issuer("volta-auth")
             .audience("volta-apps")
@@ -546,7 +547,7 @@ mod tests {
     fn hs256_fallback_when_no_rs256_match() {
         let v = MultiVerifier::builder()
             .rsa_pem(RSA_PUB.as_bytes())
-            .map_err(|(_, e)| e)
+            .map_err(|b| b.1)
             .unwrap()
             .hs256(HS_SECRET)
             .build();

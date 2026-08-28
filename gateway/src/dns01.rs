@@ -119,7 +119,7 @@ impl DnsProvider for CloudflareDns {
 
         let resp = self
             .http
-            .post(&self.api_url("/dns_records"))
+            .post(self.api_url("/dns_records"))
             .bearer_auth(&self.api_token)
             .json(&body)
             .send()
@@ -152,7 +152,7 @@ impl DnsProvider for CloudflareDns {
 
         let resp = self
             .http
-            .delete(&self.api_url(&format!("/dns_records/{}", record_id)))
+            .delete(self.api_url(&format!("/dns_records/{}", record_id)))
             .bearer_auth(&self.api_token)
             .send()
             .await
@@ -228,36 +228,37 @@ pub async fn obtain_certificate_dns01(
 
     // 3. Process authorizations — create DNS TXT records
     let mut dns_records: Vec<(String, String)> = Vec::new();
-    let mut authorizations = order.authorizations();
+    {
+        let mut authorizations = order.authorizations();
 
-    while let Some(auth_result) = authorizations.next().await {
-        let mut auth = auth_result.map_err(|e| format!("ACME auth: {}", e))?;
+        while let Some(auth_result) = authorizations.next().await {
+            let mut auth = auth_result.map_err(|e| format!("ACME auth: {}", e))?;
 
-        let mut challenge = auth
-            .challenge(ChallengeType::Dns01)
-            .ok_or_else(|| "no DNS-01 challenge offered".to_string())?;
+            let mut challenge = auth
+                .challenge(ChallengeType::Dns01)
+                .ok_or_else(|| "no DNS-01 challenge offered".to_string())?;
 
-        let key_auth = challenge.key_authorization();
-        let dns_value = key_auth.dns_value();
-        let domain = challenge.identifier().to_string();
+            let key_auth = challenge.key_authorization();
+            let dns_value = key_auth.dns_value();
+            let domain = challenge.identifier().to_string();
 
-        // Create TXT record via DNS provider
-        let record_id = provider.create_txt_record(&domain, &dns_value).await?;
-        dns_records.push((domain.clone(), record_id));
+            // Create TXT record via DNS provider
+            let record_id = provider.create_txt_record(&domain, &dns_value).await?;
+            dns_records.push((domain.clone(), record_id));
 
-        // Wait for DNS propagation
-        info!(domain = %domain, "waiting for DNS propagation (10s)");
-        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            // Wait for DNS propagation
+            info!(domain = %domain, "waiting for DNS propagation (10s)");
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
 
-        // 4. Tell ACME server the challenge is ready
-        challenge
-            .set_ready()
-            .await
-            .map_err(|e| format!("ACME set_ready: {}", e))?;
+            // 4. Tell ACME server the challenge is ready
+            challenge
+                .set_ready()
+                .await
+                .map_err(|e| format!("ACME set_ready: {}", e))?;
 
-        info!(domain = %domain, "DNS-01 challenge submitted");
+            info!(domain = %domain, "DNS-01 challenge submitted");
+        }
     }
-    drop(authorizations);
 
     // 5. Poll until order is ready
     let retry = RetryPolicy::default();

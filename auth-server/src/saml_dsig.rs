@@ -633,13 +633,15 @@ fn locate_element(bytes: &[u8], local_name: &str) -> Option<Span> {
                 }
             }
             Ok(Event::End(e)) => {
-                if local_eq(e.name().as_ref(), local_name) && start.is_some() {
-                    depth -= 1;
-                    if depth == 0 {
-                        return Some(Span {
-                            start: start.unwrap(),
-                            end: pos_after,
-                        });
+                if local_eq(e.name().as_ref(), local_name) {
+                    if let Some(start_pos) = start {
+                        depth -= 1;
+                        if depth == 0 {
+                            return Some(Span {
+                                start: start_pos,
+                                end: pos_after,
+                            });
+                        }
                     }
                 }
             }
@@ -810,7 +812,7 @@ fn find_transform_tag(s: &str) -> Option<usize> {
         if bytes[i] == b'<' {
             let rest = &s[i + 1..];
             // skip past any namespace prefix
-            let colon_or_space = rest.find(|c: char| c == ':' || c == ' ' || c == '>' || c == '/');
+            let colon_or_space = rest.find([':', ' ', '>', '/']);
             let (candidate, suffix) = if let Some(p) = colon_or_space {
                 if rest.as_bytes().get(p) == Some(&b':') {
                     // prefixed: check after colon
@@ -823,9 +825,8 @@ fn find_transform_tag(s: &str) -> Option<usize> {
                 (rest, "")
             };
             let _ = suffix;
-            if candidate.starts_with("Transform") {
+            if let Some(after) = candidate.strip_prefix("Transform") {
                 // Make sure it's "Transform " or "Transform>" or "Transform/"
-                let after = &candidate["Transform".len()..];
                 if after.starts_with(' ') || after.starts_with('>') || after.starts_with('/') {
                     return Some(i);
                 }

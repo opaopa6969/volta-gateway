@@ -46,7 +46,7 @@ pub fn authenticator_name(aaguid: &str) -> Option<&'static str> {
 /// Best-effort label: known model name, or a generic fallback (never empty).
 pub fn label_for(aaguid: Option<&str>) -> &'static str {
     match aaguid {
-        Some(a) if a == "00000000-0000-0000-0000-000000000000" => "セキュリティキー",
+        Some("00000000-0000-0000-0000-000000000000") => "セキュリティキー",
         Some(a) => authenticator_name(a).unwrap_or("パスキー認証器"),
         None => "パスキー認証器",
     }

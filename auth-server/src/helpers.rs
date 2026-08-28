@@ -126,7 +126,7 @@ fn synthetic_session_from_claims(
         return_to: None,
         created_at: now_epoch,
         last_active_at: now_epoch,
-        expires_at: claims.exp.unwrap_or(now_epoch + 300) as u64,
+        expires_at: claims.exp.unwrap_or(now_epoch + 300),
         invalidated_at: None,
         mfa_verified_at: Some(now_epoch), // M2M is not interactive — treat as MFA-equivalent
         ip_address: None,
@@ -136,74 +136,6 @@ fn synthetic_session_from_claims(
         tenant_slug: claims.tenant_slug,
         roles,
         display_name: claims.name,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use axum::http::HeaderMap;
-
-    #[test]
-    fn dedup_cap_accounts_keeps_first_and_caps() {
-        // first-wins dedup, empties dropped
-        let ids = vec!["a".into(), "b".into(), "a".into(), "".into(), "c".into()];
-        assert_eq!(dedup_cap_accounts(&ids), vec!["a", "b", "c"]);
-        // capped at MAX_ACCOUNTS
-        let many: Vec<String> = (0..(MAX_ACCOUNTS + 5)).map(|i| format!("s{i}")).collect();
-        assert_eq!(dedup_cap_accounts(&many).len(), MAX_ACCOUNTS);
-    }
-
-    #[test]
-    fn read_accounts_splits_and_filters() {
-        use axum::http::header::COOKIE;
-        use axum_extra::extract::CookieJar;
-        let mut h = HeaderMap::new();
-        h.insert(COOKIE, "__volta_accounts=s1,s2,,s3".parse().unwrap());
-        let jar = CookieJar::from_headers(&h);
-        assert_eq!(read_accounts(&jar), vec!["s1", "s2", "s3"]);
-        // absent cookie → empty
-        assert!(read_accounts(&CookieJar::from_headers(&HeaderMap::new())).is_empty());
-    }
-
-    #[test]
-    fn bearer_header_parses_both_cases() {
-        let mut h = HeaderMap::new();
-        h.insert("authorization", "Bearer abc.def.ghi".parse().unwrap());
-        assert_eq!(bearer_token(&h), Some("abc.def.ghi"));
-
-        let mut h2 = HeaderMap::new();
-        h2.insert("authorization", "bearer XYZ".parse().unwrap());
-        assert_eq!(bearer_token(&h2), Some("XYZ"));
-    }
-
-    #[test]
-    fn bearer_missing_returns_none() {
-        let h = HeaderMap::new();
-        assert!(bearer_token(&h).is_none());
-    }
-
-    #[test]
-    fn bearer_wrong_scheme_returns_none() {
-        let mut h = HeaderMap::new();
-        h.insert("authorization", "Basic dXNlcjpwYXNz".parse().unwrap());
-        assert!(bearer_token(&h).is_none());
-    }
-
-    #[test]
-    fn bearer_empty_value_returns_none() {
-        let mut h = HeaderMap::new();
-        h.insert("authorization", "Bearer   ".parse().unwrap());
-        assert!(bearer_token(&h).is_none());
-    }
-
-    #[test]
-    fn admin_role_enforced_case_insensitively() {
-        enforce_admin_role(&["admin".into()]).unwrap();
-        enforce_admin_role(&["Owner".into()]).unwrap();
-        enforce_admin_role(&["OWNER".into()]).unwrap();
-        assert!(enforce_admin_role(&["member".into()]).is_err());
-        assert!(enforce_admin_role(&[]).is_err());
     }
 }
 
@@ -393,5 +325,73 @@ pub fn verify_state(state: &str, key: &[u8]) -> Option<(String, String, Option<S
             // No invite
             Some((flow_id, rest.to_string(), None))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderMap;
+
+    #[test]
+    fn dedup_cap_accounts_keeps_first_and_caps() {
+        // first-wins dedup, empties dropped
+        let ids = vec!["a".into(), "b".into(), "a".into(), "".into(), "c".into()];
+        assert_eq!(dedup_cap_accounts(&ids), vec!["a", "b", "c"]);
+        // capped at MAX_ACCOUNTS
+        let many: Vec<String> = (0..(MAX_ACCOUNTS + 5)).map(|i| format!("s{i}")).collect();
+        assert_eq!(dedup_cap_accounts(&many).len(), MAX_ACCOUNTS);
+    }
+
+    #[test]
+    fn read_accounts_splits_and_filters() {
+        use axum::http::header::COOKIE;
+        use axum_extra::extract::CookieJar;
+        let mut h = HeaderMap::new();
+        h.insert(COOKIE, "__volta_accounts=s1,s2,,s3".parse().unwrap());
+        let jar = CookieJar::from_headers(&h);
+        assert_eq!(read_accounts(&jar), vec!["s1", "s2", "s3"]);
+        // absent cookie → empty
+        assert!(read_accounts(&CookieJar::from_headers(&HeaderMap::new())).is_empty());
+    }
+
+    #[test]
+    fn bearer_header_parses_both_cases() {
+        let mut h = HeaderMap::new();
+        h.insert("authorization", "Bearer abc.def.ghi".parse().unwrap());
+        assert_eq!(bearer_token(&h), Some("abc.def.ghi"));
+
+        let mut h2 = HeaderMap::new();
+        h2.insert("authorization", "bearer XYZ".parse().unwrap());
+        assert_eq!(bearer_token(&h2), Some("XYZ"));
+    }
+
+    #[test]
+    fn bearer_missing_returns_none() {
+        let h = HeaderMap::new();
+        assert!(bearer_token(&h).is_none());
+    }
+
+    #[test]
+    fn bearer_wrong_scheme_returns_none() {
+        let mut h = HeaderMap::new();
+        h.insert("authorization", "Basic dXNlcjpwYXNz".parse().unwrap());
+        assert!(bearer_token(&h).is_none());
+    }
+
+    #[test]
+    fn bearer_empty_value_returns_none() {
+        let mut h = HeaderMap::new();
+        h.insert("authorization", "Bearer   ".parse().unwrap());
+        assert!(bearer_token(&h).is_none());
+    }
+
+    #[test]
+    fn admin_role_enforced_case_insensitively() {
+        enforce_admin_role(&["admin".into()]).unwrap();
+        enforce_admin_role(&["Owner".into()]).unwrap();
+        enforce_admin_role(&["OWNER".into()]).unwrap();
+        assert!(enforce_admin_role(&["member".into()]).is_err());
+        assert!(enforce_admin_role(&[]).is_err());
     }
 }

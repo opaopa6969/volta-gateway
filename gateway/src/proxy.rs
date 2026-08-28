@@ -126,6 +126,12 @@ pub struct BackendSelector {
     health: Arc<Mutex<HashMap<String, bool>>>,
 }
 
+impl Default for BackendSelector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BackendSelector {
     pub fn new() -> Self {
         Self {
@@ -821,8 +827,8 @@ impl ProxyService {
             match flow.context.get::<RouteTarget>() {
                 Ok(rt) => {
                     let route = hot.routing.get(&host).or_else(|| {
-                        host.splitn(2, '.')
-                            .nth(1)
+                        host.split_once('.')
+                            .map(|x| x.1)
                             .and_then(|d| hot.routing.get(&format!("*.{d}")))
                     });
                     let weights = route.map(|r| r.weights.as_slice()).unwrap_or(&[]);
@@ -844,8 +850,8 @@ impl ProxyService {
             .routing
             .get(&host)
             .or_else(|| {
-                host.splitn(2, '.')
-                    .nth(1)
+                host.split_once('.')
+                    .map(|x| x.1)
                     .and_then(|d| hot.routing.get(&format!("*.{d}")))
             })
             .cloned();
@@ -1113,7 +1119,7 @@ impl ProxyService {
             .map(|c| {
                 c.methods
                     .iter()
-                    .any(|m| m.eq_ignore_ascii_case(&method.to_string()))
+                    .any(|m| m.eq_ignore_ascii_case(method.as_ref()))
             })
             .unwrap_or(false);
 
@@ -1127,11 +1133,11 @@ impl ProxyService {
                 query,
                 ignore_query,
             );
-            if let Some((status, headers, body)) = self.response_cache.get(&cache_key) {
+            if let Some(cached) = self.response_cache.get(&cache_key) {
                 info!(state = "CACHE_HIT", host = %host, path = %uri_path);
                 let mut resp = Response::builder()
-                    .status(StatusCode::from_u16(status).unwrap_or(StatusCode::OK));
-                for (name, value) in &headers {
+                    .status(StatusCode::from_u16(cached.status).unwrap_or(StatusCode::OK));
+                for (name, value) in &cached.headers {
                     if let (Ok(hname), Ok(hval)) = (
                         name.parse::<hyper::header::HeaderName>(),
                         value.parse::<hyper::header::HeaderValue>(),
@@ -1143,7 +1149,7 @@ impl ProxyService {
                     .header("x-volta-cache", "HIT")
                     .header("x-request-id", &request_id);
                 return resp
-                    .body(Full::new(body).map_err(|e| match e {}).boxed())
+                    .body(Full::new(cached.body).map_err(|e| match e {}).boxed())
                     .unwrap();
             }
         }
@@ -1573,11 +1579,12 @@ impl ProxyService {
                         metrics
                             .mirror_total
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        if let Err(_) = tokio::time::timeout(
+                        if tokio::time::timeout(
                             std::time::Duration::from_secs(10),
                             retry_client.request(mirror_req),
                         )
                         .await
+                        .is_err()
                         {
                             metrics
                                 .mirror_errors
@@ -1651,7 +1658,7 @@ impl ProxyService {
 
             // If cache is enabled, collect body for caching + compress with flate2 (existing path)
             let need_cache =
-                cache_enabled && cache_method_ok && response_status >= 200 && response_status < 300;
+                cache_enabled && cache_method_ok && (200..300).contains(&response_status);
 
             if need_cache {
                 use std::io::Write;
@@ -1661,9 +1668,9 @@ impl ProxyService {
                     .get("content-length")
                     .and_then(|v| v.to_str().ok())
                     .and_then(|s| s.parse::<usize>().ok());
-                if content_len.map_or(false, |len| len > 1_048_576) {
+                if content_len.is_some_and(|len| len > 1_048_576) {
                     let response = Response::from_parts(parts, body);
-                    return Response::from(response).map(|b| b.boxed());
+                    return response.map(|b| b.boxed());
                 }
 
                 let body_bytes = match http_body_util::BodyExt::collect(body).await {
@@ -1765,7 +1772,7 @@ impl ProxyService {
 
             let body_stream = http_body_util::BodyStream::new(body)
                 .map_ok(|frame| frame.into_data().unwrap_or_default())
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()));
+                .map_err(|e| std::io::Error::other(e.to_string()));
             let async_read = StreamReader::new(body_stream);
             let gzip_read = async_compression::tokio::bufread::GzipEncoder::new(
                 tokio::io::BufReader::new(async_read),
@@ -1808,7 +1815,7 @@ impl ProxyService {
                 .unwrap();
         }
 
-        Response::from(response).map(|b| b.boxed())
+        response.map(|b| b.boxed())
     }
 }
 
@@ -1870,7 +1877,7 @@ fn extract_host(req: &Request<Incoming>) -> Option<String> {
     req.headers()
         .get("host")
         .and_then(|v| v.to_str().ok())
-        .map(|h| normalize_host(h))
+        .map(normalize_host)
 }
 
 fn error_response(status: StatusCode, request_id: &str) -> Response<BoxBody<Bytes, hyper::Error>> {

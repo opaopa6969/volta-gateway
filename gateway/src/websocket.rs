@@ -25,6 +25,10 @@ const MAX_WS_CONNECTIONS: usize = 1024;
 ///   3. Forward upgrade request to backend
 ///   4. If backend accepts (101), upgrade client side too
 ///   5. Bidirectional copy (tokio::io::copy_bidirectional)
+#[allow(
+    clippy::too_many_arguments,
+    reason = "all params are used by different stages of the upgrade pipeline; grouping would hurt readability"
+)]
 pub async fn handle_websocket(
     req: Request<Incoming>,
     remote_addr: std::net::SocketAddr,
@@ -53,7 +57,7 @@ pub async fn handle_websocket(
         .headers()
         .get("host")
         .and_then(|v| v.to_str().ok())
-        .map(|h| crate::proxy::normalize_host(h))
+        .map(crate::proxy::normalize_host)
         .unwrap_or_default();
 
     let uri_path = req.uri().path().to_string();
@@ -484,8 +488,8 @@ pub async fn handle_websocket(
 
 fn resolve_route(routing: &RoutingTable, host: &str) -> Option<crate::proxy::RouteInfo> {
     routing.get(host).cloned().or_else(|| {
-        host.splitn(2, '.')
-            .nth(1)
+        host.split_once('.')
+            .map(|x| x.1)
             .and_then(|d| routing.get(&format!("*.{d}")).cloned())
     })
 }

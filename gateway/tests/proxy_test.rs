@@ -277,7 +277,7 @@ fn cors_per_route_rejects_unknown_origin() {
 #[test]
 fn error_pages_empty_when_no_dir() {
     let pages: ErrorPages = HashMap::new();
-    assert!(pages.get(&502).is_none());
+    assert!(!pages.contains_key(&502));
 }
 
 #[test]
@@ -288,7 +288,7 @@ fn error_pages_lookup() {
 
     assert_eq!(pages.get(&502).unwrap(), "<h1>Bad Gateway</h1>");
     assert_eq!(pages.get(&403).unwrap(), "<h1>Forbidden</h1>");
-    assert!(pages.get(&404).is_none()); // falls back to JSON
+    assert!(!pages.contains_key(&404)); // falls back to JSON
 }
 
 // ─── Config Validation Tests ───────────────────────────
@@ -428,8 +428,7 @@ fn weighted_selector_distributes() {
 fn strip_prefix_works() {
     let path = "/v1/users?page=1";
     let strip = "/v1";
-    let result = if path.starts_with(strip) {
-        let stripped = &path[strip.len()..];
+    let result = if let Some(stripped) = path.strip_prefix(strip) {
         if stripped.starts_with('/') {
             stripped.to_string()
         } else {
@@ -453,7 +452,7 @@ fn add_prefix_works() {
 
 #[test]
 fn geo_allowlist_blocks_non_listed() {
-    let allowlist = vec!["JP".to_string()];
+    let allowlist = ["JP".to_string()];
     let country = "US";
     let allowed = allowlist.iter().any(|c| c == country);
     assert!(!allowed);
@@ -461,7 +460,7 @@ fn geo_allowlist_blocks_non_listed() {
 
 #[test]
 fn geo_allowlist_allows_listed() {
-    let allowlist = vec!["JP".to_string()];
+    let allowlist = ["JP".to_string()];
     let country = "JP";
     let allowed = allowlist.iter().any(|c| c == country);
     assert!(allowed);
@@ -469,7 +468,7 @@ fn geo_allowlist_allows_listed() {
 
 #[test]
 fn geo_denylist_blocks_listed() {
-    let denylist = vec!["CN".to_string(), "RU".to_string()];
+    let denylist = ["CN".to_string(), "RU".to_string()];
     let country = "CN";
     let blocked = denylist.iter().any(|c| c == country);
     assert!(blocked);

@@ -383,6 +383,12 @@ pub struct PluginManager {
     plugins: Vec<(PluginConfig, PluginState, Arc<dyn Plugin>)>,
 }
 
+impl Default for PluginManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PluginManager {
     pub fn new() -> Self {
         Self {
@@ -495,10 +501,10 @@ impl PluginManager {
                     let mut req_headers = HashMap::new();
                     let mut resp_headers = HashMap::new();
                     for (k, v) in &config.config {
-                        if k.starts_with("req.") {
-                            req_headers.insert(k[4..].to_string(), v.clone());
-                        } else if k.starts_with("resp.") {
-                            resp_headers.insert(k[5..].to_string(), v.clone());
+                        if let Some(rest) = k.strip_prefix("req.") {
+                            req_headers.insert(rest.to_string(), v.clone());
+                        } else if let Some(rest) = k.strip_prefix("resp.") {
+                            resp_headers.insert(rest.to_string(), v.clone());
                         }
                     }
                     mgr.register(

@@ -4,6 +4,7 @@
 //!   - Mock backend (echo server)
 //!   - Mock volta-auth-server
 //!   - volta-gateway ProxyService
+//!
 //! Then sends real HTTP requests and asserts responses.
 
 use arc_swap::ArcSwap;

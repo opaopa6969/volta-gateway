@@ -37,6 +37,14 @@ fn default_max_body() -> usize {
     10_485_760
 } // 10MB
 
+/// Cached response snapshot returned by [`ResponseCache::get`].
+#[derive(Clone)]
+pub struct CachedEntry {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub body: Bytes,
+}
+
 /// Cached response entry.
 #[derive(Clone)]
 struct CacheEntry {
@@ -98,12 +106,16 @@ impl ResponseCache {
     }
 
     /// Lookup cache entry. Returns (status, headers, body, hit) or None.
-    pub fn get(&self, key: &str) -> Option<(u16, Vec<(String, String)>, Bytes)> {
+    pub fn get(&self, key: &str) -> Option<CachedEntry> {
         let mut entries = self.entries.lock().unwrap();
         if let Some(entry) = entries.get_mut(key) {
             entry.transition_if_stale();
             if entry.is_fresh() {
-                return Some((entry.status, entry.headers.clone(), entry.body.clone()));
+                return Some(CachedEntry {
+                    status: entry.status,
+                    headers: entry.headers.clone(),
+                    body: entry.body.clone(),
+                });
             }
             // Stale — remove
             entries.remove(key);

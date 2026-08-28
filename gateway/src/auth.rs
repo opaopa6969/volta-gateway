@@ -143,7 +143,8 @@ impl VoltaAuthClient {
                     have_source = true;
                     tracing::info!("in-process RS256 PEM verify enabled");
                 }
-                Err((b, e)) => {
+                Err(boxed) => {
+                    let (b, e) = *boxed;
                     builder = b;
                     tracing::error!(error = %e, "jwt_public_key_pem invalid — RS256 PEM disabled");
                 }
@@ -269,6 +270,17 @@ impl VoltaAuthClient {
     /// still opt-in and is only attempted after an online transport/5xx error.
     /// `client_ip` is the resolved real client IP, forwarded as X-Real-IP so
     /// the auth proxy can apply IP-based rules (e.g. local network bypass).
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "production uses check_with_degraded_policy directly; check is a test convenience wrapper"
+        )
+    )]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "auth request context fields are independently optional; grouping would obscure the 1:1 mapping to X-Volta-* headers"
+    )]
     pub async fn check(
         &self,
         host: &str,
@@ -441,6 +453,10 @@ fn sanitize_redirect(url: &str, auth_public_url: Option<&str>) -> String {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::await_holding_lock,
+    reason = "ENV_LOCK serializes tests that mutate env vars; holding it across await is intentional and deadlock-free (single task)"
+)]
 mod degraded_tests {
     use super::*;
     use crate::config::AuthConfig;

@@ -21,10 +21,10 @@ fn cache_put_and_get() {
 
     let result = cache.get(&key);
     assert!(result.is_some());
-    let (status, headers, body) = result.unwrap();
-    assert_eq!(status, 200);
-    assert_eq!(headers[0].1, "text/html");
-    assert_eq!(body, "<h1>hello</h1>");
+    let cached = result.unwrap();
+    assert_eq!(cached.status, 200);
+    assert_eq!(cached.headers[0].1, "text/html");
+    assert_eq!(cached.body, "<h1>hello</h1>");
 }
 
 #[test]

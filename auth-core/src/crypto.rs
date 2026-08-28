@@ -138,6 +138,58 @@ fn resolve_master_key(
         .or_else(|| jwt_secret.map(|key| (key, true)))
 }
 
+/// SHA-256 hex digest. Used to store *hashes* of verification / reset tokens —
+/// the raw token is never persisted.
+pub fn sha256_hex(input: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(input.as_bytes());
+    h.finalize().iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// SHA-256 of `input`, base64url-no-pad. Used for PKCE S256 verification
+/// (`code_challenge == base64url(sha256(code_verifier))`, RFC 7636 §4.6).
+pub fn sha256_base64url(input: &str) -> String {
+    use base64::Engine;
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(input.as_bytes());
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(h.finalize())
+}
+
+/// Generate a cryptographically-random token as hex (`n_bytes` of entropy).
+/// Use ≥32 bytes for verification / reset links.
+pub fn random_token_hex(n_bytes: usize) -> String {
+    use rand::RngCore;
+    let mut buf = vec![0u8; n_bytes];
+    rand::thread_rng().fill_bytes(&mut buf);
+    buf.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// Generate a numeric OTP code with `digits` digits (zero-padded). For login
+/// challenges (Email/SMS OTP). Use the hash (sha256_hex) for storage.
+pub fn random_numeric_code(digits: u32) -> String {
+    use rand::Rng;
+    let modulo = 10u64.pow(digits);
+    let n: u64 = rand::thread_rng().gen_range(0..modulo);
+    format!("{:0width$}", n, width = digits as usize)
+}
+
+/// Generate a human-typeable `user_code` for the OAuth 2.0 Device Authorization
+/// Grant (RFC 8628 §6.1). 8 characters from an unambiguous alphabet (no vowels
+/// so it can't spell words, no `0/1/O/I/L`), grouped `XXXX-XXXX` for readability.
+/// ~40 bits of entropy — combined with a short TTL and rate limiting this is
+/// sufficient for the "type this code on your phone" step.
+pub fn random_user_code() -> String {
+    use rand::Rng;
+    const ALPHABET: &[u8] = b"BCDFGHJKMNPQRSTVWXZ23456789";
+    let mut rng = rand::thread_rng();
+    let s: String = (0..8)
+        .map(|_| ALPHABET[rng.gen_range(0..ALPHABET.len())] as char)
+        .collect();
+    format!("{}-{}", &s[0..4], &s[4..8])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,56 +309,4 @@ mod tests {
         }
         assert_ne!(super::random_user_code(), super::random_user_code());
     }
-}
-
-/// SHA-256 hex digest. Used to store *hashes* of verification / reset tokens —
-/// the raw token is never persisted.
-pub fn sha256_hex(input: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let mut h = Sha256::new();
-    h.update(input.as_bytes());
-    h.finalize().iter().map(|b| format!("{:02x}", b)).collect()
-}
-
-/// SHA-256 of `input`, base64url-no-pad. Used for PKCE S256 verification
-/// (`code_challenge == base64url(sha256(code_verifier))`, RFC 7636 §4.6).
-pub fn sha256_base64url(input: &str) -> String {
-    use base64::Engine;
-    use sha2::{Digest, Sha256};
-    let mut h = Sha256::new();
-    h.update(input.as_bytes());
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(h.finalize())
-}
-
-/// Generate a cryptographically-random token as hex (`n_bytes` of entropy).
-/// Use ≥32 bytes for verification / reset links.
-pub fn random_token_hex(n_bytes: usize) -> String {
-    use rand::RngCore;
-    let mut buf = vec![0u8; n_bytes];
-    rand::thread_rng().fill_bytes(&mut buf);
-    buf.iter().map(|b| format!("{:02x}", b)).collect()
-}
-
-/// Generate a numeric OTP code with `digits` digits (zero-padded). For login
-/// challenges (Email/SMS OTP). Use the hash (sha256_hex) for storage.
-pub fn random_numeric_code(digits: u32) -> String {
-    use rand::Rng;
-    let modulo = 10u64.pow(digits);
-    let n: u64 = rand::thread_rng().gen_range(0..modulo);
-    format!("{:0width$}", n, width = digits as usize)
-}
-
-/// Generate a human-typeable `user_code` for the OAuth 2.0 Device Authorization
-/// Grant (RFC 8628 §6.1). 8 characters from an unambiguous alphabet (no vowels
-/// so it can't spell words, no `0/1/O/I/L`), grouped `XXXX-XXXX` for readability.
-/// ~40 bits of entropy — combined with a short TTL and rate limiting this is
-/// sufficient for the "type this code on your phone" step.
-pub fn random_user_code() -> String {
-    use rand::Rng;
-    const ALPHABET: &[u8] = b"BCDFGHJKMNPQRSTVWXZ23456789";
-    let mut rng = rand::thread_rng();
-    let s: String = (0..8)
-        .map(|_| ALPHABET[rng.gen_range(0..ALPHABET.len())] as char)
-        .collect();
-    format!("{}-{}", &s[0..4], &s[4..8])
 }

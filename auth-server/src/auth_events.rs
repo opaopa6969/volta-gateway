@@ -183,6 +183,10 @@ impl AuthEventBus {
     /// the `events` column of their webhook row (e.g. `auth.login_success`).
     /// The event_type is normalized to lowercase with `auth.` prefix, so
     /// `LOGIN_SUCCESS` → `auth.login_success`.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "event metadata fields are individually optional and mapped 1:1 to audit/outbox columns"
+    )]
     pub async fn publish_and_audit_outbox<A, O>(
         &self,
         ev: AuthEvent,

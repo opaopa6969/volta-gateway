@@ -92,14 +92,14 @@ impl AuthService {
             .idp
             .exchange_code(code, redirect_uri)
             .await
-            .map_err(|e| AuthError::Internal(e))?;
+            .map_err(AuthError::Internal)?;
 
         // 2. Fetch userinfo (async IdP call)
         let userinfo: IdpUserInfo = self
             .idp
             .userinfo(&token_resp.access_token)
             .await
-            .map_err(|e| AuthError::Internal(e))?;
+            .map_err(AuthError::Internal)?;
 
         let email = userinfo
             .email

@@ -163,7 +163,7 @@ async fn deliver(
     let status = resp.status().as_u16() as i32;
     let body = resp.text().await.unwrap_or_default();
 
-    if status >= 200 && status < 300 {
+    if (200..300).contains(&status) {
         Ok((status, body))
     } else {
         Err(format!(
