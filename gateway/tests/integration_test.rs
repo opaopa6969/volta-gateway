@@ -980,3 +980,122 @@ async fn proxy_auth_bypass_path() {
 
     server.abort();
 }
+
+/// #126: `min_role` + `auth_bypass_paths` 併用時の挙動。
+/// bypass path (`/healthz`) に当たったリクエストは認証ごと skip し `min_role`
+/// チェックも飛ばして下流へ流す（health 外形監視等）。
+#[tokio::test]
+async fn proxy_min_role_with_bypass_path_skips_auth_on_bypass() {
+    let (backend_addr, _bh) = mock_server(|_req| {
+        Response::builder()
+            .status(200)
+            .body(full_body(Bytes::from(r#"{"ok":true}"#)))
+            .unwrap()
+    })
+    .await;
+
+    // Auth denies everything (403) — bypass path だけは auth を呼ばない
+    let (auth_addr, _ah) =
+        mock_server(|_req| Response::builder().status(403).body(empty_body()).unwrap()).await;
+
+    let auth_config = AuthConfig {
+        volta_url: format!("http://{}", auth_addr),
+        verify_path: "/auth/verify".into(),
+        timeout_ms: 2000,
+        pool_max_idle: 4,
+        jwt_secret: None,
+        cookie_name: None,
+        auth_public_url: None,
+        degraded_mode: false,
+        jwt_public_key_pem: None,
+        jwks_url: None,
+        gateway_assertion_secret: None,
+        gateway_assertion_key_id: None,
+        gateway_assertion_previous_key_id: None,
+        gateway_assertion_previous_secret: None,
+        jwt_issuer: None,
+        jwt_audience: None,
+    };
+    let volta = VoltaAuthClient::new(&auth_config);
+
+    let mut routing = RoutingTable::new();
+    routing.insert(
+        "health.test.com".to_string(),
+        volta_gateway::proxy::RouteInfo {
+            min_role: Some("MEMBER".into()),
+            weights: vec![],
+            backends: vec![format!("http://{}", backend_addr)],
+            app_id: Some("health-app".into()),
+            public: false,
+            bypass_paths: vec![volta_gateway::config::BypassPath {
+                prefix: "/healthz".into(),
+                backend: None,
+            }],
+            mirror: None,
+            path_prefix: None,
+            strip_prefix: None,
+            add_prefix: None,
+            request_headers: None,
+            response_headers: None,
+            geo_allowlist: vec![],
+            geo_denylist: vec![],
+            timeout_secs: None,
+            cache: None,
+            backend_tls: None,
+        },
+    );
+
+    let hot = Arc::new(ArcSwap::from_pointee(HotState::new(Arc::new(routing))));
+    let metrics = Arc::new(volta_gateway::metrics::Metrics::new());
+    let plugins = Arc::new(volta_gateway::plugin::PluginManager::new());
+    let proxy = ProxyService::new(volta, hot, metrics, plugins);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = listener.local_addr().unwrap();
+
+    let proxy_clone = proxy.clone();
+    let server = tokio::spawn(async move {
+        let (stream, remote_addr) = listener.accept().await.unwrap();
+        let service = service_fn(move |req: Request<Incoming>| {
+            let proxy = proxy_clone.clone();
+            let addr = remote_addr;
+            async move { Ok::<_, hyper::Error>(proxy.handle(req, addr).await) }
+        });
+        let _ = auto::Builder::new(TokioExecutor::new())
+            .serve_connection(TokioIo::new(stream), service)
+            .await;
+    });
+
+    let client: hyper_util::client::legacy::Client<_, Empty<Bytes>> =
+        hyper_util::client::legacy::Client::builder(TokioExecutor::new()).build_http();
+
+    // bypass path `/healthz` は auth を呼ばず 200 で下流へ届く
+    let resp = client
+        .request(
+            Request::builder()
+                .uri(format!("http://{}/healthz", proxy_addr))
+                .header("host", "health.test.com")
+                .body(Empty::new())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body, r#"{"ok":true}"#);
+
+    // 非 bypass path `/api/x` は auth が 403 を返すので 403
+    let resp = client
+        .request(
+            Request::builder()
+                .uri(format!("http://{}/api/x", proxy_addr))
+                .header("host", "health.test.com")
+                .body(Empty::new())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    server.abort();
+}
