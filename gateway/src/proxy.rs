@@ -87,6 +87,8 @@ pub struct RouteInfo {
     /// #71: soft-auth route — attempt auth if session present, pass through anonymously otherwise.
     pub soft_auth: bool,
     pub bypass_paths: Vec<crate::config::BypassPath>,
+    /// #127: per-path authorization rules (longest-prefix match).
+    pub auth_rules: Vec<crate::config::AuthRule>,
     pub mirror: Option<crate::config::MirrorConfig>,
     pub path_prefix: Option<String>,
     pub strip_prefix: Option<String>,
@@ -855,11 +857,23 @@ impl ProxyService {
                 .find(|bp| bypass_path_matches(&uri_path, &bp.prefix))
                 .cloned()
         });
+        // #127: per-path auth rules (longest-prefix match). When a rule matches,
+        // it overrides the route-level auth decision for this path.
+        let auth_rule_match = route_info
+            .as_ref()
+            .and_then(|r| crate::config::resolve_auth_rule(&r.auth_rules, &uri_path));
         // #71: auth mode is now 3-valued:
-        //   - skip entirely (public route OR bypass path match)
+        //   - skip entirely (public route OR bypass path match OR auth_rule: public)
         //   - soft-auth (attempt auth if session present, pass anonymously otherwise)
         //   - hard-auth (require auth, 401/403 on failure) — the existing default
-        let skip_auth = is_public || bypass_match.is_some();
+        let skip_auth = is_public
+            || bypass_match.is_some()
+            || matches!(auth_rule_match, Some(crate::config::ResolvedAuth::Public));
+        // #127: auth_rule with min_role overrides the route-level min_role.
+        let min_role = match &auth_rule_match {
+            Some(crate::config::ResolvedAuth::Require { min_role: role }) => Some(role.clone()),
+            _ => min_role,
+        };
 
         // Override backend if bypass_path has a backend override
         let backend_url = bypass_match
@@ -1525,6 +1539,7 @@ impl ProxyService {
             trace = %traceparent,
             transitions = transition_count,
             public = skip_auth,
+            auth_rule = ?auth_rule_match,
         );
 
         // Record metrics
@@ -2018,6 +2033,7 @@ mod circuit_breaker_tests {
             public: false,
             soft_auth: false,
             bypass_paths: vec![],
+            auth_rules: vec![],
             mirror: None,
             path_prefix: None,
             strip_prefix: None,
