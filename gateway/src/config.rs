@@ -470,6 +470,14 @@ pub struct RouteEntry {
     /// Skip auth entirely for this route (e.g. auth server itself, public docs).
     #[serde(default)]
     pub public: bool,
+    /// #71: soft-auth (optional authentication) route mode.
+    ///
+    /// When `true`, the gateway attempts authentication if a session is present
+    /// (injecting `X-Volta-*` on success), but **does not reject** unauthenticated
+    /// requests — they pass through anonymously without `X-Volta-*` headers.
+    /// Mutually exclusive with `public` (which skips auth entirely).
+    #[serde(default)]
+    pub soft_auth: bool,
     /// Paths that bypass auth (e.g. Slack webhooks). Optional backend override.
     #[serde(default)]
     pub auth_bypass_paths: Vec<BypassPath>,
@@ -756,6 +764,29 @@ impl GatewayConfig {
                 // #126: 5814607 で導入された併用拒否は本番設定（volta-platform 生成器）
                 // を起動不能にするため撤回。`public: true` との排他のみ残す。
             }
+            // #71: `public` + `soft_auth` の排他。
+            if r.public && r.soft_auth {
+                errors.push((
+                    Self::EXIT_SCHEMA,
+                    format!(
+                        "routing host '{}' cannot combine public: true with soft_auth: true (public skips auth entirely)",
+                        r.host
+                    ),
+                ));
+            }
+            // #71: `soft_auth` + `min_role` の排他。soft-auth は認証失敗時に
+            // 匿名で通すが、min_role は認証必須の上でロール階層を課すため、
+            // 両立すると「匿名は通すが min_role が満たせないので 403」となり
+            // soft-auth の意図（匿名許容）が消える。
+            if r.soft_auth && r.min_role.is_some() {
+                errors.push((
+                    Self::EXIT_SCHEMA,
+                    format!(
+                        "routing host '{}' cannot combine soft_auth: true with min_role (soft-auth is anonymous-tolerant, min_role is not)",
+                        r.host
+                    ),
+                ));
+            }
             for bypass in &r.auth_bypass_paths {
                 if bypass.prefix.is_empty() || !bypass.prefix.starts_with('/') {
                     errors.push((
@@ -923,6 +954,7 @@ impl GatewayConfig {
                         app_id: r.app_id.clone(),
                         min_role: r.min_role.clone(),
                         public: r.public,
+                        soft_auth: r.soft_auth,
                         bypass_paths: r.auth_bypass_paths.clone(),
                         mirror: r.mirror.clone(),
                         path_prefix: r.path_prefix.clone(),
@@ -991,6 +1023,7 @@ mod tests {
             geo_allowlist: vec![],
             geo_denylist: vec![],
             public: false,
+            soft_auth: false,
             min_role: None,
             auth_bypass_paths: vec![],
             mirror: None,
@@ -1016,6 +1049,7 @@ mod tests {
             geo_allowlist: vec![],
             geo_denylist: vec![],
             public: false,
+            soft_auth: false,
             min_role: None,
             auth_bypass_paths: vec![],
             mirror: None,
@@ -1092,6 +1126,7 @@ routing:
             geo_allowlist: vec![],
             geo_denylist: vec![],
             public: false,
+            soft_auth: false,
             min_role: None,
             auth_bypass_paths: vec![],
             mirror: None,
@@ -1120,6 +1155,7 @@ routing:
             geo_allowlist: vec![],
             geo_denylist: vec![],
             public: false,
+            soft_auth: false,
             min_role: None,
             auth_bypass_paths: vec![],
             mirror: None,
@@ -1438,6 +1474,96 @@ routing:
         let cfg: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
         let errs = cfg.validate().unwrap_err();
         assert!(errs.iter().any(|e| e.contains("force_https")));
+    }
+
+    // ── #71: soft-auth validation ────────────────────────────────
+
+    #[test]
+    fn validate_rejects_public_and_soft_auth_combination() {
+        let yaml = r#"
+server:
+  port: 8080
+auth:
+  volta_url: "http://localhost:7070"
+routing:
+  - host: "example.com"
+    backend: "http://a:3000"
+    public: true
+    soft_auth: true
+"#;
+        let cfg: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        let errs = cfg.validate().unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("cannot combine public: true with soft_auth: true")),
+            "{:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn validate_rejects_soft_auth_and_min_role_combination() {
+        let yaml = r#"
+server:
+  port: 8080
+auth:
+  volta_url: "http://localhost:7070"
+routing:
+  - host: "example.com"
+    backend: "http://a:3000"
+    soft_auth: true
+    min_role: MEMBER
+"#;
+        let cfg: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        let errs = cfg.validate().unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("cannot combine soft_auth: true with min_role")),
+            "{:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn validate_accepts_soft_auth_alone() {
+        let yaml = r#"
+server:
+  port: 8080
+auth:
+  volta_url: "http://localhost:7070"
+routing:
+  - host: "example.com"
+    backend: "http://a:3000"
+    soft_auth: true
+"#;
+        let cfg: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(cfg.validate().is_ok(), "{:?}", cfg.validate());
+    }
+
+    #[test]
+    fn soft_auth_defaults_to_false() {
+        let cfg = parse_config(&minimal_config_yaml(""));
+        assert!(!cfg.routing[0].soft_auth);
+    }
+
+    #[test]
+    fn routing_table_propagates_soft_auth() {
+        let yaml = r#"
+server:
+  port: 8080
+auth:
+  volta_url: "http://localhost:7070"
+routing:
+  - host: "soft.example.com"
+    backend: "http://a:3000"
+    soft_auth: true
+  - host: "hard.example.com"
+    backend: "http://b:3000"
+"#;
+        let cfg: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        let table = cfg.routing_table();
+        assert!(table.get("soft.example.com").unwrap().soft_auth);
+        assert!(!table.get("hard.example.com").unwrap().soft_auth);
     }
 
     #[test]

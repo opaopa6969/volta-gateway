@@ -84,6 +84,8 @@ pub struct RouteInfo {
     /// ForwardAuth に渡す最低ロール（#58）。
     pub min_role: Option<String>,
     pub public: bool,
+    /// #71: soft-auth route — attempt auth if session present, pass through anonymously otherwise.
+    pub soft_auth: bool,
     pub bypass_paths: Vec<crate::config::BypassPath>,
     pub mirror: Option<crate::config::MirrorConfig>,
     pub path_prefix: Option<String>,
@@ -846,12 +848,17 @@ impl ProxyService {
             })
             .cloned();
         let is_public = route_info.as_ref().map(|r| r.public).unwrap_or(false);
+        let is_soft_auth = route_info.as_ref().map(|r| r.soft_auth).unwrap_or(false);
         let bypass_match = route_info.as_ref().and_then(|r| {
             r.bypass_paths
                 .iter()
                 .find(|bp| bypass_path_matches(&uri_path, &bp.prefix))
                 .cloned()
         });
+        // #71: auth mode is now 3-valued:
+        //   - skip entirely (public route OR bypass path match)
+        //   - soft-auth (attempt auth if session present, pass anonymously otherwise)
+        //   - hard-auth (require auth, 401/403 on failure) — the existing default
         let skip_auth = is_public || bypass_match.is_some();
 
         // Override backend if bypass_path has a backend override
@@ -864,6 +871,36 @@ impl ProxyService {
         let volta_headers = if skip_auth {
             info!(state = "AUTH_SKIP", host = %host, path = %uri_path, public = is_public);
             HashMap::new()
+        } else if is_soft_auth {
+            // #71: soft-auth — try auth, but never reject. On success inject
+            // X-Volta-*; on failure/missing session pass through anonymously.
+            let client_ip_str = real_client_ip.to_string();
+            let auth_result = self
+                .volta
+                .check_with_degraded_policy(
+                    &host,
+                    &uri_path,
+                    proto,
+                    cookie.as_deref(),
+                    app_id.as_deref(),
+                    min_role.as_deref(),
+                    Some(&client_ip_str),
+                    bearer.as_deref(),
+                    true, // soft-auth: always allow degraded fallback (fail-open)
+                )
+                .await;
+
+            match auth_result {
+                AuthResult::Authenticated(headers) => {
+                    info!(state = "SOFT_AUTH_OK", host = %host, path = %uri_path);
+                    headers
+                }
+                AuthResult::Redirect(_) | AuthResult::Denied | AuthResult::Error(_) => {
+                    // Soft-auth: treat any auth failure as anonymous pass-through.
+                    info!(state = "SOFT_AUTH_ANON", host = %host, path = %uri_path);
+                    HashMap::new()
+                }
+            }
         } else {
             let client_ip_str = real_client_ip.to_string();
             let allow_degraded_fallback = route_info
@@ -1979,6 +2016,7 @@ mod circuit_breaker_tests {
             weights: vec![],
             app_id: None,
             public: false,
+            soft_auth: false,
             bypass_paths: vec![],
             mirror: None,
             path_prefix: None,
