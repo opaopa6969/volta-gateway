@@ -205,7 +205,7 @@ impl ServicesJsonSource {
             }
         }
         // Stable ordering for deterministic reloads/tests.
-        routes.sort_by(|a, b| a.host.cmp(&b.host));
+        routes.sort_by_key(|a| a.host.clone());
         Ok(routes)
     }
 

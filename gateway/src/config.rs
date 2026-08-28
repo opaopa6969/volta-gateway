@@ -594,7 +594,7 @@ pub enum ResolvedAuth {
 /// path == prefix OR path starts with prefix + '/' (or prefix ends with '/').
 pub fn resolve_auth_rule(rules: &[AuthRule], path: &str) -> Option<ResolvedAuth> {
     let mut sorted: Vec<&AuthRule> = rules.iter().collect();
-    sorted.sort_by(|a, b| b.prefix.len().cmp(&a.prefix.len()));
+    sorted.sort_by_key(|a| std::cmp::Reverse(a.prefix.len()));
     for rule in sorted {
         let matches = match rule.match_mode.as_str() {
             "exact" => path == rule.prefix,
