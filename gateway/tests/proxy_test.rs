@@ -15,6 +15,66 @@ fn auth_bypass_prefix_is_segment_bounded() {
     assert!(bypass_path_matches("/hooks/stripe", "/hooks/"));
 }
 
+/// # Regression guard: auth-bypass prefix matching at edge values.
+/// These inputs were never exercised and a subtle change to `bypass_path_matches`
+/// could silently widen auth bypass to every path (security regression).
+#[test]
+fn auth_bypass_prefix_edge_cases() {
+    use volta_gateway::proxy::bypass_path_matches;
+
+    // Empty prefix against a non-empty path: the current implementation returns
+    // `true` because `path.strip_prefix("")` yields `Some(path)` and any path
+    // starting with `/` satisfies the segment-boundary check. This is a latent
+    // bug — an empty bypass prefix would disable auth for the whole route —
+    // but config validation rejects empty prefixes (`bypass.prefix` must
+    // `starts_with('/')`), so it is currently unreachable from YAML. The
+    // assertion documents the current behaviour so any change is visible.
+    // See: <issue link> for the underlying function-level fix.
+    assert!(bypass_path_matches("/anything", ""));
+    // Empty prefix + empty path: the `path == prefix` arm matches.
+    assert!(bypass_path_matches("", ""));
+
+    // Root prefix "/" with trailing slash branch: any path starting with "/"
+    // matches — i.e. configuring "/" as a bypass prefix disables auth for
+    // the entire route. Document that behaviour so it cannot regress silently.
+    assert!(bypass_path_matches("/", "/"));
+    assert!(bypass_path_matches("/secret", "/"));
+
+    // Prefix equal to path, no trailing slash on either side.
+    assert!(bypass_path_matches("/webhooks/stripe", "/webhooks/stripe"));
+    // Trailing-slash prefix matches deeper paths but not sibling prefixes.
+    assert!(bypass_path_matches("/webhooks/stripe/evt", "/webhooks/"));
+    assert!(!bypass_path_matches("/webhooks-stripe", "/webhooks/"));
+}
+
+/// # Regression guard: host header normalisation at edge values.
+/// `normalize_host` feeds the routing-table lookup, so a regression here can
+/// either drop traffic for valid hosts or let an unknown host slip through.
+/// Existing tests only cover `host_is_routed_raw` indirectly.
+#[test]
+fn normalize_host_edge_cases() {
+    use volta_gateway::proxy::normalize_host;
+
+    // IPv6 with port: brackets preserved, port stripped.
+    assert_eq!(normalize_host("[::1]:8080"), "[::1]");
+    // IPv6 without port.
+    assert_eq!(normalize_host("[2001:db8::1]"), "[2001:db8::1]");
+    // IPv6 with zone id — the first ']' boundary wins; zone is preserved as
+    // part of the bracketed host. This documents current behaviour.
+    assert_eq!(normalize_host("[fe80::1%eth0]:443"), "[fe80::1%eth0]");
+
+    // Hostname + port → port stripped, case folded to lowercase.
+    assert_eq!(normalize_host("APP.Example.COM:8080"), "app.example.com");
+    // Bare hostname, no port.
+    assert_eq!(normalize_host("APP.Example.COM"), "app.example.com");
+
+    // Empty input — must not panic; returns empty string.
+    assert_eq!(normalize_host(""), "");
+
+    // Port-only string (no host before colon): the split_on(':') yields "".
+    assert_eq!(normalize_host(":8080"), "");
+}
+
 // ─── Circuit Breaker Tests ─────────────────────────────
 
 /// Minimal circuit breaker reimplementation for unit testing
