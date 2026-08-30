@@ -221,8 +221,12 @@ impl IdpClient {
 
         let status = resp.status();
         if !status.is_success() {
+            // H5: the IdP error body can include client_id, redirect_uri
+            // mismatch details, or token fragments — never surface it to the
+            // browser. Log server-side and return a generic string.
             let body = resp.text().await.unwrap_or_default();
-            return Err(format!("token exchange error {}: {}", status, body));
+            tracing::warn!(status = %status, body = %body, "IdP token exchange error");
+            return Err(format!("token exchange error: {}", status));
         }
 
         resp.json::<TokenResponse>()

@@ -89,11 +89,17 @@ fn verify_dpop(
     };
     match volta_auth_core::dpop::verify_proof(proof, htm, htu, access_token, now_unix()) {
         Ok(v) => Ok(Some(v.jkt)),
-        Err(e) => Err(oauth_err(
-            StatusCode::BAD_REQUEST,
-            "invalid_dpop_proof",
-            &e.to_string(),
-        )),
+        Err(e) => {
+            // H6: DPoP/JWT parse errors can leak parser internals (and token
+            // fragments) that an attacker could use to fingerprint the library.
+            // Log server-side and return a generic description.
+            tracing::warn!(error = %e, "DPoP proof verification failed");
+            Err(oauth_err(
+                StatusCode::BAD_REQUEST,
+                "invalid_dpop_proof",
+                "DPoP proof verification failed",
+            ))
+        }
     }
 }
 

@@ -233,12 +233,13 @@ tr:hover td{{background:#fafafa}}
 <table><thead><tr>{cols_header}</tr></thead><tbody id="data"></tbody></table>
 </div>
 <script>
-const td = v => '<td>'+(typeof v==='object'?JSON.stringify(v):v)+'</td>';
+const esc = s => String(s).replace(/[&<>"']/g, c => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c]));
+const td = v => '<td>'+esc(typeof v==='object'?JSON.stringify(v):v)+'</td>';
 fetch('{api_url}',{{credentials:'include'}}).then(r=>r.json()).then(data=>{{
   const rows = Array.isArray(data)?data:(data.tenants||data.users||data.sessions||[]);
   if(!rows.length){{document.getElementById('data').innerHTML='<tr><td colspan=99 class="empty">No data</td></tr>';return;}}
   document.getElementById('data').innerHTML=rows.map(row=>'<tr>'+{cols_js}+'</tr>').join('');
-}}).catch(e=>document.getElementById('data').innerHTML='<tr><td colspan=99 class="empty">Error: '+e+'</td></tr>');
+}}).catch(e=>document.getElementById('data').innerHTML='<tr><td colspan=99 class="empty">Error</td></tr>');
 </script></body></html>"##,
     )).into_response()
 }

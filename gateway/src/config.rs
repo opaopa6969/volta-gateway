@@ -620,7 +620,14 @@ pub fn resolve_auth_rule(rules: &[AuthRule], path: &str) -> Option<ResolvedAuth>
                     min_role: role.to_string(),
                 }
             } else {
-                ResolvedAuth::Public
+                // Unknown `auth` value (e.g. typo like `auth: admin` instead of
+                // `auth: "public"` or `auth: { min_role: ADMIN }`). Fail closed:
+                // require the highest role rather than silently becoming public.
+                // `validate_detailed` rejects this at load time, but hot-reload
+                // could still reach here, so we stay defensive.
+                ResolvedAuth::Require {
+                    min_role: "OWNER".to_string(),
+                }
             });
         }
     }
@@ -903,6 +910,47 @@ impl GatewayConfig {
                             r.host, bypass.prefix
                         ),
                     ));
+                }
+            }
+            // #127: validate auth_rules.auth shape so a typo like `auth: admin`
+            // (intended `auth: { min_role: ADMIN }`) is caught at load time
+            // instead of silently falling through to public. `AuthRuleAuth` is
+            // `#[serde(untagged)]`, so an unknown string parses as
+            // `Public("<unknown>")` which is neither `is_public()` nor has a
+            // `min_role()` — reject it explicitly.
+            for rule in &r.auth_rules {
+                if rule.prefix.is_empty() || !rule.prefix.starts_with('/') {
+                    errors.push((
+                        Self::EXIT_SCHEMA,
+                        format!(
+                            "routing host '{}' has invalid auth_rules prefix '{}'; it must start with '/'",
+                            r.host, rule.prefix
+                        ),
+                    ));
+                }
+                let valid_auth = rule.auth.is_public() || rule.auth.min_role().is_some();
+                if !valid_auth {
+                    errors.push((
+                        Self::EXIT_SCHEMA,
+                        format!(
+                            "routing host '{}' has invalid auth_rules.auth for prefix '{}': expected \"public\" or {{ min_role: <ROLE> }}",
+                            r.host, rule.prefix
+                        ),
+                    ));
+                }
+                if let Some(role) = rule.auth.min_role() {
+                    let role = role.trim().to_ascii_uppercase();
+                    let valid =
+                        ["OWNER", "ADMIN", "OPERATOR", "MEMBER", "VIEWER"].contains(&role.as_str());
+                    if !valid {
+                        errors.push((
+                            Self::EXIT_SCHEMA,
+                            format!(
+                                "routing host '{}' has invalid auth_rules min_role '{}'; expected OWNER, ADMIN, OPERATOR, MEMBER, or VIEWER",
+                                r.host, role
+                            ),
+                        ));
+                    }
                 }
             }
         }
@@ -1882,6 +1930,78 @@ routing:
             Some(ResolvedAuth::Require {
                 min_role: "ADMIN".into()
             })
+        );
+    }
+
+    #[test]
+    fn auth_rule_unknown_string_fails_closed() {
+        // F1: a typo like `auth: admin` parses as `AuthRuleAuth::Public("admin")`
+        // which is neither `is_public()` nor has a `min_role()`. The resolver
+        // must NOT fall through to `Public` — it must require the highest role
+        // (OWNER) so the route stays protected against a config typo.
+        use super::*;
+        let rules = vec![AuthRule {
+            prefix: "/admin".into(),
+            match_mode: "segment".into(),
+            auth: AuthRuleAuth::Public("admin".into()), // typo, not "public"
+        }];
+        assert_eq!(
+            resolve_auth_rule(&rules, "/admin"),
+            Some(ResolvedAuth::Require {
+                min_role: "OWNER".into()
+            })
+        );
+    }
+
+    #[test]
+    fn validate_rejects_auth_rules_with_unknown_auth_string() {
+        // F1: `validate_detailed` must reject a typo'd `auth` value at load
+        // time so the route never starts with a silent fail-open.
+        let yaml = r#"
+server:
+  port: 8080
+auth:
+  volta_url: "http://localhost:7070"
+routing:
+  - host: "app.example.com"
+    backend: "http://a:3000"
+    auth_rules:
+      - prefix: /admin/
+        auth: admin
+"#;
+        let cfg: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        let errs = cfg.validate().unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.contains("invalid auth_rules.auth")),
+            "expected auth_rules.auth validation error, got: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn validate_rejects_auth_rules_with_invalid_min_role() {
+        // F1: an auth_rule with a `min_role` outside the known hierarchy is
+        // rejected at load time.
+        let yaml = r#"
+server:
+  port: 8080
+auth:
+  volta_url: "http://localhost:7070"
+routing:
+  - host: "app.example.com"
+    backend: "http://a:3000"
+    auth_rules:
+      - prefix: /admin/
+        auth:
+          min_role: SUPERUSER
+"#;
+        let cfg: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        let errs = cfg.validate().unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("invalid auth_rules min_role")),
+            "expected auth_rules min_role validation error, got: {:?}",
+            errs
         );
     }
 
