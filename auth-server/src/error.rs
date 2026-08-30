@@ -104,7 +104,14 @@ impl From<volta_auth_core::error::AuthError> for ApiError {
             }
             AuthError::NotFound(msg) => ApiError::bad_request("NOT_FOUND", &msg),
             AuthError::Conflict(msg) => ApiError::bad_request("CONFLICT", &msg),
-            _ => ApiError::internal(&e.to_string()),
+            // H4: never echo raw DB/StoreError strings to clients — they can
+            // leak constraint names, column values, and schema internals
+            // (RFC 6749 §5.2 violation on OP endpoints). Log the detail
+            // server-side and return a generic message.
+            _ => {
+                tracing::error!(error = %e, "internal auth error");
+                ApiError::internal("internal error")
+            }
         }
     }
 }

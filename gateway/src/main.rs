@@ -886,14 +886,20 @@ async fn main() {
                                 }
                             }
                             // GET the current effective config (base ⊕ overlay).
+                            // Secrets are redacted so the admin token, JWT secret,
+                            // assertion secrets, and DNS API token never leave the
+                            // process via this endpoint.
                             "/admin/config" if req.method() == hyper::Method::GET => {
                                 match store_admin.effective_config() {
                                     Ok(cfg) => {
+                                        let mut value = serde_json::to_value(&cfg)
+                                            .unwrap_or_else(|_| serde_json::json!({}));
+                                        redact_secrets(&mut value);
                                         return Ok(json_resp(
                                             200,
-                                            serde_json::to_string_pretty(&cfg)
+                                            serde_json::to_string_pretty(&value)
                                                 .unwrap_or_else(|_| "{}".into()),
-                                        ))
+                                        ));
                                     }
                                     Err(e) => {
                                         let body = serde_json::json!({"error": e});
@@ -1097,5 +1103,83 @@ async fn main() {
                 .active_connections
                 .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         });
+    }
+}
+
+/// Redact secret fields from a serialized config before returning it via
+/// `GET /admin/config`. Replaces the value with `null` so the shape stays
+/// stable (callers can still tell whether a secret is *configured* via
+/// `Some`/`None`, but never see the value itself).
+fn redact_secrets(value: &mut serde_json::Value) {
+    let secret_paths: &[&[&str]] = &[
+        &["auth", "jwt_secret"],
+        &["auth", "gateway_assertion_secret"],
+        &["auth", "gateway_assertion_previous_secret"],
+        &["admin", "token"],
+        &["tls", "dns_api_token"],
+    ];
+    for path in secret_paths {
+        let mut current: &mut serde_json::Value = value;
+        let last = path.len() - 1;
+        for (i, key) in path.iter().enumerate() {
+            if i == last {
+                if let Some(obj) = current.as_object_mut() {
+                    if obj.contains_key(*key) {
+                        obj.insert((*key).to_string(), serde_json::Value::Null);
+                    }
+                }
+            } else {
+                match current.as_object_mut().and_then(|o| o.get_mut(*key)) {
+                    Some(v) => current = v,
+                    None => break,
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redact_secrets_nulls_known_secret_fields() {
+        let mut v = serde_json::json!({
+            "auth": {
+                "volta_url": "http://localhost:7070",
+                "jwt_secret": "s3cr3t",
+                "gateway_assertion_secret": "assertion-secret",
+                "gateway_assertion_previous_secret": "old-secret"
+            },
+            "admin": { "token": "admin-token" },
+            "tls": { "dns_api_token": "cf-token", "domains": ["example.com"] }
+        });
+        redact_secrets(&mut v);
+        assert_eq!(v["auth"]["jwt_secret"], serde_json::Value::Null);
+        assert_eq!(
+            v["auth"]["gateway_assertion_secret"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            v["auth"]["gateway_assertion_previous_secret"],
+            serde_json::Value::Null
+        );
+        assert_eq!(v["admin"]["token"], serde_json::Value::Null);
+        assert_eq!(v["tls"]["dns_api_token"], serde_json::Value::Null);
+        // Non-secret fields preserved
+        assert_eq!(v["auth"]["volta_url"], "http://localhost:7070");
+        assert_eq!(v["tls"]["domains"], serde_json::json!(["example.com"]));
+    }
+
+    #[test]
+    fn redact_secrets_preserves_missing_fields() {
+        let mut v = serde_json::json!({
+            "auth": { "volta_url": "http://localhost:7070" },
+            "admin": {}
+        });
+        redact_secrets(&mut v);
+        assert_eq!(v["auth"]["volta_url"], "http://localhost:7070");
+        // No jwt_secret key was inserted
+        assert!(v["auth"].get("jwt_secret").is_none());
     }
 }

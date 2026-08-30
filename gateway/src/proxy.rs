@@ -940,10 +940,14 @@ impl ProxyService {
             }
         } else {
             let client_ip_str = real_client_ip.to_string();
-            let allow_degraded_fallback = route_info
-                .as_ref()
-                .and_then(|route| route.min_role.as_ref())
-                .is_none();
+            // #127/F2: `min_role` may have been overridden by an auth_rule
+            // (line ~896). When that happens, the route-level `min_role` is
+            // `None` but the effective requirement is not — so the degraded
+            // fallback must be gated on the *effective* `min_role`, not the
+            // route-level one. Otherwise a route with no route-level min_role
+            // but an auth_rule requiring ADMIN would allow a VIEWER through
+            // when auth-server is down.
+            let allow_degraded_fallback = min_role.is_none();
             let auth_result = self
                 .volta
                 .check_with_degraded_policy(
@@ -990,10 +994,7 @@ impl ProxyService {
             }
         };
 
-        if let Some(min_role) = route_info
-            .as_ref()
-            .and_then(|route| route.min_role.as_deref())
-        {
+        if let Some(min_role) = min_role.as_deref() {
             if is_public {
                 // `public: true` と `min_role` の併用は意味衝突するため fail-closed。
                 // 通常は validation で弾かれるが、動的ルーティング更新

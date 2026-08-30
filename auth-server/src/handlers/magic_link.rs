@@ -29,15 +29,27 @@ pub async fn send(
         .map_err(|e| ApiError::internal(&e.to_string()))?;
 
     // In production: send email via EmailSender trait.
-    // For now: return token in response (dev mode).
-    let link = format!("{}/auth/magic-link/verify?token={}", state.base_url, token);
+    // The magic-link token grants login as the email owner, so it must never
+    // be returned in the HTTP response. Local dev/test flows can opt in via
+    // AUTH_EXPOSE_DEV_TOKEN=true (same gate as registration.rs::devToken).
+    let dev_link = if std::env::var("AUTH_EXPOSE_DEV_TOKEN").ok().as_deref() == Some("true") {
+        Some(format!(
+            "{}/auth/magic-link/verify?token={}",
+            state.base_url, token
+        ))
+    } else {
+        None
+    };
 
-    let mut resp = Json(serde_json::json!({
+    let mut body = serde_json::json!({
         "ok": true,
         "message": "Magic link sent",
-        "link": link, // dev only — remove in production
-    }))
-    .into_response();
+    });
+    if let Some(link) = dev_link {
+        body["link"] = serde_json::json!(link);
+    }
+
+    let mut resp = Json(body).into_response();
     no_cache_headers(&mut resp);
     Ok(resp)
 }
