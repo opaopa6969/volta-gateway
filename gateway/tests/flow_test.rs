@@ -345,3 +345,81 @@ fn ip_in_allowlist_is_allowed() {
         ProxyState::Routed
     );
 }
+
+/// # Regression guard: percent-encoded path traversal must be rejected.
+/// `RequestValidator` decodes `%2e%2e` (single pass) and `%252e%252e` (double
+/// encoding) before checking for `..`. The literal-traversal test
+/// (`path_traversal_rejected`) covers the plain case; this covers the decoded
+/// variants that would otherwise bypass the traversal guard.
+fn request_with_path(path: &str) -> Vec<(TypeId, Box<dyn CloneAny>)> {
+    vec![(
+        TypeId::of::<RequestData>(),
+        Box::new(RequestData {
+            host: "app.example.com".into(),
+            path: path.into(),
+            method: "GET".into(),
+            header_size: 100,
+            content_length: None,
+            client_ip: None,
+        }),
+    )]
+}
+
+#[test]
+fn percent_encoded_traversal_single_pass_rejected() {
+    // %2e%2e decodes to ".." — must be rejected like the literal form.
+    let routing = test_routing();
+    let def = flow::build_proxy_flow(routing);
+    let mut engine = FlowEngine::new(InMemoryFlowStore::new());
+
+    let flow_id = engine
+        .start_flow(def, "enc-session", request_with_path("/%2e%2e/etc/passwd"))
+        .unwrap();
+    let flow = engine.store.get(&flow_id).unwrap();
+    assert!(
+        flow.is_completed(),
+        "percent-encoded traversal must reach an error terminal"
+    );
+}
+
+#[test]
+fn percent_encoded_traversal_double_pass_rejected() {
+    // %252e%252e → first pass yields %2e%2e → second pass yields "..".
+    // The decoder performs a second pass only when the first-pass result still
+    // contains '%' and differs from the input, so double encoding is caught.
+    let routing = test_routing();
+    let def = flow::build_proxy_flow(routing);
+    let mut engine = FlowEngine::new(InMemoryFlowStore::new());
+
+    let flow_id = engine
+        .start_flow(
+            def,
+            "dblenc-session",
+            request_with_path("/%252e%252e/etc/passwd"),
+        )
+        .unwrap();
+    let flow = engine.store.get(&flow_id).unwrap();
+    assert!(
+        flow.is_completed(),
+        "double-encoded traversal must reach an error terminal"
+    );
+}
+
+#[test]
+fn percent_encoded_literal_not_traversal_passes_validation() {
+    // %41 decodes to 'A' — a benign encoded byte that is not `..`. The validator
+    // must only reject decoded paths that actually contain traversal; a path
+    // that decodes to a harmless value should reach Routed normally.
+    let routing = test_routing();
+    let def = flow::build_proxy_flow(routing);
+    let mut engine = FlowEngine::new(InMemoryFlowStore::new());
+
+    let flow_id = engine
+        .start_flow(def, "benign-enc", request_with_path("/%41"))
+        .unwrap();
+    assert_eq!(
+        engine.store.get(&flow_id).unwrap().current_state(),
+        ProxyState::Routed,
+        "a non-traversal percent-encoded path must not be rejected by the validator"
+    );
+}

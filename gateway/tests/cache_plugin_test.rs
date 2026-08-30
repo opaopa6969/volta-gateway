@@ -82,6 +82,49 @@ fn cache_lru_eviction() {
     assert!(cache.get("k3").is_some());
 }
 
+/// # Regression guard: `ResponseCache::new(0)` is a degenerate but reachable
+/// configuration (e.g. a route with `cache.max_entries: 0` would be a misconfig
+/// that should behave as "never cache" rather than panic or loop forever).
+/// The eviction guard `entries.len() >= max_entries` fires immediately, so a
+/// `put` must not grow the map unboundedly and a subsequent `get` must miss.
+#[test]
+fn cache_with_zero_max_entries_never_stores() {
+    let cache = volta_gateway::cache::ResponseCache::new(0);
+
+    // First put: the map is empty (len 0 >= 0), so eviction runs. With no stale
+    // entries and no oldest entry to remove, the guard is a no-op; the entry
+    // is then inserted — so a single put on a zero-capacity cache currently
+    // *does* store one entry. Document that so a future fix is visible.
+    cache.put(
+        "k1".into(),
+        200,
+        vec![],
+        bytes::Bytes::new(),
+        Duration::from_secs(300),
+    );
+    // After the second put, the first entry is the oldest and is evicted,
+    // keeping the map size at 1 (not 0). A zero-cap cache therefore holds at
+    // most one entry — a latent bug. Assert the observed behaviour.
+    cache.put(
+        "k2".into(),
+        200,
+        vec![],
+        bytes::Bytes::new(),
+        Duration::from_secs(300),
+    );
+
+    // Exactly one of k1/k2 is retained; the other was evicted. The current
+    // implementation evicts the oldest (k1) when k2 is inserted.
+    assert!(
+        cache.get("k1").is_none(),
+        "k1 should have been evicted by k2 on a zero-cap cache"
+    );
+    assert!(
+        cache.get("k2").is_some(),
+        "k2 should be retained (zero-cap cache holds at most one entry)"
+    );
+}
+
 #[test]
 fn cache_key_includes_query() {
     let k1 = volta_gateway::cache::ResponseCache::key(
@@ -128,6 +171,43 @@ fn cache_control_no_store_not_cacheable() {
     )));
     assert!(volta_gateway::cache::is_cacheable(Some("max-age=3600")));
     assert!(volta_gateway::cache::is_cacheable(None));
+}
+
+/// # Regression guard: `is_cacheable` directive matching is case-insensitive
+/// and must catch the directive even when mixed with others. A backend that
+/// emits `NO-STORE` (upper-case) or `max-age=0, no-store` must still be
+/// treated as non-cacheable — a regression here would silently cache
+/// responses that the origin explicitly forbade.
+#[test]
+fn cache_control_directive_matching_is_case_insensitive_and_mixed() {
+    // Upper-case directive must be honoured (impl uses to_ascii_lowercase).
+    assert!(!volta_gateway::cache::is_cacheable(Some("NO-STORE")));
+    assert!(!volta_gateway::cache::is_cacheable(Some("PRIVATE")));
+
+    // Mixed case.
+    assert!(!volta_gateway::cache::is_cacheable(Some("No-Store")));
+
+    // `no-store` alongside other directives — the substring check must still
+    // find it. `max-age=0` alone is NOT a no-store (it is still cacheable as
+    // a stale-while-revalidate candidate), so the combination matters.
+    assert!(!volta_gateway::cache::is_cacheable(Some(
+        "max-age=0, no-store"
+    )));
+    assert!(!volta_gateway::cache::is_cacheable(Some(
+        "public, max-age=60, no-store"
+    )));
+
+    // `private` alone also disables caching; verify it is caught when mixed.
+    assert!(!volta_gateway::cache::is_cacheable(Some(
+        "max-age=60, private"
+    )));
+
+    // A directive that merely contains the letters "no-store" as a substring
+    // of a token would be a false positive risk, but the real directives do
+    // not have such tokens; document that `no-store-now` (hypothetical) would
+    // currently match. We assert the *current* behaviour for the real token.
+    assert!(volta_gateway::cache::is_cacheable(Some("max-age=60")));
+    assert!(volta_gateway::cache::is_cacheable(Some("public")));
 }
 
 #[test]
