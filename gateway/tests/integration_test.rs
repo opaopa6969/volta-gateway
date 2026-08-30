@@ -1110,3 +1110,267 @@ async fn proxy_min_role_with_bypass_path_skips_auth_on_bypass() {
 
     server.abort();
 }
+
+// ─── #135: error responses must be counted in /metrics ───────────────
+//
+// Before #135, `record_status`/`record_duration` were called only on the
+// success path. Every early-return error path (400/403/429/502/504) left
+// `volta_gateway_requests_total` and the latency histogram untouched, so
+// error-rate alerts and SLO latency could not see reality. These tests pin
+// each error status to its counter so the regression cannot return.
+
+/// Spin up a proxy listener and run a single request through it.
+/// Returns the response status. The `proxy` handle is returned too so the
+/// caller can inspect `proxy.metrics` (shared via the internal `Arc`).
+async fn run_one_request(
+    proxy: ProxyService,
+    host: &str,
+    path: &str,
+) -> (StatusCode, ProxyService) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = listener.local_addr().unwrap();
+    let proxy_clone = proxy.clone();
+    let server = tokio::spawn(async move {
+        loop {
+            let (stream, remote_addr) = match listener.accept().await {
+                Ok(s) => s,
+                Err(_) => break,
+            };
+            let proxy = proxy_clone.clone();
+            tokio::spawn(async move {
+                let service = service_fn(move |req: Request<Incoming>| {
+                    let proxy = proxy.clone();
+                    let addr = remote_addr;
+                    async move { Ok::<_, hyper::Error>(proxy.handle(req, addr).await) }
+                });
+                let _ = auto::Builder::new(TokioExecutor::new())
+                    .serve_connection(TokioIo::new(stream), service)
+                    .await;
+            });
+        }
+    });
+    let client: hyper_util::client::legacy::Client<_, Empty<Bytes>> =
+        hyper_util::client::legacy::Client::builder(TokioExecutor::new()).build_http();
+    let resp = client
+        .request(
+            Request::builder()
+                .uri(format!("http://{proxy_addr}{path}"))
+                .header("host", host)
+                .body(Empty::new())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let _ = resp.into_body().collect().await;
+    server.abort();
+    (status, proxy)
+}
+
+#[tokio::test]
+async fn metrics_count_403_on_auth_denied() {
+    use std::sync::atomic::Ordering;
+    let (backend_addr, _bh) =
+        mock_server(|_req| Response::builder().status(200).body(empty_body()).unwrap()).await;
+    let (auth_addr, _ah) =
+        mock_server(|_req| Response::builder().status(403).body(empty_body()).unwrap()).await;
+    let proxy = make_proxy(auth_addr, backend_addr, "app.test.com");
+    let before = proxy.metrics.requests_403.load(Ordering::Relaxed);
+    let (status, proxy) = run_one_request(proxy, "app.test.com", "/api/x").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let after = proxy.metrics.requests_403.load(Ordering::Relaxed);
+    assert_eq!(after - before, 1, "403 must be recorded in metrics");
+}
+
+#[tokio::test]
+async fn metrics_count_400_on_unknown_host() {
+    use std::sync::atomic::Ordering;
+    let (backend_addr, _bh) =
+        mock_server(|_req| Response::builder().status(200).body(empty_body()).unwrap()).await;
+    let (auth_addr, _ah) =
+        mock_server(|_req| Response::builder().status(200).body(empty_body()).unwrap()).await;
+    let proxy = make_proxy(auth_addr, backend_addr, "known.test.com");
+    let before = proxy.metrics.requests_400.load(Ordering::Relaxed);
+    let (status, proxy) = run_one_request(proxy, "unknown.test.com", "/api/x").await;
+    // Unknown host → SM ends in BadRequest terminal → 400.
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let after = proxy.metrics.requests_400.load(Ordering::Relaxed);
+    assert_eq!(after - before, 1, "400 must be recorded in metrics");
+}
+
+#[tokio::test]
+async fn metrics_count_429_on_rate_limit() {
+    use std::sync::atomic::Ordering;
+    let (backend_addr, _bh) =
+        mock_server(|_req| Response::builder().status(200).body(empty_body()).unwrap()).await;
+    let (auth_addr, _ah) = mock_server(|_req| {
+        Response::builder()
+            .status(200)
+            .header("x-volta-user-id", "user")
+            .body(empty_body())
+            .unwrap()
+    })
+    .await;
+    let proxy = make_proxy(auth_addr, backend_addr, "app.test.com");
+    let before = proxy.metrics.requests_429.load(Ordering::Relaxed);
+
+    // Default limiter: 1000 global rps, 100 per-IP rps. Burst past per-IP.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = listener.local_addr().unwrap();
+    let proxy_clone = proxy.clone();
+    let server = tokio::spawn(async move {
+        loop {
+            let (stream, remote_addr) = match listener.accept().await {
+                Ok(s) => s,
+                Err(_) => break,
+            };
+            let proxy = proxy_clone.clone();
+            tokio::spawn(async move {
+                let service = service_fn(move |req: Request<Incoming>| {
+                    let proxy = proxy.clone();
+                    let addr = remote_addr;
+                    async move { Ok::<_, hyper::Error>(proxy.handle(req, addr).await) }
+                });
+                let _ = auto::Builder::new(TokioExecutor::new())
+                    .serve_connection(TokioIo::new(stream), service)
+                    .await;
+            });
+        }
+    });
+    let client: hyper_util::client::legacy::Client<_, Empty<Bytes>> =
+        hyper_util::client::legacy::Client::builder(TokioExecutor::new()).build_http();
+    let mut got_429 = false;
+    for _ in 0..200 {
+        let resp = client
+            .request(
+                Request::builder()
+                    .uri(format!("http://{proxy_addr}/api/test"))
+                    .header("host", "app.test.com")
+                    .body(Empty::new())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        if resp.status() == StatusCode::TOO_MANY_REQUESTS {
+            got_429 = true;
+            break;
+        }
+    }
+    assert!(got_429, "should hit rate limit");
+    let after = proxy.metrics.requests_429.load(Ordering::Relaxed);
+    assert!(after - before >= 1, "429 must be recorded in metrics");
+    server.abort();
+}
+
+#[tokio::test]
+async fn metrics_count_502_on_backend_down() {
+    use std::sync::atomic::Ordering;
+    let tmp_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let dead_backend_addr = tmp_listener.local_addr().unwrap();
+    drop(tmp_listener);
+    let (auth_addr, _ah) = mock_server(|_req| {
+        Response::builder()
+            .status(200)
+            .header("x-volta-user-id", "user")
+            .body(empty_body())
+            .unwrap()
+    })
+    .await;
+    let proxy = make_proxy(auth_addr, dead_backend_addr, "app.test.com");
+    let before = proxy.metrics.requests_502.load(Ordering::Relaxed);
+    let (status, proxy) = run_one_request(proxy, "app.test.com", "/api/test").await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    let after = proxy.metrics.requests_502.load(Ordering::Relaxed);
+    assert_eq!(after - before, 1, "502 must be recorded in metrics");
+}
+
+#[tokio::test]
+async fn metrics_count_504_on_backend_timeout() {
+    use std::sync::atomic::Ordering;
+    // Backend accepts but never responds → gateway times out.
+    let backend_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let backend_addr = backend_listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = match backend_listener.accept().await {
+                Ok(s) => s,
+                Err(_) => break,
+            };
+            // Hold the connection open without responding until the gateway
+            // times out. Keep reading so the kernel buffer doesn't fill and
+            // RST the connection (which would surface as 502, not 504).
+            let mut stream = stream;
+            let mut buf = [0u8; 1024];
+            loop {
+                match tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+            }
+        }
+    });
+    let (auth_addr, _ah) = mock_server(|_req| {
+        Response::builder()
+            .status(200)
+            .header("x-volta-user-id", "user")
+            .body(empty_body())
+            .unwrap()
+    })
+    .await;
+
+    // Build a proxy with a 1s per-route timeout so the test stays fast.
+    let auth_config = AuthConfig {
+        volta_url: format!("http://{}", auth_addr),
+        verify_path: "/auth/verify".into(),
+        timeout_ms: 2000,
+        pool_max_idle: 4,
+        jwt_secret: None,
+        cookie_name: None,
+        auth_public_url: None,
+        degraded_mode: false,
+        jwt_public_key_pem: None,
+        jwks_url: None,
+        gateway_assertion_secret: None,
+        gateway_assertion_key_id: None,
+        gateway_assertion_previous_key_id: None,
+        gateway_assertion_previous_secret: None,
+        jwt_issuer: None,
+        jwt_audience: None,
+    };
+    let volta = VoltaAuthClient::new(&auth_config);
+    let mut routing = RoutingTable::new();
+    routing.insert(
+        "app.test.com".to_string(),
+        volta_gateway::proxy::RouteInfo {
+            min_role: None,
+            weights: vec![],
+            backends: vec![format!("http://{}", backend_addr)],
+            app_id: Some("test-app".into()),
+            public: false,
+            soft_auth: false,
+            bypass_paths: vec![],
+            auth_rules: vec![],
+            mirror: None,
+            path_prefix: None,
+            strip_prefix: None,
+            add_prefix: None,
+            request_headers: None,
+            response_headers: None,
+            geo_allowlist: vec![],
+            geo_denylist: vec![],
+            timeout_secs: Some(1),
+            cache: None,
+            backend_tls: None,
+        },
+    );
+    let hot = Arc::new(ArcSwap::from_pointee(HotState::new(Arc::new(routing))));
+    let metrics = Arc::new(volta_gateway::metrics::Metrics::new());
+    let plugins = Arc::new(volta_gateway::plugin::PluginManager::new());
+    let proxy = ProxyService::new(volta, hot, metrics, plugins);
+
+    let before = proxy.metrics.requests_504.load(Ordering::Relaxed);
+    let (status, proxy) = run_one_request(proxy, "app.test.com", "/api/test").await;
+    assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
+    let after = proxy.metrics.requests_504.load(Ordering::Relaxed);
+    assert_eq!(after - before, 1, "504 must be recorded in metrics");
+}
