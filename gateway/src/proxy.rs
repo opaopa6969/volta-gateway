@@ -605,6 +605,10 @@ impl ProxyService {
         // Load current hot state (atomic, lock-free) — needed early for trusted proxy check
         let hot = self.hot.load();
 
+        // #135: Record request start *before* any early return so every
+        // response (including rate-limited 429) has a meaningful duration.
+        let start = Instant::now();
+
         // PROD-4: Resolve real client IP before rate limiting
         let real_client_ip = if !hot.trusted_proxies.is_empty()
             && hot
@@ -625,6 +629,8 @@ impl ProxyService {
         // PH2-2: Per-IP + global rate limiting
         if !self.rate_limiter.allow(real_client_ip) {
             warn!(state = "RATE_LIMITED", client_ip = %real_client_ip);
+            self.metrics.record_status(429);
+            self.metrics.record_duration(start);
             return rate_limited_response(&request_id);
         }
 
@@ -658,7 +664,6 @@ impl ProxyService {
             .await;
         }
 
-        let start = Instant::now();
         let method = req.method().clone();
         let uri_path = req.uri().path().to_string();
 
@@ -792,6 +797,8 @@ impl ProxyService {
                 Ok(id) => id,
                 Err(e) => {
                     warn!(state = "BAD_REQUEST", reason = %e, host = %host);
+                    self.metrics.record_status(400);
+                    self.metrics.record_duration(start);
                     return error_response(StatusCode::BAD_REQUEST, &request_id);
                 }
             }
@@ -811,6 +818,8 @@ impl ProxyService {
                     warn!(state = ?state, host = %host, path = %uri_path);
                     let status = StatusCode::from_u16(state.as_status_code())
                         .unwrap_or(StatusCode::FORBIDDEN);
+                    self.metrics.record_status(status.as_u16());
+                    self.metrics.record_duration(start);
                     return error_response_with_pages(status, &request_id, &hot.error_pages);
                 }
             }
@@ -822,7 +831,11 @@ impl ProxyService {
             let eng = engine.lock().unwrap();
             let flow = match eng.store.get(&flow_id) {
                 Some(f) => f,
-                None => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &request_id),
+                None => {
+                    self.metrics.record_status(500);
+                    self.metrics.record_duration(start);
+                    return error_response(StatusCode::INTERNAL_SERVER_ERROR, &request_id);
+                }
             };
             match flow.context.get::<RouteTarget>() {
                 Ok(rt) => {
@@ -841,7 +854,11 @@ impl ProxyService {
                     let min_role = route.and_then(|r| r.min_role.clone());
                     (selected, rt.app_id.clone(), min_role)
                 }
-                Err(_) => return error_response(StatusCode::BAD_REQUEST, &request_id),
+                Err(_) => {
+                    self.metrics.record_status(400);
+                    self.metrics.record_duration(start);
+                    return error_response(StatusCode::BAD_REQUEST, &request_id);
+                }
             }
         };
 
@@ -946,10 +963,14 @@ impl ProxyService {
                 AuthResult::Authenticated(headers) => headers,
                 AuthResult::Redirect(location) => {
                     info!(state = "REDIRECT", host = %host, path = %uri_path, location = %location);
+                    self.metrics.record_status(302);
+                    self.metrics.record_duration(start);
                     return redirect_response(&location, &request_id);
                 }
                 AuthResult::Denied => {
                     info!(state = "DENIED", host = %host, path = %uri_path);
+                    self.metrics.record_status(403);
+                    self.metrics.record_duration(start);
                     return error_response_with_pages(
                         StatusCode::FORBIDDEN,
                         &request_id,
@@ -958,6 +979,8 @@ impl ProxyService {
                 }
                 AuthResult::Error(msg) => {
                     warn!(state = "BAD_GATEWAY", reason = %msg, host = %host);
+                    self.metrics.record_status(502);
+                    self.metrics.record_duration(start);
                     return error_response_with_pages(
                         StatusCode::BAD_GATEWAY,
                         &request_id,
@@ -976,6 +999,8 @@ impl ProxyService {
                 // 通常は validation で弾かれるが、動的ルーティング更新
                 // (hot-reload 等) で後から入り得るので実行時にも拒否する。
                 warn!(state = "DENIED", host = %host, min_role = %min_role, "min_role cannot be combined with public route");
+                self.metrics.record_status(403);
+                self.metrics.record_duration(start);
                 return error_response_with_pages(
                     StatusCode::FORBIDDEN,
                     &request_id,
@@ -991,6 +1016,8 @@ impl ProxyService {
                 let policy = volta_auth_core::policy::PolicyEngine::default_policy();
                 if !policy.hierarchy().iter().any(|role| role == &required) {
                     warn!(state = "DENIED", host = %host, min_role = %min_role, "invalid dynamic min_role");
+                    self.metrics.record_status(403);
+                    self.metrics.record_duration(start);
                     return error_response_with_pages(
                         StatusCode::FORBIDDEN,
                         &request_id,
@@ -1012,6 +1039,8 @@ impl ProxyService {
                     volta_auth_core::policy::PolicyResult::Allow
                 ) {
                     info!(state = "DENIED", host = %host, min_role = %required, "minimum role not satisfied");
+                    self.metrics.record_status(403);
+                    self.metrics.record_duration(start);
                     return error_response_with_pages(
                         StatusCode::FORBIDDEN,
                         &request_id,
@@ -1032,6 +1061,8 @@ impl ProxyService {
             )];
             if let Err(e) = eng.resume_and_execute(&flow_id, auth_data) {
                 warn!(state = "BAD_GATEWAY", reason = %e, host = %host);
+                self.metrics.record_status(502);
+                self.metrics.record_duration(start);
                 return error_response_with_pages(
                     StatusCode::BAD_GATEWAY,
                     &request_id,
@@ -1071,6 +1102,8 @@ impl ProxyService {
                     r#"{{"error":{{"code":{},"reason":"{}","request_id":"{}"}}}}"#,
                     status, body, request_id
                 )));
+                self.metrics.record_status(status);
+                self.metrics.record_duration(start);
                 return Response::builder()
                     .status(StatusCode::from_u16(status).unwrap_or(StatusCode::FORBIDDEN))
                     .header("content-type", "application/json")
@@ -1090,6 +1123,8 @@ impl ProxyService {
                 .unwrap_or("");
             if !ri.geo_allowlist.is_empty() && !ri.geo_allowlist.iter().any(|c| c == country) {
                 info!(state = "GEO_DENIED", host = %host, country = country);
+                self.metrics.record_status(403);
+                self.metrics.record_duration(start);
                 return error_response_with_pages(
                     StatusCode::FORBIDDEN,
                     &request_id,
@@ -1098,6 +1133,8 @@ impl ProxyService {
             }
             if ri.geo_denylist.iter().any(|c| c == country) {
                 info!(state = "GEO_DENIED", host = %host, country = country);
+                self.metrics.record_status(403);
+                self.metrics.record_duration(start);
                 return error_response_with_pages(
                     StatusCode::FORBIDDEN,
                     &request_id,
@@ -1322,6 +1359,8 @@ impl ProxyService {
             Ok(r) => r,
             Err(e) => {
                 warn!(state = "BAD_GATEWAY", reason = %e);
+                self.metrics.record_status(502);
+                self.metrics.record_duration(start);
                 return error_response_with_pages(
                     StatusCode::BAD_GATEWAY,
                     &request_id,
@@ -1411,6 +1450,8 @@ impl ProxyService {
             Ok(Err(e)) => {
                 self.circuit_breaker.record_failure(&backend_url);
                 warn!(state = "BAD_GATEWAY", reason = %e, host = %host, path = %uri_path);
+                self.metrics.record_status(502);
+                self.metrics.record_duration(start);
                 return error_response_with_pages(
                     StatusCode::BAD_GATEWAY,
                     &request_id,
@@ -1420,6 +1461,8 @@ impl ProxyService {
             Err(_) => {
                 self.circuit_breaker.record_failure(&backend_url);
                 warn!(state = "GATEWAY_TIMEOUT", host = %host, path = %uri_path);
+                self.metrics.record_status(504);
+                self.metrics.record_duration(start);
                 return error_response_with_pages(
                     StatusCode::GATEWAY_TIMEOUT,
                     &request_id,
@@ -1676,11 +1719,13 @@ impl ProxyService {
                 let body_bytes = match http_body_util::BodyExt::collect(body).await {
                     Ok(collected) => collected.to_bytes(),
                     Err(_) => {
+                        self.metrics.record_status(502);
+                        self.metrics.record_duration(start);
                         return error_response_with_pages(
                             StatusCode::BAD_GATEWAY,
                             &request_id,
                             &hot.error_pages,
-                        )
+                        );
                     }
                 };
 
