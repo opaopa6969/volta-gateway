@@ -10,6 +10,7 @@ use uuid::Uuid;
 use crate::error::{no_cache_headers, ApiError};
 use crate::helpers::{clear_session_cookie, extract_session_id, require_admin};
 use crate::state::AppState;
+use volta_auth_core::crypto::session_id_fingerprint;
 use volta_auth_core::store::{MembershipStore, SessionStore, TenantStore, UserStore};
 
 fn auth_sync(jar: &CookieJar) -> Result<String, ApiError> {
@@ -35,6 +36,20 @@ pub async fn admin_list_sessions(
         s.db.list_sessions_paginated(req.user_id.as_deref(), &order, req.limit(), req.offset())
             .await
             .map_err(|e| ApiError::internal(&e.to_string()))?;
+    let items = items
+        .into_iter()
+        .map(|mut item| {
+            if let Some(object) = item.as_object_mut() {
+                if let Some(serde_json::Value::String(id)) = object.remove("session_id") {
+                    object.insert(
+                        "session_id_hash".into(),
+                        serde_json::json!(session_id_fingerprint(&id)),
+                    );
+                }
+            }
+            item
+        })
+        .collect();
     Ok(Json(crate::pagination::PageResponse::new(items, total, &req)).into_response())
 }
 
@@ -45,6 +60,10 @@ pub async fn admin_revoke_session(
     Path(sid): Path<String>,
 ) -> Result<Response, ApiError> {
     let _ = require_admin(&s, &jar).await?;
+    let sid = s.db.resolve_session_reference(&sid, None)
+        .await
+        .map_err(|e| ApiError::internal(&e.to_string()))?
+        .ok_or_else(|| ApiError::bad_request("SESSION_NOT_FOUND", "session not found"))?;
     SessionStore::revoke(&s.db, &sid)
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
@@ -58,6 +77,10 @@ pub async fn revoke_session_by_id(
     Path(sid): Path<String>,
 ) -> Result<Response, ApiError> {
     let _ = auth_sync(&jar)?;
+    let sid = s.db.resolve_session_reference(&sid, None)
+        .await
+        .map_err(|e| ApiError::internal(&e.to_string()))?
+        .ok_or_else(|| ApiError::bad_request("SESSION_NOT_FOUND", "session not found"))?;
     SessionStore::revoke(&s.db, &sid)
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
@@ -266,7 +289,7 @@ pub async fn admin_sessions_page() -> Response {
         "Sessions",
         "/api/me/sessions",
         &[
-            "session_id",
+            "session_id_hash",
             "ip_address",
             "user_agent",
             "created_at",

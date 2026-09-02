@@ -8,6 +8,7 @@ use axum_extra::extract::CookieJar;
 use crate::error::{no_cache_headers, ApiError};
 use crate::helpers::extract_session_id;
 use crate::state::AppState;
+use volta_auth_core::crypto::session_id_fingerprint;
 use volta_auth_core::store::SessionStore;
 
 /// GET /api/me/sessions — list user's active sessions.
@@ -40,7 +41,7 @@ pub async fn list_sessions(
         .iter()
         .map(|s| {
             serde_json::json!({
-                "session_id": s.session_id,
+                "session_id_hash": session_id_fingerprint(&s.session_id),
                 "ip_address": s.ip_address,
                 "user_agent": s.user_agent,
                 "created_at": s.created_at,
@@ -77,7 +78,14 @@ pub async fn revoke_session(
             )
         })?;
 
-    SessionStore::revoke(&state.db, &target_id)
+    let target = SessionStore::list_by_user(&state.db, &_session.user_id)
+        .await
+        .map_err(|e| ApiError::internal(&e.to_string()))?
+        .into_iter()
+        .find(|s| s.session_id == target_id || session_id_fingerprint(&s.session_id) == target_id)
+        .ok_or_else(|| ApiError::bad_request("SESSION_NOT_FOUND", "session not found"))?;
+
+    SessionStore::revoke(&state.db, &target.session_id)
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
 
