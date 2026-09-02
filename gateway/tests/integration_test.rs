@@ -943,11 +943,14 @@ async fn public_cache_separates_query_strings() {
         bodies.push(response.into_body().collect().await.unwrap().to_bytes());
     }
 
-    assert_eq!(bodies, [
-        Bytes::from("q=secret"),
-        Bytes::from("none"),
-        Bytes::from("q=other"),
-    ]);
+    assert_eq!(
+        bodies,
+        [
+            Bytes::from("q=secret"),
+            Bytes::from("none"),
+            Bytes::from("q=other"),
+        ]
+    );
     assert_eq!(calls.load(Ordering::SeqCst), 3);
     server.abort();
 }
