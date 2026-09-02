@@ -68,7 +68,8 @@ impl AuthEvent {
         self
     }
     pub fn with_session(mut self, session_id: impl Into<String>) -> Self {
-        self.session_id = Some(session_id.into());
+        let session_id = session_id.into();
+        self.session_id = Some(volta_auth_core::crypto::session_id_fingerprint(&session_id));
         self
     }
 }

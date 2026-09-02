@@ -32,6 +32,41 @@ impl PgStore {
     pub fn pool(&self) -> &PgPool {
         &self.pool
     }
+
+    /// Resolve either a legacy raw session ID or its public fingerprint.
+    /// Fingerprints must resolve to exactly one row to avoid revoking an
+    /// unintended session if the truncated digest ever collides.
+    pub async fn resolve_session_reference(
+        &self,
+        reference: &str,
+        user_id: Option<&str>,
+    ) -> Result<Option<String>, AuthError> {
+        let exact: Option<(String,)> = sqlx::query_as(
+            "SELECT id FROM sessions WHERE id = $1 AND ($2::text IS NULL OR user_id = $2) LIMIT 1",
+        )
+        .bind(reference)
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(AuthError::from)?;
+        if exact.is_some() {
+            return Ok(exact.map(|(id,)| id));
+        }
+
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT id FROM sessions WHERE ($1::text IS NULL OR user_id = $1)",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(AuthError::from)?;
+        let matches: Vec<String> = rows
+            .into_iter()
+            .map(|(id,)| id)
+            .filter(|id| crate::crypto::session_id_fingerprint(id) == reference)
+            .collect();
+        Ok((matches.len() == 1).then(|| matches[0].clone()))
+    }
 }
 
 // ─── SessionStore (PG-backed) ──────────────────────────────

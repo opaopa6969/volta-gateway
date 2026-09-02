@@ -147,6 +147,12 @@ pub fn sha256_hex(input: &str) -> String {
     h.finalize().iter().map(|b| format!("{:02x}", b)).collect()
 }
 
+/// A short, non-secret identifier suitable for displaying a session without
+/// exposing the bearer credential itself.
+pub fn session_id_fingerprint(session_id: &str) -> String {
+    sha256_hex(session_id)[..12].to_string()
+}
+
 /// SHA-256 of `input`, base64url-no-pad. Used for PKCE S256 verification
 /// (`code_challenge == base64url(sha256(code_verifier))`, RFC 7636 §4.6).
 pub fn sha256_base64url(input: &str) -> String {
@@ -308,5 +314,18 @@ mod tests {
             assert!(ALPHABET.contains(c), "unexpected char {c:?} in {code}");
         }
         assert_ne!(super::random_user_code(), super::random_user_code());
+    }
+
+    #[test]
+    fn session_fingerprint_is_stable_and_short() {
+        assert_eq!(super::session_id_fingerprint("sess-abc").len(), 12);
+        assert_eq!(
+            super::session_id_fingerprint("sess-abc"),
+            super::session_id_fingerprint("sess-abc")
+        );
+        assert_ne!(
+            super::session_id_fingerprint("sess-abc"),
+            super::session_id_fingerprint("sess-def")
+        );
     }
 }
