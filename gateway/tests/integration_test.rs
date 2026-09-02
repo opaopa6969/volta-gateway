@@ -896,6 +896,66 @@ async fn credentialed_public_requests_do_not_reuse_shared_cache() {
 }
 
 #[tokio::test]
+async fn public_cache_separates_query_strings() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let backend_calls = calls.clone();
+    let (backend_addr, _bh) = mock_server(move |req| {
+        backend_calls.fetch_add(1, Ordering::SeqCst);
+        let query = req.uri().query().unwrap_or("none");
+        Response::builder()
+            .status(200)
+            .header("content-type", "text/plain")
+            .body(full_body(Bytes::from(query.to_owned())))
+            .unwrap()
+    })
+    .await;
+    let proxy = make_proxy_public(backend_addr, "query-cache.test.com");
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = listener.local_addr().unwrap();
+    let proxy_clone = proxy.clone();
+    let server = tokio::spawn(async move {
+        let (stream, remote_addr) = listener.accept().await.unwrap();
+        let service = service_fn(move |req: Request<Incoming>| {
+            let proxy = proxy_clone.clone();
+            async move { Ok::<_, hyper::Error>(proxy.handle(req, remote_addr).await) }
+        });
+        let _ = auto::Builder::new(TokioExecutor::new())
+            .serve_connection(TokioIo::new(stream), service)
+            .await;
+    });
+    let client: hyper_util::client::legacy::Client<_, Empty<Bytes>> =
+        hyper_util::client::legacy::Client::builder(TokioExecutor::new()).build_http();
+
+    let mut bodies = Vec::new();
+    for path in ["/asset?q=secret", "/asset", "/asset?q=other"] {
+        let response = client
+            .request(
+                Request::builder()
+                    .uri(format!("http://{proxy_addr}{path}"))
+                    .header("host", "query-cache.test.com")
+                    .body(Empty::new())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        bodies.push(response.into_body().collect().await.unwrap().to_bytes());
+    }
+
+    assert_eq!(
+        bodies,
+        [
+            Bytes::from("q=secret"),
+            Bytes::from("none"),
+            Bytes::from("q=other"),
+        ]
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+    server.abort();
+}
+
+#[tokio::test]
 async fn proxy_unknown_host_returns_error() {
     let (backend_addr, _bh) =
         mock_server(|_req| Response::builder().status(200).body(empty_body()).unwrap()).await;

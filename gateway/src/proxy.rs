@@ -666,6 +666,8 @@ impl ProxyService {
 
         let method = req.method().clone();
         let uri_path = req.uri().path().to_string();
+        // Keep the query before the request body is consumed below.
+        let request_query = req.uri().query().map(str::to_owned);
 
         // Extract request metadata for SM
         let host = extract_host(&req).unwrap_or_default();
@@ -1163,12 +1165,11 @@ impl ProxyService {
 
         if cache_enabled && cache_method_ok {
             let ignore_query = cache_config.map(|c| c.ignore_query).unwrap_or(false);
-            let query = req.uri().query();
             let cache_key = crate::cache::ResponseCache::key(
                 method.as_str(),
                 &host,
                 &uri_path,
-                query,
+                request_query.as_deref(),
                 ignore_query,
             );
             if let Some(cached) = self.response_cache.get(&cache_key) {
@@ -1749,12 +1750,14 @@ impl ProxyService {
                         cache_config.map(|c| c.ttl_secs).unwrap_or(300),
                     );
                     let ignore_query = cache_config.map(|c| c.ignore_query).unwrap_or(false);
-                    let store_query = uri_path.split('?').nth(1);
+                    // `uri_path` comes from `Uri::path()` and therefore never
+                    // contains the query string. Use the original URI so the
+                    // store key matches the lookup key.
                     let cache_key = crate::cache::ResponseCache::key(
                         method.as_str(),
                         &host,
-                        uri_path.split('?').next().unwrap_or(&uri_path),
-                        store_query,
+                        &uri_path,
+                        request_query.as_deref(),
                         ignore_query,
                     );
                     let cached_headers: Vec<(String, String)> = parts
