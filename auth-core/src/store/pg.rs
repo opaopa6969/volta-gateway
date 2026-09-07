@@ -53,13 +53,12 @@ impl PgStore {
             return Ok(exact.map(|(id,)| id));
         }
 
-        let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT id FROM sessions WHERE ($1::text IS NULL OR user_id = $1)",
-        )
-        .bind(user_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(AuthError::from)?;
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT id FROM sessions WHERE ($1::text IS NULL OR user_id = $1)")
+                .bind(user_id)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(AuthError::from)?;
         let matches: Vec<String> = rows
             .into_iter()
             .map(|(id,)| id)
