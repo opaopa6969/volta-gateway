@@ -897,7 +897,12 @@ impl ProxyService {
         // #127: auth_rule with min_role overrides the route-level min_role.
         let min_role = match &auth_rule_match {
             Some(crate::config::ResolvedAuth::Require { min_role: role }) => Some(role.clone()),
-            _ => min_role,
+            // A matching `auth: public` rule must drop the route-level `min_role` too.
+            // Auth is skipped for this path, so the request carries no roles — leaving
+            // `min_role` set would fail the enforcement block below with 403 and make
+            // `auth: public` impossible on any route that has a route-level `min_role`.
+            Some(crate::config::ResolvedAuth::Public) => None,
+            None => min_role,
         };
 
         // Override backend if bypass_path has a backend override

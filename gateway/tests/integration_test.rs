@@ -1434,3 +1434,102 @@ async fn metrics_count_504_on_backend_timeout() {
     let after = proxy.metrics.requests_504.load(Ordering::Relaxed);
     assert_eq!(after - before, 1, "504 must be recorded in metrics");
 }
+
+/// #127 の取りこぼし回帰: `auth: public` にマッチしたパスは、route 既定の
+/// `min_role` も落とさなければならない。
+///
+/// public rule は認証を丸ごとスキップする（= リクエストはロールを一切持たない）
+/// ので、`min_role` が残ったままだと後段の enforcement が「MEMBER が必要なのに
+/// ロールが空」と判定して 403 を返す。つまり route に `min_role` がある限り
+/// `auth: public` が一切効かない。`auth_bypass_paths` には同じ免除が入っている
+/// のに auth_rules には無かった（本番 pubdoc.unlaxer.org の /public で発覚）。
+#[tokio::test]
+async fn auth_rule_public_overrides_route_min_role() {
+    let (backend_addr, _bh) =
+        mock_server(|_req| Response::builder().status(200).body(empty_body()).unwrap()).await;
+
+    // public path では auth-server を呼ばないのが仕様。呼ばれた回数を数えておく。
+    let auth_calls = Arc::new(AtomicUsize::new(0));
+    let calls = auth_calls.clone();
+    let (auth_addr, _ah) = mock_server(move |_req| {
+        calls.fetch_add(1, Ordering::SeqCst);
+        Response::builder().status(401).body(empty_body()).unwrap()
+    })
+    .await;
+
+    let proxy = make_proxy_with_min_role(auth_addr, backend_addr, "pub.test.com", "MEMBER");
+    let mut routing = (*proxy.hot.load_full().routing).clone();
+    routing.get_mut("pub.test.com").unwrap().auth_rules = vec![volta_gateway::config::AuthRule {
+        prefix: "/public".into(),
+        match_mode: "segment".into(),
+        auth: volta_gateway::config::AuthRuleAuth::Public("public".into()),
+    }];
+    proxy.hot.store(Arc::new(HotState::new(Arc::new(routing))));
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = listener.local_addr().unwrap();
+    let proxy_clone = proxy.clone();
+    let server = tokio::spawn(async move {
+        loop {
+            let (stream, remote_addr) = match listener.accept().await {
+                Ok(pair) => pair,
+                Err(_) => break,
+            };
+            let proxy = proxy_clone.clone();
+            tokio::spawn(async move {
+                let service = service_fn(move |req: Request<Incoming>| {
+                    let proxy = proxy.clone();
+                    async move { Ok::<_, hyper::Error>(proxy.handle(req, remote_addr).await) }
+                });
+                let _ = auto::Builder::new(TokioExecutor::new())
+                    .serve_connection(TokioIo::new(stream), service)
+                    .await;
+            });
+        }
+    });
+    let client: hyper_util::client::legacy::Client<_, Empty<Bytes>> =
+        hyper_util::client::legacy::Client::builder(TokioExecutor::new()).build_http();
+
+    // public rule に当たるパス: 認証なしで backend に通る
+    let response = client
+        .request(
+            Request::builder()
+                .uri(format!("http://{proxy_addr}/public/slide.html"))
+                .header("host", "pub.test.com")
+                .body(Empty::new())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "auth: public のパスは route の min_role に関係なく通るべき"
+    );
+    let _ = response.into_body().collect().await.unwrap();
+    assert_eq!(
+        auth_calls.load(Ordering::SeqCst),
+        0,
+        "public path で auth-server を呼んではいけない"
+    );
+
+    // rule に当たらないパス: route 既定の min_role が効いて通らない
+    let response = client
+        .request(
+            Request::builder()
+                .uri(format!("http://{proxy_addr}/private/slide.html"))
+                .header("host", "pub.test.com")
+                .body(Empty::new())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(
+        response.status(),
+        StatusCode::OK,
+        "rule に当たらないパスは route の min_role が効くべき"
+    );
+    let _ = response.into_body().collect().await.unwrap();
+
+    server.abort();
+}
