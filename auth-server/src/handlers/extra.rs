@@ -60,10 +60,11 @@ pub async fn admin_revoke_session(
     Path(sid): Path<String>,
 ) -> Result<Response, ApiError> {
     let _ = require_admin(&s, &jar).await?;
-    let sid = s.db.resolve_session_reference(&sid, None)
-        .await
-        .map_err(|e| ApiError::internal(&e.to_string()))?
-        .ok_or_else(|| ApiError::bad_request("SESSION_NOT_FOUND", "session not found"))?;
+    let sid =
+        s.db.resolve_session_reference(&sid, None)
+            .await
+            .map_err(|e| ApiError::internal(&e.to_string()))?
+            .ok_or_else(|| ApiError::bad_request("SESSION_NOT_FOUND", "session not found"))?;
     SessionStore::revoke(&s.db, &sid)
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
@@ -77,10 +78,11 @@ pub async fn revoke_session_by_id(
     Path(sid): Path<String>,
 ) -> Result<Response, ApiError> {
     let _ = auth_sync(&jar)?;
-    let sid = s.db.resolve_session_reference(&sid, None)
-        .await
-        .map_err(|e| ApiError::internal(&e.to_string()))?
-        .ok_or_else(|| ApiError::bad_request("SESSION_NOT_FOUND", "session not found"))?;
+    let sid =
+        s.db.resolve_session_reference(&sid, None)
+            .await
+            .map_err(|e| ApiError::internal(&e.to_string()))?
+            .ok_or_else(|| ApiError::bad_request("SESSION_NOT_FOUND", "session not found"))?;
     SessionStore::revoke(&s.db, &sid)
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
