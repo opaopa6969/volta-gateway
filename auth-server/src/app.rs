@@ -401,6 +401,10 @@ pub fn build_router(state: AppState) -> Router {
             "/temporary-access/activate",
             get(handlers::extra::activate_temporary_access),
         )
+        .route(
+            "/temporary-access/exchange",
+            post(handlers::extra::exchange_temporary_access),
+        )
         .route("/accounts/use", post(handlers::accounts::use_account))
         .route(
             "/accounts/signout",
