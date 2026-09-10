@@ -1,0 +1,21 @@
+[Unit]
+Description=Volta Auth Server socket (:7072) — survives restarts of the service
+Documentation=https://github.com/opaopa6969/volta-gateway
+
+[Socket]
+# systemd owns this listener, so :7072 never disappears while the service is being
+# replaced. Clients wait in the backlog instead of getting connection refused.
+#
+# Why this matters: volta-index reverse-proxies browser terminals at /term/ and calls
+# this server on *every* request. Before this socket existed, each deploy dropped the
+# terminals' WebSockets — the terminal stayed on screen but stopped taking input.
+# Measured 2026-09-11: three restarts right after gateway merges (06:48 / 07:40 / 08:03).
+ListenStream=0.0.0.0:7072
+# One process accepts everything (systemd must not spawn a process per connection).
+Accept=no
+# Deploys queue up here while the new process starts; the default 128 is plenty for
+# the hub's traffic, but the drain is what makes the queue visible, so keep it roomy.
+Backlog=1024
+
+[Install]
+WantedBy=sockets.target

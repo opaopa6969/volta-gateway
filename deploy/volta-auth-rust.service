@@ -1,0 +1,25 @@
+[Unit]
+Description=Volta Auth Server (Rust) — production backend for auth.unlaxer.org (:7072)
+Documentation=https://github.com/opaopa6969/volta-gateway
+After=network-online.target
+Wants=network-online.target
+# The socket holds :7072 across restarts of this service, so a deploy no longer
+# refuses connections. Requires= (not Wants=) because binding ourselves instead
+# would silently give back the old behaviour.
+Requires=volta-auth-rust.socket
+After=volta-auth-rust.socket
+
+[Service]
+Type=simple
+EnvironmentFile=/home/opa/.config/volta-auth-rust.env
+ExecStart=/home/opa/work/volta-workspace/volta-gateway/target/release/volta-auth-server
+WorkingDirectory=/home/opa/work/volta-workspace/volta-gateway
+Restart=always
+RestartSec=3
+# DB is a docker container on 127.0.0.1:54329; Restart=always rides out startup races.
+# SIGTERM drains in-flight requests (with_graceful_shutdown); give it room before SIGKILL.
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target
