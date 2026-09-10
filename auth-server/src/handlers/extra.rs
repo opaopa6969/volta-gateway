@@ -237,22 +237,29 @@ pub async fn create_temporary_access(
     let issuer = require_admin(&s, &jar).await?;
     let role = req.role.trim().to_ascii_uppercase();
     let valid_pattern = |d: &String| {
+        if d == "*" {
+            return true;
+        }
         let plain = d.strip_prefix("*.").unwrap_or(d);
         !plain.is_empty() && !plain.contains('/') && !plain.contains(':') && plain.contains('.')
     };
-    let valid_domains = !req.domains.is_empty()
-        && req.domains.iter().all(valid_pattern)
-        && req.blocked_domains.iter().all(valid_pattern);
-    if !["ADMIN", "MEMBER", "VIEWER"].contains(&role.as_str())
-        || !valid_domains
-        || req.subject.trim().is_empty()
-        || req.starts_at >= req.expires_at
-        || req.expires_at > chrono::Utc::now() + chrono::Duration::days(30)
-    {
-        return Err(ApiError::bad_request(
-            "INVALID_TEMPORARY_ACCESS",
-            "invalid access grant",
-        ));
+    let error = if !["ADMIN", "MEMBER", "VIEWER"].contains(&role.as_str()) {
+        Some("role は ADMIN / MEMBER / VIEWER のいずれかにしてください")
+    } else if req.subject.trim().is_empty() {
+        Some("subject を指定してください")
+    } else if req.domains.is_empty() || !req.domains.iter().all(valid_pattern) {
+        Some("allowlist domain は host、*.example.com、または * で指定してください")
+    } else if !req.blocked_domains.iter().all(valid_pattern) {
+        Some("blocklist domain は host、*.example.com、または * で指定してください")
+    } else if req.starts_at >= req.expires_at {
+        Some("終了時刻は開始時刻より後にしてください")
+    } else if req.expires_at > chrono::Utc::now() + chrono::Duration::days(30) {
+        Some("有効期間は30日以内にしてください")
+    } else {
+        None
+    };
+    if let Some(message) = error {
+        return Err(ApiError::bad_request("INVALID_TEMPORARY_ACCESS", message));
     }
     let created_by = issuer
         .user_id
