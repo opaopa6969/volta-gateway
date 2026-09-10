@@ -2,6 +2,7 @@
 //! select-tenant, user export, admin HTML pages (stubs).
 
 use axum::extract::{Path, Query, State};
+use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Json;
 use axum_extra::extract::CookieJar;
@@ -381,6 +382,60 @@ pub async fn activate_temporary_access(
     response
         .headers_mut()
         .insert("referrer-policy", "no-referrer".parse().unwrap());
+    no_cache_headers(&mut response);
+    response
+}
+
+#[derive(serde::Deserialize)]
+pub struct ExchangeTemporaryAccessReq {
+    pub return_to: String,
+}
+
+/// Exchange a Bearer credential for the same HttpOnly cookie used by Link.
+/// The caller must provide the credential in an Authorization header; it is
+/// never accepted in a URL or copied into the response body.
+pub async fn exchange_temporary_access(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<ExchangeTemporaryAccessReq>,
+) -> Response {
+    let token = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| {
+            v.strip_prefix("Bearer ")
+                .or_else(|| v.strip_prefix("bearer "))
+        })
+        .map(str::trim)
+        .filter(|v| v.starts_with("vta_"));
+    let Some(token) = token else {
+        return ApiError::unauthorized("INVALID_TOKEN", "temporary access Bearer required")
+            .into_response();
+    };
+    let parsed = match url::Url::parse(&req.return_to) {
+        Ok(url) if url.scheme() == "https" && url.path().starts_with('/') => url,
+        _ => {
+            return ApiError::bad_request("INVALID_RETURN_TO", "invalid return URL").into_response()
+        }
+    };
+    let Some(host) = parsed.host_str() else {
+        return ApiError::bad_request("INVALID_RETURN_TO", "invalid return URL").into_response();
+    };
+    let grant =
+        s.db.find_temporary_access_by_hash(&sha256_hex(token))
+            .await
+            .ok()
+            .flatten();
+    let Some(grant) = grant.filter(|g| g.is_active_for(host, chrono::Utc::now())) else {
+        return ApiError::forbidden("TEMPORARY_ACCESS_DENIED", "temporary access is unavailable")
+            .into_response();
+    };
+    let seconds = (grant.expires_at - chrono::Utc::now()).num_seconds().max(1);
+    let mut response = Json(serde_json::json!({"redirect_to": parsed.as_str()})).into_response();
+    response.headers_mut().append(
+        "set-cookie",
+        format!("__volta_temporary_access={}; Path=/; Domain=.unlaxer.org; Max-Age={}; HttpOnly; Secure; SameSite=Lax", token, seconds).parse().unwrap(),
+    );
     no_cache_headers(&mut response);
     response
 }
