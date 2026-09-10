@@ -1,8 +1,8 @@
 //! Extra handlers — admin sessions, transfer-ownership, switch-account,
 //! select-tenant, user export, admin HTML pages (stubs).
 
-use axum::extract::{Path, State};
-use axum::response::{Html, IntoResponse, Response};
+use axum::extract::{Path, Query, State};
+use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Json;
 use axum_extra::extract::CookieJar;
 use uuid::Uuid;
@@ -10,7 +10,8 @@ use uuid::Uuid;
 use crate::error::{no_cache_headers, ApiError};
 use crate::helpers::{clear_session_cookie, extract_session_id, require_admin};
 use crate::state::AppState;
-use volta_auth_core::crypto::session_id_fingerprint;
+use volta_auth_core::crypto::{random_token_hex, session_id_fingerprint, sha256_hex};
+use volta_auth_core::record::TemporaryAccessGrantRecord;
 use volta_auth_core::store::{MembershipStore, SessionStore, TenantStore, UserStore};
 
 fn auth_sync(jar: &CookieJar) -> Result<String, ApiError> {
@@ -213,6 +214,142 @@ pub async fn admin_export_user(
         "user": user.map(|u| serde_json::json!({"id":u.id,"email":u.email,"display_name":u.display_name})),
         "tenants": tenants.iter().map(|t| serde_json::json!({"id":t.id,"name":t.name})).collect::<Vec<_>>(),
     })).into_response())
+}
+
+#[derive(serde::Deserialize)]
+pub struct CreateTemporaryAccessReq {
+    pub tenant_id: Uuid,
+    pub subject: String,
+    pub role: String,
+    pub domains: Vec<String>,
+    pub starts_at: chrono::DateTime<chrono::Utc>,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Creates an opaque, revocable credential. Its plaintext is returned once.
+pub async fn create_temporary_access(
+    State(s): State<AppState>,
+    jar: CookieJar,
+    Json(req): Json<CreateTemporaryAccessReq>,
+) -> Result<Response, ApiError> {
+    let issuer = require_admin(&s, &jar).await?;
+    let role = req.role.trim().to_ascii_uppercase();
+    let valid_domains = !req.domains.is_empty()
+        && req
+            .domains
+            .iter()
+            .all(|d| !d.is_empty() && !d.contains('/') && !d.contains(':'));
+    if !["ADMIN", "MEMBER", "VIEWER"].contains(&role.as_str())
+        || !valid_domains
+        || req.subject.trim().is_empty()
+        || req.starts_at >= req.expires_at
+        || req.expires_at > chrono::Utc::now() + chrono::Duration::days(30)
+    {
+        return Err(ApiError::bad_request(
+            "INVALID_TEMPORARY_ACCESS",
+            "invalid access grant",
+        ));
+    }
+    let created_by = issuer
+        .user_id
+        .parse()
+        .map_err(|_| ApiError::internal("bad issuer"))?;
+    let bearer = format!("vta_{}", random_token_hex(32));
+    let grant = TemporaryAccessGrantRecord {
+        id: Uuid::new_v4(),
+        tenant_id: req.tenant_id,
+        token_hash: sha256_hex(&bearer),
+        subject: req.subject.trim().to_string(),
+        role,
+        domains: req.domains,
+        starts_at: req.starts_at,
+        expires_at: req.expires_at,
+        created_by,
+        created_at: chrono::Utc::now(),
+        revoked_at: None,
+    };
+    s.db.create_temporary_access_grant(&grant)
+        .await
+        .map_err(|e| ApiError::internal(&e.to_string()))?;
+    Ok(Json(serde_json::json!({"id": grant.id, "bearer": bearer})).into_response())
+}
+
+#[derive(serde::Deserialize)]
+pub struct TemporaryAccessListQuery {
+    pub tenant_id: Uuid,
+}
+
+pub async fn list_temporary_access(
+    State(s): State<AppState>,
+    jar: CookieJar,
+    Query(q): Query<TemporaryAccessListQuery>,
+) -> Result<Response, ApiError> {
+    let _ = require_admin(&s, &jar).await?;
+    let grants =
+        s.db.list_temporary_access_grants(q.tenant_id)
+            .await
+            .map_err(|e| ApiError::internal(&e.to_string()))?;
+    let values: Vec<_> = grants.into_iter().map(|g| serde_json::json!({"id":g.id,"subject":g.subject,"role":g.role,"domains":g.domains,"starts_at":g.starts_at,"expires_at":g.expires_at,"revoked_at":g.revoked_at})).collect();
+    Ok(Json(values).into_response())
+}
+
+pub async fn revoke_temporary_access(
+    State(s): State<AppState>,
+    jar: CookieJar,
+    Path(id): Path<Uuid>,
+) -> Result<Response, ApiError> {
+    let _ = require_admin(&s, &jar).await?;
+    s.db.revoke_temporary_access_grant(id)
+        .await
+        .map_err(|e| ApiError::internal(&e.to_string()))?;
+    Ok(Json(serde_json::json!({"ok":true})).into_response())
+}
+
+pub async fn temporary_access_page() -> Response {
+    Html(r#"<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>一時アクセス — Volta Auth</title><style>body{font-family:system-ui;max-width:42rem;margin:3rem auto;padding:0 1rem}input,select{width:100%;padding:.65rem;margin:.3rem 0}button{padding:.7rem 1rem}pre{white-space:pre-wrap;background:#f4f4f4;padding:1rem}</style><h1>一時アクセスを発行</h1><p>role、許可 domain、開始・終了時刻を指定します。token はこの画面で一度だけ表示されます。</p><form id=f><input name=tenant_id placeholder="Tenant UUID" required><input name=subject type=email placeholder="利用者のメールアドレス" required><select name=role><option>MEMBER</option><option>VIEWER</option><option>ADMIN</option></select><input name=domains placeholder="許可 domain（例: kamishibai.unlaxer.org、複数はカンマ区切り）" required><label>開始<input name=starts_at type=datetime-local required></label><label>終了<input name=expires_at type=datetime-local required></label><button>一時アクセスを発行</button></form><pre id=o></pre><script>f.onsubmit=async e=>{e.preventDefault();let x=Object.fromEntries(new FormData(f));x.domains=x.domains.split(',').map(v=>v.trim()).filter(Boolean);x.starts_at=new Date(x.starts_at).toISOString();x.expires_at=new Date(x.expires_at).toISOString();let r=await fetch('/api/v1/temporary-access',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(x)});if(!r.ok){o.textContent='発行に失敗しました。';return}let d=await r.json(),link=location.origin+'/temporary-access/activate?token='+encodeURIComponent(d.bearer)+'&return_to='+encodeURIComponent('https://'+x.domains[0]+'/');o.textContent='Bearer\\nAuthorization: Bearer '+d.bearer+'\\n\\nLink\\n'+link;};</script></html>"#.to_string()).into_response()
+}
+
+#[derive(serde::Deserialize)]
+pub struct ActivateTemporaryAccessQuery {
+    pub token: String,
+    pub return_to: String,
+}
+
+/// Link form of a temporary credential. The raw token is exchanged for an
+/// HttpOnly parent-domain cookie and immediately removed from the address bar.
+pub async fn activate_temporary_access(
+    State(s): State<AppState>,
+    Query(q): Query<ActivateTemporaryAccessQuery>,
+) -> Response {
+    let parsed = match url::Url::parse(&q.return_to) {
+        Ok(url) if url.scheme() == "https" && url.path().starts_with('/') => url,
+        _ => {
+            return ApiError::bad_request("INVALID_RETURN_TO", "invalid return URL").into_response()
+        }
+    };
+    let Some(host) = parsed.host_str() else {
+        return ApiError::bad_request("INVALID_RETURN_TO", "invalid return URL").into_response();
+    };
+    let grant =
+        s.db.find_temporary_access_by_hash(&sha256_hex(&q.token))
+            .await
+            .ok()
+            .flatten();
+    let Some(grant) = grant.filter(|g| g.is_active_for(host, chrono::Utc::now())) else {
+        return ApiError::forbidden("TEMPORARY_ACCESS_DENIED", "temporary access is unavailable")
+            .into_response();
+    };
+    let seconds = (grant.expires_at - chrono::Utc::now()).num_seconds().max(1);
+    let mut response = Redirect::to(parsed.as_str()).into_response();
+    response.headers_mut().append(
+        "set-cookie",
+        format!("__volta_temporary_access={}; Path=/; Domain=.unlaxer.org; Max-Age={}; HttpOnly; Secure; SameSite=Lax", q.token, seconds).parse().unwrap(),
+    );
+    response
+        .headers_mut()
+        .insert("referrer-policy", "no-referrer".parse().unwrap());
+    no_cache_headers(&mut response);
+    response
 }
 
 // ─── Admin HTML Pages (stubs) ──────────────────────────────

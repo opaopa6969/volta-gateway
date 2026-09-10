@@ -397,6 +397,10 @@ pub fn build_router(state: AppState) -> Router {
         // Google-style "signed in on this browser" pane. `/login?add=1` adds
         // another account (handled in oidc::login).
         .route("/accounts", get(handlers::accounts::accounts_page))
+        .route(
+            "/temporary-access/activate",
+            get(handlers::extra::activate_temporary_access),
+        )
         .route("/accounts/use", post(handlers::accounts::use_account))
         .route(
             "/accounts/signout",
@@ -411,11 +415,24 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/users/{userId}/export",
             post(handlers::extra::admin_export_user),
         )
+        .route(
+            "/api/v1/temporary-access",
+            post(handlers::extra::create_temporary_access)
+                .get(handlers::extra::list_temporary_access),
+        )
+        .route(
+            "/api/v1/temporary-access/{id}",
+            delete(handlers::extra::revoke_temporary_access),
+        )
         // Admin HTML pages (stubs)
         .route("/admin/members", get(handlers::extra::admin_members_page))
         .route(
             "/admin/invitations",
             get(handlers::extra::admin_invitations_page),
+        )
+        .route(
+            "/admin/temporary-access",
+            get(handlers::extra::temporary_access_page),
         )
         .route("/admin/webhooks", get(handlers::extra::admin_webhooks_page))
         .route("/admin/idp", get(handlers::extra::admin_idp_page))
