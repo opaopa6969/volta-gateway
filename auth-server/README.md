@@ -65,7 +65,7 @@ cargo run --release -p volta-auth-server
 この値を rotate してはならない。鍵は secret manager で保管し、十分なランダム値
 （例: `openssl rand -hex 32`）を使う。
 
-## エンドポイント一覧 (126 routes)
+## エンドポイント一覧 (127 routes)
 
 ### 認証
 | Method | Path | 説明 |
@@ -76,6 +76,7 @@ cargo run --release -p volta-auth-server
 | POST | /auth/callback/complete | OIDC 完了 (form submit) |
 | GET/POST | /auth/logout | ログアウト |
 | POST | /auth/refresh | JWT 更新 |
+| POST | /auth/session/keepalive | 有効なセッションと Cookie を延長（`X-Volta-Session-Keepalive: 1` 必須） |
 | POST | /auth/switch-tenant | テナント切替 |
 | POST | /auth/switch-account | アカウント切替 |
 | GET | /select-tenant | テナント選択 |
@@ -219,3 +220,14 @@ LOCAL_BYPASS_TRUSTED_PROXY_CIDRS=10.42.0.0/16
 ```bash
 cargo test -p volta-auth-server     # SAML テスト (5 tests)
 ```
+
+### ttyd のセッション継続
+
+`POST /auth/session/keepalive` は現在の `__volta_session` に対し、
+`SESSION_TTL_SECONDS`（既定8時間）の有効期間を現在時刻から確保し、同じ Cookie を
+`Max-Age` 付きで再発行します。通常の `/auth/verify` や `/auth/refresh` の動作は変えません。
+期限切れ・失効済み・存在しないセッションは401で拒否し、更新と失効が競合しても復活させません。
+`X-Volta-Session-Keepalive: 1` を必須とし、このAPIはCORSを許可しません。
+
+Volta Index は同一 origin の `POST /api/session/keepalive` からこのAPIへ中継し、
+Cookie の属性を保持してブラウザへ返します。認証サーバーを先に更新してから Index を更新してください。

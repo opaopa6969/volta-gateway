@@ -179,13 +179,17 @@ impl SessionStore for PgStore {
 
     async fn touch(&self, session_id: &str, new_expires_at: u64) -> Result<(), AuthError> {
         let now = now_epoch();
-        sqlx::query("UPDATE sessions SET last_active_at = $1, expires_at = $2 WHERE id = $3")
+        // 検証後に期限切れ・revoke になったセッションを更新で復活させない。
+        let updated = sqlx::query("UPDATE sessions SET last_active_at = $1, expires_at = GREATEST(expires_at, $2) WHERE id = $3 AND invalidated_at IS NULL AND expires_at > $1")
             .bind(now)
             .bind(new_expires_at as i64)
             .bind(session_id)
             .execute(&self.pool)
             .await
             .map_err(AuthError::from)?;
+        if updated.rows_affected() == 0 {
+            return Err(AuthError::SessionNotFound);
+        }
         Ok(())
     }
 

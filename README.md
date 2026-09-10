@@ -380,7 +380,7 @@ volta-gateway/
   Cargo.toml              Workspace root (5 crates)
   gateway/                HTTP reverse proxy (30+ features)
   auth-core/              Auth library — JWT, session, OIDC/MFA/Passkey SM flows
-  auth-server/            Axum auth API — ~126-route Rust identity service
+  auth-server/            Axum auth API — ~127-route Rust identity service
   volta-bin/              Experimental auth component/flow smoke-check scaffold
   tools/traefik-to-volta/ Config converter CLI
 ```
