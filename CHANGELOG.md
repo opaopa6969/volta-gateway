@@ -139,6 +139,19 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   check, and error terminals (was: happy-path assertion only).
 
 ### Fixed
+- **Deploys no longer drop live connections on :7072.** `auth-server` bound the
+  port itself, so every restart made it disappear for a moment. volta-index
+  reverse-proxies browser terminals at `/term/` and calls this server on *every*
+  request, so that gap dropped the terminals' WebSockets — the terminal stayed on
+  screen but stopped taking input. Measured 2026-09-11: three restarts right after
+  gateway merges (06:48 / 07:40 / 08:03), each matching a burst of
+  `auth-server に繋がりません` in the hub log. The server now adopts the listener
+  systemd hands it (socket activation — `deploy/volta-auth-rust.socket`, which owns
+  the port so clients queue in the backlog instead of being refused) and drains
+  in-flight requests on SIGTERM. With no socket unit in front of it, it binds the
+  port itself exactly as before. To enable: install both units from `deploy/`, then
+  `systemctl --user daemon-reload && systemctl --user enable --now volta-auth-rust.socket`
+  and restart the service once.
 - **WebSocket over HTTP/2 (RFC 8441)**. An `:authority`-style HTTP/2 `CONNECT`
   upgrade was forwarded verbatim to the backend: the HTTP/2 pseudo-headers
   (`:method`, `:protocol`, `:scheme`, `:path`, `:authority`) leaked into the

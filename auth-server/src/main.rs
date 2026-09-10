@@ -249,12 +249,31 @@ async fn main() {
 
     info!(port = port, "volta-auth-server starting");
 
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .unwrap_or_else(|e| {
-            eprintln!("failed to bind {addr}: {e} (port already in use?)");
-            std::process::exit(1);
-        });
+    // Prefer the listener systemd already holds (socket activation). systemd keeps
+    // the socket across restarts, so clients are never refused while this process is
+    // being replaced — they just wait in the backlog until the new one accepts.
+    //
+    // Without it, :7072 disappears for a moment on every deploy. volta-index proxies
+    // browser terminals at /term/ and calls this server on *every* request, so that
+    // gap drops the WebSocket: the terminal stays on screen but stops taking input.
+    // Measured 2026-09-11 — three restarts right after gateway merges (06:48 / 07:40
+    // / 08:03), each one matching a burst of `auth-server に繋がりません` in the hub log.
+    let listener = match systemd_listener() {
+        Some(inherited) => {
+            info!("adopting the listener passed by systemd (socket activation)");
+            tokio::net::TcpListener::from_std(inherited).unwrap_or_else(|e| {
+                eprintln!("failed to adopt the systemd listener: {e}");
+                std::process::exit(1);
+            })
+        }
+        // No socket unit in front of us: bind ourselves, exactly as before.
+        None => tokio::net::TcpListener::bind(addr)
+            .await
+            .unwrap_or_else(|e| {
+                eprintln!("failed to bind {addr}: {e} (port already in use?)");
+                std::process::exit(1);
+            }),
+    };
     // `into_make_service_with_connect_info` makes peer SocketAddr available to
     // handlers/middleware via `ConnectInfo<SocketAddr>` — needed for the IP-keyed
     // rate limiter (#7, #10).
@@ -262,10 +281,119 @@ async fn main() {
         listener,
         router.into_make_service_with_connect_info::<SocketAddr>(),
     )
+    // Finish the requests already in flight before exiting. Holding the socket is
+    // pointless if the responses being written are cut off mid-flight.
+    .with_graceful_shutdown(shutdown_signal())
     .await
     .unwrap();
 }
 
+/// The listener systemd passed us via socket activation, if there is one.
+///
+/// Ignores the variables unless `LISTEN_PID` names *this* process — otherwise a
+/// child inheriting them would grab fd 3, which is something else entirely. That
+/// check is also why we do not unset them: any child is already excluded by pid.
+fn systemd_listener() -> Option<std::net::TcpListener> {
+    use std::os::fd::FromRawFd;
+
+    // systemd hands the fds out starting at 3; this unit is given exactly one.
+    const LISTEN_FDS_START: i32 = 3;
+
+    if !meant_for_us(
+        std::env::var("LISTEN_PID").ok().as_deref(),
+        std::env::var("LISTEN_FDS").ok().as_deref(),
+        std::process::id(),
+    ) {
+        return None;
+    }
+    // SAFETY: systemd guarantees fd 3 is an open, listening socket, and nothing
+    // else in this process touches that descriptor.
+    let listener = unsafe { std::net::TcpListener::from_raw_fd(LISTEN_FDS_START) };
+    // tokio drives it in non-blocking mode; systemd hands it over blocking.
+    listener.set_nonblocking(true).unwrap_or_else(|e| {
+        eprintln!("failed to set the systemd listener non-blocking: {e}");
+        std::process::exit(1);
+    });
+    Some(listener)
+}
+
+/// Whether `LISTEN_PID` / `LISTEN_FDS` describe a socket handed to *this* process.
+///
+/// Both variables are inherited by children, and fd 3 means something else entirely
+/// over there — hence the pid check rather than merely looking for `LISTEN_FDS`.
+fn meant_for_us(listen_pid: Option<&str>, listen_fds: Option<&str>, my_pid: u32) -> bool {
+    let Some(pid) = listen_pid.and_then(|v| v.parse::<u32>().ok()) else {
+        return false;
+    };
+    let Some(count) = listen_fds.and_then(|v| v.parse::<i32>().ok()) else {
+        return false;
+    };
+    pid == my_pid && count >= 1
+}
+
+/// Resolves once the service manager asks us to stop.
+async fn shutdown_signal() {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut terminate = match signal(SignalKind::terminate()) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("failed to listen for SIGTERM: {e}");
+            return;
+        }
+    };
+    let mut interrupt = match signal(SignalKind::interrupt()) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("failed to listen for SIGINT: {e}");
+            return;
+        }
+    };
+    tokio::select! {
+        _ = terminate.recv() => {}
+        _ = interrupt.recv() => {}
+    }
+    info!("shutdown signal received — finishing in-flight requests");
+}
+
 fn env(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::meant_for_us;
+
+    #[test]
+    fn adopts_the_socket_only_when_systemd_named_this_process() {
+        assert!(meant_for_us(Some("42"), Some("1"), 42));
+        assert!(
+            meant_for_us(Some("42"), Some("2"), 42),
+            "more than one fd is fine"
+        );
+    }
+
+    #[test]
+    fn ignores_variables_inherited_by_a_child() {
+        // A child sees the parent's LISTEN_PID/LISTEN_FDS, but its fd 3 is not the
+        // socket. Adopting it there would serve requests off an unrelated descriptor.
+        assert!(!meant_for_us(Some("42"), Some("1"), 43));
+    }
+
+    #[test]
+    fn falls_back_to_binding_when_there_is_no_socket_unit() {
+        assert!(!meant_for_us(None, None, 42));
+        assert!(!meant_for_us(None, Some("1"), 42));
+        assert!(!meant_for_us(Some("42"), None, 42));
+        assert!(!meant_for_us(Some("42"), Some("0"), 42), "no fd was passed");
+    }
+
+    #[test]
+    fn unparsable_values_never_reach_the_raw_fd() {
+        assert!(!meant_for_us(Some(""), Some("1"), 42));
+        assert!(!meant_for_us(Some("42"), Some(""), 42));
+        assert!(!meant_for_us(Some("not-a-pid"), Some("1"), 42));
+        assert!(!meant_for_us(Some("42"), Some("not-a-count"), 42));
+        assert!(!meant_for_us(Some("-1"), Some("1"), 42));
+    }
 }
