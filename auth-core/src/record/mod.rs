@@ -10,6 +10,7 @@ mod oauth;
 mod oidc_flow;
 mod platform;
 mod session;
+mod temporary_access;
 mod tenant;
 mod user;
 mod verification;
@@ -29,6 +30,7 @@ pub use platform::{
     TrustedDeviceRecord, WebhookDeliveryRecord, WebhookRecord,
 };
 pub use session::SessionRecord;
+pub use temporary_access::TemporaryAccessGrantRecord;
 pub use tenant::TenantRecord;
 pub use user::UserRecord;
 pub use verification::EmailVerificationTokenRecord;

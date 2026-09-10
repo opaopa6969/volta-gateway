@@ -66,6 +66,44 @@ impl PgStore {
             .collect();
         Ok((matches.len() == 1).then(|| matches[0].clone()))
     }
+
+    pub async fn create_temporary_access_grant(
+        &self,
+        grant: &TemporaryAccessGrantRecord,
+    ) -> Result<(), AuthError> {
+        sqlx::query(
+            "INSERT INTO temporary_access_grants (id, tenant_id, token_hash, subject, role, domains, starts_at, expires_at, created_by, created_at, revoked_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+        )
+        .bind(grant.id).bind(grant.tenant_id).bind(&grant.token_hash).bind(&grant.subject)
+        .bind(&grant.role).bind(&grant.domains).bind(grant.starts_at).bind(grant.expires_at)
+        .bind(grant.created_by).bind(grant.created_at).bind(grant.revoked_at)
+        .execute(&self.pool).await.map_err(AuthError::from)?;
+        Ok(())
+    }
+
+    pub async fn find_temporary_access_by_hash(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<TemporaryAccessGrantRecord>, AuthError> {
+        sqlx::query_as::<_, TemporaryAccessGrantRecord>(
+            "SELECT id, tenant_id, token_hash, subject, role, domains, starts_at, expires_at, created_by, created_at, revoked_at FROM temporary_access_grants WHERE token_hash = $1",
+        ).bind(token_hash).fetch_optional(&self.pool).await.map_err(AuthError::from)
+    }
+
+    pub async fn revoke_temporary_access_grant(&self, id: Uuid) -> Result<(), AuthError> {
+        sqlx::query("UPDATE temporary_access_grants SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL")
+            .bind(id).execute(&self.pool).await.map_err(AuthError::from)?;
+        Ok(())
+    }
+
+    pub async fn list_temporary_access_grants(
+        &self,
+        tenant_id: Uuid,
+    ) -> Result<Vec<TemporaryAccessGrantRecord>, AuthError> {
+        sqlx::query_as::<_, TemporaryAccessGrantRecord>(
+            "SELECT id, tenant_id, token_hash, subject, role, domains, starts_at, expires_at, created_by, created_at, revoked_at FROM temporary_access_grants WHERE tenant_id = $1 ORDER BY created_at DESC",
+        ).bind(tenant_id).fetch_all(&self.pool).await.map_err(AuthError::from)
+    }
 }
 
 // ─── SessionStore (PG-backed) ──────────────────────────────

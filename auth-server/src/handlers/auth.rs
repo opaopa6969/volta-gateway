@@ -15,6 +15,7 @@ use crate::helpers::{
 };
 use crate::local_bypass::PeerIp;
 use crate::state::AppState;
+use volta_auth_core::crypto::sha256_hex;
 use volta_auth_core::store::{
     MembershipStore, MfaStore, PasskeyStore, SessionStepUpStore, SessionStore, TenantStore,
 };
@@ -116,7 +117,48 @@ pub async fn verify(
                 .then(|| rest.trim().to_string())
         })
         .filter(|t| !t.is_empty())
+        .or_else(|| {
+            jar.get("__volta_temporary_access")
+                .map(|cookie| cookie.value().to_string())
+                .filter(|t| !t.is_empty())
+        })
     {
+        // Opaque temporary-access credentials are intentionally checked online:
+        // it makes individual revocation effective immediately.
+        if token.starts_with("vta_") {
+            let host = forwarded_host.unwrap_or("");
+            let grant = state
+                .db
+                .find_temporary_access_by_hash(&sha256_hex(&token))
+                .await
+                .ok()
+                .flatten();
+            let Some(grant) = grant.filter(|g| g.is_active_for(host, chrono::Utc::now())) else {
+                let mut resp = StatusCode::FORBIDDEN.into_response();
+                resp.headers_mut().insert(
+                    "x-volta-auth-reason",
+                    "temporary_access_denied".parse().unwrap(),
+                );
+                no_cache_headers(&mut resp);
+                return resp;
+            };
+            let mut resp = StatusCode::OK.into_response();
+            let h = resp.headers_mut();
+            h.insert(
+                "x-volta-user-id",
+                format!("temporary:{}", grant.id).parse().unwrap(),
+            );
+            h.insert("x-volta-email", grant.subject.parse().unwrap());
+            h.insert(
+                "x-volta-tenant-id",
+                grant.tenant_id.to_string().parse().unwrap(),
+            );
+            h.insert("x-volta-roles", grant.role.parse().unwrap());
+            h.insert("x-volta-auth-source", "temporary-access".parse().unwrap());
+            h.insert("x-volta-token-id", grant.id.to_string().parse().unwrap());
+            no_cache_headers(&mut resp);
+            return resp;
+        }
         match state.jwt_verifier.verify(&token) {
             Ok(claims) => {
                 // aud があるなら、この host 向けに出された token か確かめる。
