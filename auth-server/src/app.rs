@@ -126,6 +126,9 @@ pub fn build_router(state: AppState) -> Router {
         // Must NOT unconditionally redirect to /login, or a logged-in user
         // landing on `/` loops back through the IdP. (parity with Java `/`→/login)
         .route("/", get(handlers::oidc::root))
+        // Self-service, passwordless account creation.  The POST endpoints
+        // below remain rate-limited separately in `registration_routes`.
+        .route("/register", get(handlers::registration::registration_page))
         // Auth (ForwardAuth + session)
         .route("/auth/verify", get(handlers::auth::verify))
         .route("/auth/logout", get(handlers::auth::logout_get))

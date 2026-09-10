@@ -178,6 +178,7 @@ pub async fn login(
 <input id="uname" name="username" autocomplete="username webauthn" placeholder="メールアドレス（パスキー候補が表示されます）" style="width:100%;padding:.7rem;margin:.4rem 0;border:1px solid #ccc;border-radius:8px;box-sizing:border-box;font-size:.95rem">
 <a class="btn g" href="__AUTH_URL__">Google でログイン</a>
 <button class="btn" id="pk-btn" onclick="passkeyLogin()">パスキーでログイン</button>
+<a class="btn" href="/register">アカウントを作成</a>
 <div id="status"></div>
 <script>
 const RETURN_TO = __RETURN_TO__;
