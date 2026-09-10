@@ -72,10 +72,10 @@ impl PgStore {
         grant: &TemporaryAccessGrantRecord,
     ) -> Result<(), AuthError> {
         sqlx::query(
-            "INSERT INTO temporary_access_grants (id, tenant_id, token_hash, subject, role, domains, starts_at, expires_at, created_by, created_at, revoked_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+            "INSERT INTO temporary_access_grants (id, tenant_id, token_hash, subject, role, domains, blocked_domains, starts_at, expires_at, created_by, created_at, revoked_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
         )
         .bind(grant.id).bind(grant.tenant_id).bind(&grant.token_hash).bind(&grant.subject)
-        .bind(&grant.role).bind(&grant.domains).bind(grant.starts_at).bind(grant.expires_at)
+        .bind(&grant.role).bind(&grant.domains).bind(&grant.blocked_domains).bind(grant.starts_at).bind(grant.expires_at)
         .bind(grant.created_by).bind(grant.created_at).bind(grant.revoked_at)
         .execute(&self.pool).await.map_err(AuthError::from)?;
         Ok(())
@@ -86,7 +86,7 @@ impl PgStore {
         token_hash: &str,
     ) -> Result<Option<TemporaryAccessGrantRecord>, AuthError> {
         sqlx::query_as::<_, TemporaryAccessGrantRecord>(
-            "SELECT id, tenant_id, token_hash, subject, role, domains, starts_at, expires_at, created_by, created_at, revoked_at FROM temporary_access_grants WHERE token_hash = $1",
+            "SELECT id, tenant_id, token_hash, subject, role, domains, blocked_domains, starts_at, expires_at, created_by, created_at, revoked_at FROM temporary_access_grants WHERE token_hash = $1",
         ).bind(token_hash).fetch_optional(&self.pool).await.map_err(AuthError::from)
     }
 
@@ -101,7 +101,7 @@ impl PgStore {
         tenant_id: Uuid,
     ) -> Result<Vec<TemporaryAccessGrantRecord>, AuthError> {
         sqlx::query_as::<_, TemporaryAccessGrantRecord>(
-            "SELECT id, tenant_id, token_hash, subject, role, domains, starts_at, expires_at, created_by, created_at, revoked_at FROM temporary_access_grants WHERE tenant_id = $1 ORDER BY created_at DESC",
+            "SELECT id, tenant_id, token_hash, subject, role, domains, blocked_domains, starts_at, expires_at, created_by, created_at, revoked_at FROM temporary_access_grants WHERE tenant_id = $1 ORDER BY created_at DESC",
         ).bind(tenant_id).fetch_all(&self.pool).await.map_err(AuthError::from)
     }
 }
