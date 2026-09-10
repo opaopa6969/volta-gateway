@@ -37,6 +37,9 @@ impl TemporaryAccessGrantRecord {
 
 /// `*.example.com` matches subdomains only; exact patterns match exactly.
 fn domain_matches(pattern: &str, host: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
     pattern
         .strip_prefix("*.")
         .map(|suffix| host.ends_with(&format!(".{suffix}")))
@@ -50,5 +53,10 @@ mod tests {
     fn wildcard_does_not_match_apex() {
         assert!(domain_matches("*.unlaxer.org", "app.unlaxer.org"));
         assert!(!domain_matches("*.unlaxer.org", "unlaxer.org"));
+    }
+
+    #[test]
+    fn global_wildcard_matches_any_host() {
+        assert!(domain_matches("*", "kamishibai.unlaxer.org"));
     }
 }
