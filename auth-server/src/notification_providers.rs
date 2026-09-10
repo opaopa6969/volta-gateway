@@ -407,6 +407,19 @@ mod tests {
         assert!(body.contains("654321"));
     }
 
+    // Environment variables are process-wide and tests run in parallel by default, so
+    // two tests touching the same one interleave: `sms_sender_...` read Log right after
+    // setting DUMMY because `twilio_requires_full_creds` removed the variable in between
+    // (CI failure, 2026-09-11). Every test below that touches the environment takes this.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+        // A test that panicked while holding it poisons the mutex; it is still a valid lock.
+        ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[test]
     fn explicit_subject_body_take_precedence() {
         let mut t = NotificationTemplate::new("anything");
@@ -417,6 +430,7 @@ mod tests {
 
     #[test]
     fn build_email_sender_defaults_to_log_sink() {
+        let _env = env_guard();
         // No env set → LOG sink, channel EMAIL, never panics.
         std::env::remove_var("NOTIFICATION_EMAIL_PROVIDER");
         let s = build_email_sender();
@@ -426,6 +440,7 @@ mod tests {
 
     #[test]
     fn build_email_sender_dummy_selectable() {
+        let _env = env_guard();
         std::env::set_var("NOTIFICATION_EMAIL_PROVIDER", "DUMMY");
         let s = build_email_sender();
         assert_eq!(s.provider(), NotificationProvider::DummyEmail);
@@ -434,6 +449,7 @@ mod tests {
 
     #[test]
     fn sms_sender_defaults_to_log_and_dummy_selectable() {
+        let _env = env_guard();
         std::env::remove_var("NOTIFICATION_SMS_PROVIDER");
         assert_eq!(build_sms_sender().provider(), NotificationProvider::Log);
         assert_eq!(build_sms_sender().channel(), NotificationChannel::Sms);
@@ -447,6 +463,7 @@ mod tests {
 
     #[test]
     fn line_sender_defaults_to_log_and_dummy_selectable() {
+        let _env = env_guard();
         std::env::remove_var("NOTIFICATION_LINE_PROVIDER");
         assert_eq!(build_line_sender().provider(), NotificationProvider::Log);
         assert_eq!(build_line_sender().channel(), NotificationChannel::Line);
@@ -460,6 +477,7 @@ mod tests {
 
     #[test]
     fn twilio_requires_full_creds() {
+        let _env = env_guard();
         std::env::set_var("NOTIFICATION_SMS_PROVIDER", "TWILIO");
         std::env::remove_var("TWILIO_ACCOUNT_SID");
         // Missing creds → graceful LOG fallback (never panics).
