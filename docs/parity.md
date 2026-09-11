@@ -184,18 +184,14 @@ method used at mount time.
 |--------|---------------------------------------------------------------|:----:|:----:|-------|
 | GET    | `/api/v1/admin/tenants`                                       | ✅   | ✅   | — |
 | GET    | `/api/v1/admin/users`                                         | ✅   | ✅   | Paginated |
+| POST   | `/api/v1/admin/users`                                         | ✅   | —    | Atomic user + membership upsert |
 | GET    | `/api/v1/admin/sessions`                                      | ✅   | ✅   | Paginated |
 | POST   | `/api/v1/admin/outbox/flush`                                  | ✅   | ✅   | — |
 | GET    | `/api/v1/admin/keys`                                          | ✅   | ✅   | — |
 | POST   | `/api/v1/admin/keys/rotate`                                   | ✅   | ✅   | — |
 | POST   | `/api/v1/admin/keys/{kid}/revoke`                             | ✅   | ✅   | — |
-| GET    | `/admin/members`                                              | 🚧   | ✅   | HTML stub |
-| GET    | `/admin/invitations`                                          | 🚧   | ✅   | HTML stub |
-| GET    | `/admin/webhooks`                                             | 🚧   | ✅   | HTML stub |
-| GET    | `/admin/idp`                                                  | 🚧   | ✅   | HTML stub |
-| GET    | `/admin/tenants`                                              | 🚧   | ✅   | HTML stub |
-| GET    | `/admin/users`                                                | 🚧   | ✅   | HTML stub |
-| GET    | `/admin/audit`                                                | 🚧   | ✅   | HTML stub |
+| GET    | `/admin`, `/admin/`                                           | ✅   | —    | Embedded Rust management console |
+| GET    | `/admin/{users,tenants,members,invitations,sessions,webhooks,idp,audit,keys,temporary-access}` | ✅ | partial | Shared management pages |
 | GET    | `/settings/security`                                          | 🚧   | ✅   | HTML stub |
 | GET    | `/settings/sessions`                                          | 🚧   | ✅   | HTML stub |
 
@@ -299,7 +295,7 @@ older table above.
 
 | # | Gap                                              | Reason                                                              | Tracker |
 |---|--------------------------------------------------|---------------------------------------------------------------------|---------|
-| 1 | Admin HTML pages are stubs                       | Not on critical path; Java pages ported when admin UI stabilises    | [backlog] P5-6 |
+| 1 | `/settings/*` compatibility pages are stubs      | Not on the admin critical path                                      | [backlog] P5-6 |
 | 2 | Production-grade SAML signature (`xmlsec`)       | Using Rust-side simplified path; Java sidecar is recommended        | DD-005  |
 | 3 | Full Wasm plugin runtime                         | Native plugins cover current needs; wasmtime integration deferred   | [backlog] |
 

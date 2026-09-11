@@ -18,6 +18,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ## [Unreleased]
 
 ### Added
+- **Embedded Rust admin console** at `/admin` and `/admin/*` for users,
+  tenants, members, invitations, sessions, webhooks, IdP configs, audit,
+  signing keys, and temporary access. `POST /api/v1/admin/users` atomically
+  upserts a user and tenant membership and records the action in the audit log.
 - **DPoP — sender-constrained tokens (RFC 9449)**. `auth-core::dpop` verifies a
   proof (typ/alg/htm/htu/iat window, `ath` binding, RFC 7638 JWK thumbprint,
   5 unit tests). The token endpoint binds the issued access token to the client

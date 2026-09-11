@@ -271,7 +271,7 @@ across 17 functional categories. Full table with Java-parity annotations is in
 | 9 | Tenant / Member / Invitation (20/min/IP accept) | 11 | `/api/v1/tenants/…`, `/invite/{code}/accept` |
 | 10| IdP / M2M / OAuth token                 | 5 | `/api/v1/tenants/{tid}/idp-configs`, `/oauth/token` |
 | 11| Webhooks (Outbox pattern)               | 6 | `/api/v1/tenants/{tid}/webhooks[/{id}[/deliveries]]` |
-| 12| Admin (data APIs + HTML stubs)          | 14| `/api/v1/admin/*`, `/admin/*` |
+| 12| Admin (data APIs + management console)  | 14| `/api/v1/admin/*`, `/admin/*` |
 | 13| Billing / Policy / GDPR                 | 7 | `/api/v1/tenants/{tid}/billing`, `/policies`, `/users/me/data-export` |
 | 14| SCIM 2.0                                | 8 | `/scim/v2/Users[/{id}]`, `/scim/v2/Groups` |
 | 15| Signing keys                            | 3 | `/api/v1/admin/keys[/rotate|/{kid}/revoke]` |
@@ -902,15 +902,14 @@ and the remainder scattered across handlers.
 
 ## 7. UI
 
-**Not applicable — this workspace ships no browser UI of its own.**
+The `auth-server` embeds a browser management console under `/admin` and
+`/admin/*`. ADMIN/OWNER users can manage users, tenants, members,
+invitations, sessions, webhooks, IdP configs, signing keys, audit events, and
+temporary access through the existing JSON APIs. The HTML/CSS/JS is compiled
+into the Rust binary, so it does not require a separate frontend deployment.
 
-The `auth-server` does expose a handful of **HTML stubs** under `/admin/*`
-and `/settings/*` (members, invitations, webhooks, idp, tenants, users,
-audit, security, sessions) that return minimal placeholder pages so that the
-Java route table is matched 1:1 and clients that hit these URLs get a 200
-rather than a 404. These stubs are marked 🚧 in
-[`docs/parity.md`](../docs/parity.md) and will be filled in once the admin
-UI stabilises (backlog P5-6).
+`/settings/security` and `/settings/sessions` remain compatibility stubs for
+the Java route table.
 
 Visualisation is delegated to a separate `monitor` integration:
 
@@ -1546,7 +1545,7 @@ and (c) its Java equivalent appears in `docs/parity.md`.
 | DELETE | `/api/me/sessions/{id}`            | `session::revoke_session`       | no           |
 | DELETE | `/auth/sessions/{id}`              | `extra::revoke_session_by_id`   | no           |
 | POST   | `/auth/sessions/revoke-all`        | `extra::revoke_all_sessions`    | no           |
-| GET    | `/admin/sessions`                  | `extra::admin_list_sessions`    | yes          |
+| GET    | `/admin/sessions`                  | `admin_ui::page`                | yes          |
 | DELETE | `/admin/sessions/{id}`             | `extra::admin_revoke_session`   | yes          |
 
 ### C.8 User profile & admin users (`handlers/user.rs`, `handlers/manage.rs`)
@@ -1600,28 +1599,24 @@ Out-of-band: the `outbox_worker` background task (`auth-server/src/outbox_worker
 polls `outbox_events`, delivers via `reqwest`, retries on 5xx with exponential
 backoff, and writes each attempt into `webhook_deliveries`.
 
-### C.12 Admin (`handlers/admin.rs`, `handlers/extra.rs`)
+### C.12 Admin (`handlers/admin.rs`, `handlers/admin_ui.rs`, `handlers/extra.rs`)
 
 | Method | Path                                                | Handler fn                   | Note |
 |--------|-----------------------------------------------------|------------------------------|------|
 | GET    | `/api/v1/admin/audit`                               | `admin::list_audit`          | Paginated `?page=&size=&from=&to=&event=` |
 | GET    | `/api/v1/admin/tenants`                             | `admin::admin_list_tenants`  | — |
 | GET    | `/api/v1/admin/users`                               | `admin::admin_list_users`    | Paginated |
+| POST   | `/api/v1/admin/users`                               | `admin::admin_create_user`   | Upsert user + tenant membership atomically |
 | GET    | `/api/v1/admin/sessions`                            | `extra::admin_list_sessions` | Paginated (P2.1, Java `f31a2f2`) |
 | POST   | `/api/v1/admin/outbox/flush`                        | `admin::outbox_flush`        | Manual outbox drain |
-| GET    | `/admin/members`                                    | `extra::admin_members_page`  | HTML stub (🚧) |
-| GET    | `/admin/invitations`                                | `extra::admin_invitations_page` | HTML stub |
-| GET    | `/admin/webhooks`                                   | `extra::admin_webhooks_page` | HTML stub |
-| GET    | `/admin/idp`                                        | `extra::admin_idp_page`      | HTML stub |
-| GET    | `/admin/tenants`                                    | `extra::admin_tenants_page`  | HTML stub |
-| GET    | `/admin/users`                                      | `extra::admin_users_page`    | HTML stub |
-| GET    | `/admin/audit`                                      | `extra::admin_audit_page`    | HTML stub |
+| GET    | `/admin`, `/admin/`                                 | `admin_ui::{root,page}`      | Embedded management console |
+| GET    | `/admin/{page}`                                     | `admin_ui::page`             | Ten management pages |
 | GET    | `/settings/security`                                | `extra::admin_members_page`  | HTML stub (aliased) |
 | GET    | `/settings/sessions`                                | `extra::admin_sessions_page` | HTML stub |
 
-Admin data-API scope enforcement uses `helpers::require_admin` — session
-cookie must carry an `ADMIN` or `OWNER` role claim. Bearer-token M2M scope
-enforcement on admin HTML pages is P3 backlog.
+Admin data-API scope enforcement uses `helpers::require_admin` — the session
+cookie must carry an `ADMIN` or `OWNER` role claim. The HTML console requires
+the same cookie role and redirects an expired session to `/login`.
 
 ### C.13 Devices / Billing / Policy / GDPR (`handlers/admin.rs`)
 

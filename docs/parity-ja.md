@@ -164,18 +164,14 @@
 |--------|---------------------------------------------------------------|:----:|:----:|------|
 | GET    | `/api/v1/admin/tenants`                                       | ✅   | ✅   | — |
 | GET    | `/api/v1/admin/users`                                         | ✅   | ✅   | ページング |
+| POST   | `/api/v1/admin/users`                                         | ✅   | —    | user + membership を同一 transaction で upsert |
 | GET    | `/api/v1/admin/sessions`                                      | ✅   | ✅   | ページング |
 | POST   | `/api/v1/admin/outbox/flush`                                  | ✅   | ✅   | — |
 | GET    | `/api/v1/admin/keys`                                          | ✅   | ✅   | — |
 | POST   | `/api/v1/admin/keys/rotate`                                   | ✅   | ✅   | — |
 | POST   | `/api/v1/admin/keys/{kid}/revoke`                             | ✅   | ✅   | — |
-| GET    | `/admin/members`                                              | 🚧   | ✅   | HTML stub |
-| GET    | `/admin/invitations`                                          | 🚧   | ✅   | HTML stub |
-| GET    | `/admin/webhooks`                                             | 🚧   | ✅   | HTML stub |
-| GET    | `/admin/idp`                                                  | 🚧   | ✅   | HTML stub |
-| GET    | `/admin/tenants`                                              | 🚧   | ✅   | HTML stub |
-| GET    | `/admin/users`                                                | 🚧   | ✅   | HTML stub |
-| GET    | `/admin/audit`                                                | 🚧   | ✅   | HTML stub |
+| GET    | `/admin`, `/admin/`                                           | ✅   | —    | Rust バイナリ同梱の管理コンソール |
+| GET    | `/admin/{users,tenants,members,invitations,sessions,webhooks,idp,audit,keys,temporary-access}` | ✅ | 一部 | 共通管理画面 |
 | GET    | `/settings/security`                                          | 🚧   | ✅   | HTML stub |
 | GET    | `/settings/sessions`                                          | 🚧   | ✅   | HTML stub |
 

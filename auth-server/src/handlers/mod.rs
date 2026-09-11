@@ -1,5 +1,6 @@
 pub mod accounts;
 pub mod admin;
+pub mod admin_ui;
 pub mod auth;
 pub mod device;
 pub mod extra;

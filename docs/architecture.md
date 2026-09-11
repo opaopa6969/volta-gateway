@@ -151,7 +151,7 @@ Route taxonomy (see [`parity.md`](parity.md) for the full table):
 | Tenant / Member / Invite   | 11    | `/api/v1/tenants/{id}`, `/invite/{code}/accept` |
 | IdP / M2M / OAuth token    | 5     | `/api/v1/tenants/{id}/idp-configs`, `/oauth/token` |
 | Webhooks                   | 6     | `/api/v1/tenants/{id}/webhooks[/id[/deliveries]]` |
-| Admin API + HTML stubs     | 14    | `/api/v1/admin/*`, `/admin/*` |
+| Admin API + console        | 14    | `/api/v1/admin/*`, `/admin/*` |
 | Billing / Policy / GDPR    | 7     | `/api/v1/tenants/{id}/billing`, `/api/v1/users/me/data-export` |
 | SCIM 2.0                   | 8     | `/scim/v2/Users`, `/scim/v2/Groups` |
 | Signing keys               | 3     | `/api/v1/admin/keys[/rotate|/{kid}/revoke]` |

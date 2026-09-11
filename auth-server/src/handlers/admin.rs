@@ -1,7 +1,7 @@
 //! Admin API handlers — audit, devices, billing, policies, SCIM, admin users/tenants.
 
 use axum::extract::{Path, Query, State};
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use axum_extra::extract::CookieJar;
@@ -323,6 +323,167 @@ pub async fn admin_list_users(
     Ok(Json(crate::pagination::PageResponse::new(items, total, &req)).into_response())
 }
 
+#[derive(Deserialize)]
+pub struct AdminCreateUserReq {
+    pub tenant_id: Uuid,
+    pub email: String,
+    pub display_name: Option<String>,
+    pub role: String,
+}
+
+#[derive(Debug)]
+struct NormalizedUser {
+    email: String,
+    display_name: Option<String>,
+    role: String,
+}
+
+fn normalize_new_user(
+    email: &str,
+    display_name: Option<&str>,
+    role: &str,
+) -> Result<NormalizedUser, ApiError> {
+    let email = email.trim().to_ascii_lowercase();
+    let valid_email = email.split_once('@').is_some_and(|(local, domain)| {
+        !local.is_empty() && domain.contains('.') && !domain.ends_with('.')
+    });
+    if !valid_email || email.chars().count() > 255 {
+        return Err(ApiError::bad_request(
+            "INVALID_EMAIL",
+            "有効なメールアドレスを指定してください",
+        ));
+    }
+
+    let display_name = display_name
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string);
+    if display_name
+        .as_ref()
+        .is_some_and(|name| name.chars().count() > 100)
+    {
+        return Err(ApiError::bad_request(
+            "INVALID_DISPLAY_NAME",
+            "表示名は100文字以内にしてください",
+        ));
+    }
+
+    // OWNER の追加は ownership transfer と意味が衝突するため、この入口では扱わない。
+    let role = role.trim().to_ascii_uppercase();
+    if !["ADMIN", "OPERATOR", "MEMBER", "VIEWER"].contains(&role.as_str()) {
+        return Err(ApiError::bad_request(
+            "INVALID_ROLE",
+            "role は ADMIN / OPERATOR / MEMBER / VIEWER のいずれかにしてください",
+        ));
+    }
+
+    Ok(NormalizedUser {
+        email,
+        display_name,
+        role,
+    })
+}
+
+/// 管理画面からユーザーを事前登録し、指定テナントの membership も同時に作る。
+///
+/// OIDC 初回ログイン時は検証済み email で既存ユーザーを引き継ぐため、ここでは
+/// IdP subject を捏造しない。ユーザーと membership は同一 transaction に閉じる。
+pub async fn admin_create_user(
+    State(s): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Json(body): Json<AdminCreateUserReq>,
+) -> Result<Response, ApiError> {
+    let actor = auth_admin(&s, &jar, &headers).await?;
+    let user = normalize_new_user(&body.email, body.display_name.as_deref(), &body.role)?;
+    // Bearer 管理トークンは user ではなく M2M client を subject にできる。
+    // memberships.invited_by は users への外部キーなので、その場合は空にする。
+    let actor_id = if actor.session_id.starts_with("m2m-") {
+        None
+    } else {
+        Some(Uuid::parse_str(&actor.user_id).map_err(|_| ApiError::internal("bad actor id"))?)
+    };
+
+    let mut tx =
+        s.db.pool()
+            .begin()
+            .await
+            .map_err(|e| ApiError::internal(&e.to_string()))?;
+
+    let tenant_active =
+        sqlx::query_scalar::<_, bool>("SELECT is_active FROM tenants WHERE id = $1")
+            .bind(body.tenant_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| ApiError::internal(&e.to_string()))?
+            .ok_or_else(|| ApiError::bad_request("TENANT_NOT_FOUND", "テナントが見つかりません"))?;
+    if !tenant_active {
+        return Err(ApiError::bad_request(
+            "TENANT_INACTIVE",
+            "停止中のテナントにはユーザーを追加できません",
+        ));
+    }
+
+    let user_id = sqlx::query_scalar::<_, Uuid>(
+        "INSERT INTO users (email, display_name, google_sub, is_active, locale, deleted_at) \
+         VALUES ($1, $2, NULL, true, 'ja', NULL) \
+         ON CONFLICT (email) DO UPDATE SET \
+           display_name = COALESCE(EXCLUDED.display_name, users.display_name), \
+           is_active = true, deleted_at = NULL \
+         RETURNING id",
+    )
+    .bind(&user.email)
+    .bind(&user.display_name)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| ApiError::internal(&e.to_string()))?;
+
+    let membership_id = sqlx::query_scalar::<_, Uuid>(
+        "INSERT INTO memberships (user_id, tenant_id, role, invited_by, is_active) \
+         VALUES ($1, $2, $3, $4, true) \
+         ON CONFLICT (user_id, tenant_id) DO UPDATE SET \
+           role = EXCLUDED.role, invited_by = EXCLUDED.invited_by, is_active = true \
+         RETURNING id",
+    )
+    .bind(user_id)
+    .bind(body.tenant_id)
+    .bind(&user.role)
+    .bind(actor_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| ApiError::internal(&e.to_string()))?;
+
+    sqlx::query(
+        "INSERT INTO audit_logs \
+         (event_type, actor_id, tenant_id, target_type, target_id, detail, request_id) \
+         VALUES ('admin.user.upserted', $1, $2, 'user', $3, $4, $5)",
+    )
+    .bind(actor_id)
+    .bind(body.tenant_id)
+    .bind(user_id.to_string())
+    .bind(serde_json::json!({"email": user.email, "role": user.role}))
+    .bind(Uuid::new_v4())
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError::internal(&e.to_string()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| ApiError::internal(&e.to_string()))?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({
+            "id": user_id,
+            "membership_id": membership_id,
+            "tenant_id": body.tenant_id,
+            "email": user.email,
+            "role": user.role,
+        })),
+    )
+        .into_response())
+}
+
 pub async fn outbox_flush(
     State(s): State<AppState>,
     jar: CookieJar,
@@ -338,4 +499,39 @@ pub async fn outbox_flush(
             .map_err(|e| ApiError::internal(&e.to_string()))?;
     }
     Ok(Json(serde_json::json!({"flushed": pending.len()})).into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_user_input_is_trimmed_and_normalized() {
+        let user = normalize_new_user(" Admin@Example.COM ", Some("  管理 太郎  "), "member")
+            .expect("valid input");
+        assert_eq!(user.email, "admin@example.com");
+        assert_eq!(user.display_name.as_deref(), Some("管理 太郎"));
+        assert_eq!(user.role, "MEMBER");
+    }
+
+    #[test]
+    fn new_user_rejects_invalid_email_and_owner_role() {
+        let email_error = normalize_new_user("broken", None, "MEMBER").unwrap_err();
+        assert_eq!(email_error.code, "INVALID_EMAIL");
+
+        let role_error = normalize_new_user("user@example.com", None, "OWNER").unwrap_err();
+        assert_eq!(role_error.code, "INVALID_ROLE");
+    }
+
+    #[test]
+    fn new_user_accepts_every_assignable_non_owner_role() {
+        for role in ["ADMIN", "OPERATOR", "MEMBER", "VIEWER"] {
+            assert_eq!(
+                normalize_new_user("user@example.com", None, role)
+                    .expect("assignable role")
+                    .role,
+                role
+            );
+        }
+    }
 }
