@@ -21,7 +21,7 @@ fn auth_sync(jar: &CookieJar) -> Result<String, ApiError> {
 
 // ─── Admin Sessions ────────────────────────────────────────
 
-/// GET /admin/sessions — list all active sessions (admin, paginated P2.1).
+/// GET /api/v1/admin/sessions — list active sessions with user/tenant context.
 pub async fn admin_list_sessions(
     State(s): State<AppState>,
     jar: CookieJar,
@@ -31,13 +31,19 @@ pub async fn admin_list_sessions(
     let req = q.normalized();
     let order = crate::pagination::PageRequest::order_sql(
         req.sort.as_deref(),
-        &["created_at", "expires_at"],
-        "created_at DESC",
+        &["created_at", "last_active_at", "expires_at"],
+        "last_active_at DESC",
     );
     let (items, total) =
-        s.db.list_sessions_paginated(req.user_id.as_deref(), &order, req.limit(), req.offset())
-            .await
-            .map_err(|e| ApiError::internal(&e.to_string()))?;
+        s.db.list_active_sessions_paginated(
+            req.user_id.as_deref(),
+            req.q.as_deref(),
+            &order,
+            req.limit(),
+            req.offset(),
+        )
+        .await
+        .map_err(|e| ApiError::internal(&e.to_string()))?;
     let items = items
         .into_iter()
         .map(|mut item| {

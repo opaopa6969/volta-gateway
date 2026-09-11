@@ -168,6 +168,7 @@ cargo run --release -p volta-auth-server
 |--------|------|------|
 | GET | /api/v1/admin/{keys,tenants,users,audit} | 管理 API |
 | POST | /api/v1/admin/users | ユーザーとテナント membership を一括登録 |
+| GET | /api/v1/admin/sessions | 有効セッション一覧（user・tenant・IP・期限、検索/ページング） |
 | POST | /api/v1/admin/keys/rotate | 鍵ローテーション |
 | POST | /api/v1/admin/outbox/flush | Outbox 強制配信 |
 | GET | /admin[/tenants,/users,/members,...] | Rust バイナリ同梱の管理コンソール |

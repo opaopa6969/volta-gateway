@@ -112,7 +112,7 @@ method used at mount time.
 | DELETE | `/api/me/sessions/{id}`                     | ✅   | ✅   | — |
 | DELETE | `/auth/sessions/{id}`                       | ✅   | ✅   | — |
 | POST   | `/auth/sessions/revoke-all`                 | ✅   | ✅   | — |
-| GET    | `/admin/sessions`                           | ✅   | ✅   | — |
+| GET    | `/admin/sessions`                           | ✅   | ✅   | Active sessions with user/IP/expiry context |
 | DELETE | `/admin/sessions/{id}`                      | ✅   | ✅   | — |
 
 ### User profile + admin users
@@ -185,7 +185,7 @@ method used at mount time.
 | GET    | `/api/v1/admin/tenants`                                       | ✅   | ✅   | — |
 | GET    | `/api/v1/admin/users`                                         | ✅   | ✅   | Paginated |
 | POST   | `/api/v1/admin/users`                                         | ✅   | —    | Atomic user + membership upsert |
-| GET    | `/api/v1/admin/sessions`                                      | ✅   | ✅   | Paginated |
+| GET    | `/api/v1/admin/sessions`                                      | ✅   | ✅   | Active only; paginated and searchable |
 | POST   | `/api/v1/admin/outbox/flush`                                  | ✅   | ✅   | — |
 | GET    | `/api/v1/admin/keys`                                          | ✅   | ✅   | — |
 | POST   | `/api/v1/admin/keys/rotate`                                   | ✅   | ✅   | — |

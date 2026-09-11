@@ -1545,7 +1545,7 @@ and (c) its Java equivalent appears in `docs/parity.md`.
 | DELETE | `/api/me/sessions/{id}`            | `session::revoke_session`       | no           |
 | DELETE | `/auth/sessions/{id}`              | `extra::revoke_session_by_id`   | no           |
 | POST   | `/auth/sessions/revoke-all`        | `extra::revoke_all_sessions`    | no           |
-| GET    | `/admin/sessions`                  | `admin_ui::page`                | yes          |
+| GET    | `/admin/sessions`                  | `admin_ui::page`                | yes; active user/IP/expiry view |
 | DELETE | `/admin/sessions/{id}`             | `extra::admin_revoke_session`   | yes          |
 
 ### C.8 User profile & admin users (`handlers/user.rs`, `handlers/manage.rs`)
@@ -1607,7 +1607,7 @@ backoff, and writes each attempt into `webhook_deliveries`.
 | GET    | `/api/v1/admin/tenants`                             | `admin::admin_list_tenants`  | — |
 | GET    | `/api/v1/admin/users`                               | `admin::admin_list_users`    | Paginated |
 | POST   | `/api/v1/admin/users`                               | `admin::admin_create_user`   | Upsert user + tenant membership atomically |
-| GET    | `/api/v1/admin/sessions`                            | `extra::admin_list_sessions` | Paginated (P2.1, Java `f31a2f2`) |
+| GET    | `/api/v1/admin/sessions`                            | `extra::admin_list_sessions` | Active only; user/tenant context, search + pagination |
 | POST   | `/api/v1/admin/outbox/flush`                        | `admin::outbox_flush`        | Manual outbox drain |
 | GET    | `/admin`, `/admin/`                                 | `admin_ui::{root,page}`      | Embedded management console |
 | GET    | `/admin/{page}`                                     | `admin_ui::page`             | Ten management pages |
