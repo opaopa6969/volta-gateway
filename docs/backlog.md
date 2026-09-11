@@ -100,7 +100,7 @@
 | P5-3 | Plans + Subscriptions | GET /billing, POST /subscription | plans, subscriptions テーブル |
 | P5-4 | Stripe Webhook | POST /api/v1/billing/stripe/webhook | — |
 | P5-5 | Policy engine (DB) | GET/POST /api/v1/tenants/{id}/policies, /evaluate | policies テーブル |
-| P5-6 | Admin HTML pages | GET /admin/{members,tenants,users,...} | テンプレートエンジン |
+| P5-6 ✅ | Admin management console | GET /admin/{members,tenants,users,...} | Rust バイナリへ埋め込み |
 | P5-7 | Admin API (system) | GET /api/v1/admin/{tenants,users} | — |
 
 ### SAML (別トラック — DD-005)

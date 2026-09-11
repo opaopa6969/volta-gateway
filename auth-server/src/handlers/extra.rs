@@ -1,5 +1,5 @@
 //! Extra handlers — admin sessions, transfer-ownership, switch-account,
-//! select-tenant, user export, admin HTML pages (stubs).
+//! select-tenant, user export, and the legacy settings/temporary-access HTML.
 
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
@@ -318,12 +318,14 @@ pub async fn revoke_temporary_access(
     Ok(Json(serde_json::json!({"ok":true})).into_response())
 }
 
+#[allow(dead_code)] // Kept as a rollback fallback; /admin/temporary-access uses admin_ui.
 pub async fn temporary_access_page() -> Response {
     let mut response = temporary_access_page_html();
     no_cache_headers(&mut response);
     response
 }
 
+#[allow(dead_code)]
 fn temporary_access_page_html() -> Response {
     Html(r#"<!doctype html><html lang="ja"><meta charset="utf-8"><title>一時アクセス</title><style>body{font-family:system-ui;max-width:42rem;margin:3rem auto;padding:0 1rem}label,input,select,button{display:block;width:100%;box-sizing:border-box;margin:.45rem 0;padding:.65rem}#result{margin-top:1rem;padding:1rem;background:#f4f4f4;word-break:break-all}.hidden{display:none}</style><h1>一時アクセスを発行</h1><form id="grant"><label>Tenant<select id="tenant" name="tenant_id" required></select></label><label>Subject<input name="subject" placeholder="user@example.com / program:name" required></label><label>Role<select name="role"><option>MEMBER</option><option>VIEWER</option><option>ADMIN</option></select></label><label>許可 domain<input name="domains" placeholder="kamishibai.unlaxer.org, *.unlaxer.org" required></label><label>除外 domain<input name="blocked_domains"></label><label>期間<select id="period"><option value="relative" selected>今からの時間</option><option value="absolute">開始・終了日時</option></select></label><div id="relative"><label>開始まで（時間）<input id="startHours" type="number" min="0" value="0"></label><label>有効時間<input id="durationHours" type="number" min="1" value="24"></label></div><div id="absolute" class="hidden"><label>開始<input id="startsAt" type="datetime-local"></label><label>終了<input id="expiresAt" type="datetime-local"></label></div><button>発行</button></form><div id="result" aria-live="polite"></div><script>const $=s=>document.querySelector(s),split=s=>s.split(',').map(x=>x.trim()).filter(Boolean),show=t=>$('#result').textContent=t;fetch('/select-tenant',{credentials:'include'}).then(r=>r.ok?r.json():Promise.reject(r.status)).then(d=>{$('#tenant').innerHTML=(d.tenants||[]).map(t=>`<option value="${t.id}">${t.name} (${t.slug})</option>`).join('');if(!d.tenants?.length)show('利用できる tenant がありません。');}).catch(e=>show('tenant の取得に失敗しました: '+e));$('#period').onchange=()=>{let a=$('#period').value==='absolute';$('#absolute').classList.toggle('hidden',!a);$('#relative').classList.toggle('hidden',a);$('#startsAt').required=a;$('#expiresAt').required=a};$('#grant').onsubmit=async e=>{e.preventDefault();let x=Object.fromEntries(new FormData(e.currentTarget)),now=Date.now();if($('#period').value==='relative'){x.starts_at=new Date(now+(+$('#startHours').value||0)*3600000).toISOString();x.expires_at=new Date(new Date(x.starts_at).getTime()+(+$('#durationHours').value||0)*3600000).toISOString()}else{x.starts_at=new Date($('#startsAt').value).toISOString();x.expires_at=new Date($('#expiresAt').value).toISOString()}x.domains=split(x.domains);x.blocked_domains=split(x.blocked_domains);try{let r=await fetch('/api/v1/temporary-access',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(x)}),d=await r.json();if(!r.ok)throw new Error(d?.error?.message||JSON.stringify(d));let target=x.domains[0].replace(/^\*\./,'app.'),link=location.origin+'/temporary-access/activate?token='+encodeURIComponent(d.bearer)+'&return_to='+encodeURIComponent('https://'+target+'/'),box=$('#result');box.replaceChildren();for(const [label,value] of [['Bearer','Authorization: Bearer '+d.bearer],['Link',link]]){let h=document.createElement('strong'),v=document.createElement(label==='Link'?'a':'code'),copy=document.createElement('button');h.textContent=label;v.textContent=value;if(label==='Link'){v.href=link;v.target='_blank';v.rel='noreferrer'}copy.type='button';copy.textContent='コピー';copy.onclick=()=>navigator.clipboard.writeText(value);box.append(h,v,copy,document.createElement('br'));}}catch(err){show('発行に失敗しました: '+err.message)}};</script></html>"#.to_string()).into_response()
 }
@@ -494,20 +496,6 @@ fetch('{api_url}',{{credentials:'include'}}).then(r=>r.json()).then(data=>{{
     )).into_response()
 }
 
-pub async fn admin_tenants_page() -> Response {
-    admin_layout(
-        "Tenants",
-        "/api/v1/admin/tenants",
-        &["id", "name", "slug", "plan", "is_active"],
-    )
-}
-pub async fn admin_users_page() -> Response {
-    admin_layout(
-        "Users",
-        "/api/v1/admin/users",
-        &["id", "email", "display_name", "is_active"],
-    )
-}
 pub async fn admin_members_page() -> Response {
     admin_layout("Members", "/api/v1/admin/tenants", &["id", "name", "slug"])
 }
@@ -521,37 +509,6 @@ pub async fn admin_sessions_page() -> Response {
             "user_agent",
             "created_at",
             "current",
-        ],
-    )
-}
-pub async fn admin_invitations_page() -> Response {
-    admin_layout(
-        "Invitations",
-        "/api/v1/admin/tenants",
-        &["id", "name", "slug"],
-    )
-}
-pub async fn admin_webhooks_page() -> Response {
-    admin_layout("Webhooks", "/api/v1/admin/tenants", &["id", "name", "slug"])
-}
-pub async fn admin_idp_page() -> Response {
-    admin_layout(
-        "IdP Config",
-        "/api/v1/admin/tenants",
-        &["id", "name", "slug"],
-    )
-}
-pub async fn admin_audit_page() -> Response {
-    admin_layout(
-        "Audit Log",
-        "/api/v1/admin/audit",
-        &[
-            "id",
-            "timestamp",
-            "event_type",
-            "actor_id",
-            "target_type",
-            "target_id",
         ],
     )
 }

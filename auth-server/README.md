@@ -167,9 +167,10 @@ cargo run --release -p volta-auth-server
 | Method | Path | 説明 |
 |--------|------|------|
 | GET | /api/v1/admin/{keys,tenants,users,audit} | 管理 API |
+| POST | /api/v1/admin/users | ユーザーとテナント membership を一括登録 |
 | POST | /api/v1/admin/keys/rotate | 鍵ローテーション |
 | POST | /api/v1/admin/outbox/flush | Outbox 強制配信 |
-| GET | /admin/{tenants,users,members,...} | 管理 HTML ページ |
+| GET | /admin[/tenants,/users,/members,...] | Rust バイナリ同梱の管理コンソール |
 | GET | /healthz | ヘルスチェック |
 | GET | /.well-known/jwks.json | JWKS |
 

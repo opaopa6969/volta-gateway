@@ -339,7 +339,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             "/api/v1/admin/users",
-            get(handlers::admin::admin_list_users),
+            get(handlers::admin::admin_list_users).post(handlers::admin::admin_create_user),
         )
         // P2.1: new paginated sessions endpoint (matches Java `f31a2f2`)
         .route(
@@ -368,8 +368,8 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/users/{userId}/passkeys/register/finish",
             post(handlers::passkey_flow::register_finish),
         )
-        // Admin sessions
-        .route("/admin/sessions", get(handlers::extra::admin_list_sessions))
+        // Admin sessions mutation. The list lives at /api/v1/admin/sessions;
+        // GET /admin/sessions is handled by the shared admin UI below.
         .route(
             "/admin/sessions/{id}",
             delete(handlers::extra::admin_revoke_session),
@@ -428,21 +428,10 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/temporary-access/{id}",
             delete(handlers::extra::revoke_temporary_access),
         )
-        // Admin HTML pages (stubs)
-        .route("/admin/members", get(handlers::extra::admin_members_page))
-        .route(
-            "/admin/invitations",
-            get(handlers::extra::admin_invitations_page),
-        )
-        .route(
-            "/admin/temporary-access",
-            get(handlers::extra::temporary_access_page),
-        )
-        .route("/admin/webhooks", get(handlers::extra::admin_webhooks_page))
-        .route("/admin/idp", get(handlers::extra::admin_idp_page))
-        .route("/admin/tenants", get(handlers::extra::admin_tenants_page))
-        .route("/admin/users", get(handlers::extra::admin_users_page))
-        .route("/admin/audit", get(handlers::extra::admin_audit_page))
+        // Admin console: one embedded Rust-owned UI for every /admin page.
+        .route("/admin", get(handlers::admin_ui::root))
+        .route("/admin/", get(handlers::admin_ui::page))
+        .route("/admin/{page}", get(handlers::admin_ui::page))
         // Settings pages (stubs)
         .route(
             "/settings/security",
