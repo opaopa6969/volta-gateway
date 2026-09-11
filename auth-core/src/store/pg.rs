@@ -2101,59 +2101,99 @@ impl PgStore {
         Ok((items, total))
     }
 
-    /// `(items, total)` — sessions list, optionally filtered by user_id.
+    /// `(items, total)` — active sessions with user/tenant context.
     #[allow(
         clippy::type_complexity,
         reason = "sqlx query_as tuple mirrors SQL column order; aliasing would obscure the mapping"
     )]
-    pub async fn list_sessions_paginated(
+    pub async fn list_active_sessions_paginated(
         &self,
         user_id: Option<&str>,
+        q: Option<&str>,
         order: &str,
         limit: i64,
         offset: i64,
     ) -> Result<(Vec<serde_json::Value>, i64), AuthError> {
         let sql = format!(
-            "SELECT id, user_id, tenant_id, created_at, expires_at, invalidated_at, ip_address, user_agent, \
+            "SELECT s.id, s.user_id, u.email, u.display_name, s.tenant_id, t.name, t.slug, \
+                    s.created_at, s.last_active_at, s.expires_at, s.ip_address, s.user_agent, \
                     COUNT(*) OVER() AS total_count \
-             FROM sessions \
-             WHERE ($1::text IS NULL OR user_id = $1) \
-             ORDER BY {} LIMIT $2 OFFSET $3",
+             FROM sessions s \
+             LEFT JOIN users u ON u.id::text = s.user_id \
+             LEFT JOIN tenants t ON t.id::text = s.tenant_id \
+             WHERE s.invalidated_at IS NULL \
+               AND s.expires_at > EXTRACT(EPOCH FROM NOW())::bigint \
+               AND ($1::text IS NULL OR s.user_id = $1) \
+               AND ($2::text IS NULL \
+                    OR s.user_id ILIKE '%' || $2 || '%' \
+                    OR s.tenant_id ILIKE '%' || $2 || '%' \
+                    OR COALESCE(s.ip_address, '') ILIKE '%' || $2 || '%' \
+                    OR COALESCE(u.email, '') ILIKE '%' || $2 || '%' \
+                    OR COALESCE(u.display_name, '') ILIKE '%' || $2 || '%' \
+                    OR COALESCE(t.name, '') ILIKE '%' || $2 || '%' \
+                    OR COALESCE(t.slug, '') ILIKE '%' || $2 || '%') \
+             ORDER BY {} LIMIT $3 OFFSET $4",
             order
         );
         let rows: Vec<(
             String,
             String,
+            Option<String>,
+            Option<String>,
             String,
+            Option<String>,
+            Option<String>,
             i64,
             i64,
-            Option<i64>,
+            i64,
             Option<String>,
             Option<String>,
             i64,
         )> = sqlx::query_as(&sql)
             .bind(user_id)
+            .bind(q)
             .bind(limit)
             .bind(offset)
             .fetch_all(&self.pool)
             .await
             .map_err(AuthError::from)?;
-        let total = rows.first().map(|r| r.8).unwrap_or(0);
+        let total = rows.first().map(|r| r.12).unwrap_or(0);
         let items = rows
             .into_iter()
-            .map(|(id, uid, tid, created, expires, invalidated, ip, ua, _)| {
-                serde_json::json!({
-                    "session_id": id,
-                    "user_id": uid,
-                    "tenant_id": tid,
-                    "created_at": created,
-                    "expires_at": expires,
-                    "invalidated_at": invalidated,
-                    "ip_address": ip,
-                    "user_agent": ua,
-                    "active": invalidated.is_none(),
-                })
-            })
+            .map(
+                |(
+                    id,
+                    uid,
+                    email,
+                    display_name,
+                    tid,
+                    tenant_name,
+                    tenant_slug,
+                    created,
+                    last_active,
+                    expires,
+                    ip,
+                    ua,
+                    _,
+                )| {
+                    serde_json::json!({
+                        "session_id": id,
+                        "user_id": uid,
+                        "email": email,
+                        "display_name": display_name,
+                        "tenant_id": tid,
+                        "tenant_name": tenant_name,
+                        "tenant_slug": tenant_slug,
+                        "created_at": created,
+                        "last_active_at": last_active,
+                        "expires_at": expires,
+                        "remaining_seconds": (expires - chrono::Utc::now().timestamp()).max(0),
+                        "ip_address": ip,
+                        "user_agent": ua,
+                        "active": true,
+                    })
+                },
+            )
             .collect();
         Ok((items, total))
     }

@@ -92,7 +92,7 @@
 | DELETE | `/api/me/sessions/{id}`                     | ✅   | ✅   | — |
 | DELETE | `/auth/sessions/{id}`                       | ✅   | ✅   | — |
 | POST   | `/auth/sessions/revoke-all`                 | ✅   | ✅   | — |
-| GET    | `/admin/sessions`                           | ✅   | ✅   | — |
+| GET    | `/admin/sessions`                           | ✅   | ✅   | user・IP・期限付きactive session画面 |
 | DELETE | `/admin/sessions/{id}`                      | ✅   | ✅   | — |
 
 ### ユーザ profile + admin users
@@ -165,7 +165,7 @@
 | GET    | `/api/v1/admin/tenants`                                       | ✅   | ✅   | — |
 | GET    | `/api/v1/admin/users`                                         | ✅   | ✅   | ページング |
 | POST   | `/api/v1/admin/users`                                         | ✅   | —    | user + membership を同一 transaction で upsert |
-| GET    | `/api/v1/admin/sessions`                                      | ✅   | ✅   | ページング |
+| GET    | `/api/v1/admin/sessions`                                      | ✅   | ✅   | active限定、ページング・検索対応 |
 | POST   | `/api/v1/admin/outbox/flush`                                  | ✅   | ✅   | — |
 | GET    | `/api/v1/admin/keys`                                          | ✅   | ✅   | — |
 | POST   | `/api/v1/admin/keys/rotate`                                   | ✅   | ✅   | — |

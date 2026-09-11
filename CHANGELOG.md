@@ -143,6 +143,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   check, and error terminals (was: happy-path assertion only).
 
 ### Fixed
+- **Accurate active-session administration**. The dashboard and
+  `/api/v1/admin/sessions` now exclude expired/revoked rows, and the session
+  console shows user identity, tenant, IP, user agent, activity, expiry, and
+  remaining lifetime with search and revocation controls.
 - **Deploys no longer drop live connections on :7072.** `auth-server` bound the
   port itself, so every restart made it disappear for a moment. volta-index
   reverse-proxies browser terminals at `/term/` and calls this server on *every*

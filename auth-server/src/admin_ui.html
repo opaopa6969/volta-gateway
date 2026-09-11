@@ -34,7 +34,7 @@
       <a data-page="tenants" href="/admin/tenants">Tenants</a>
       <a data-page="members" href="/admin/members">Members</a>
       <a data-page="invitations" href="/admin/invitations">Invitations</a>
-      <a data-page="sessions" href="/admin/sessions">Sessions</a>
+      <a data-page="sessions" href="/admin/sessions">Active Sessions</a>
       <a data-page="webhooks" href="/admin/webhooks">Webhooks</a>
       <a data-page="idp" href="/admin/idp">IdP Config</a>
       <a data-page="audit" href="/admin/audit">Audit Log</a>
@@ -59,7 +59,7 @@
   const state = { tenants: [], tenantId: localStorage.getItem('volta.admin.tenant') || '', query: '' };
   const page = location.pathname === '/admin/' ? 'dashboard' : location.pathname.slice('/admin/'.length);
   const meta = {
-    dashboard:['Dashboard','認証基盤の現在値を確認します。'],users:['Users','ユーザーを検索し、テナントへ事前登録します。'],tenants:['Tenants','テナントを一覧し、新しいテナントを作成します。'],members:['Members','選択中テナントのメンバーとロールを管理します。'],invitations:['Invitations','選択中テナントへの招待を発行・取消します。'],sessions:['Sessions','有効なセッションを確認・失効します。'],webhooks:['Webhooks','Webhook の作成・有効化・削除を行います。'],idp:['IdP Config','OIDC / SAML 設定を登録します。'],audit:['Audit Log','現在のセッションのテナントにある監査イベントを確認します。'],keys:['Signing Keys','署名鍵をローテーション・失効します。'],'temporary-access':['Temporary Access','期限・ドメインを限定した一時アクセスを発行します。']
+    dashboard:['Dashboard','認証基盤の現在値を確認します。'],users:['Users','ユーザーを検索し、テナントへ事前登録します。'],tenants:['Tenants','テナントを一覧し、新しいテナントを作成します。'],members:['Members','選択中テナントのメンバーとロールを管理します。'],invitations:['Invitations','選択中テナントへの招待を発行・取消します。'],sessions:['Active Sessions','現在有効なセッションの利用者・接続元・期限を確認し、必要に応じて失効します。'],webhooks:['Webhooks','Webhook の作成・有効化・削除を行います。'],idp:['IdP Config','OIDC / SAML 設定を登録します。'],audit:['Audit Log','現在のセッションのテナントにある監査イベントを確認します。'],keys:['Signing Keys','署名鍵をローテーション・失効します。'],'temporary-access':['Temporary Access','期限・ドメインを限定した一時アクセスを発行します。']
   };
   const titles = meta[page] || ['Admin','管理画面'];
   document.title = titles[0] + ' — Volta Admin'; $('#title').textContent = titles[0]; $('#description').textContent = titles[1];
@@ -69,6 +69,7 @@
   function busy(on) { document.body.classList.toggle('busy', on); }
   function value(v) { if (v == null || v === '') return '—'; if (Array.isArray(v)) return v.join(', '); if (typeof v === 'boolean') return v ? 'Yes' : 'No'; if (typeof v === 'object') return JSON.stringify(v); return String(v); }
   function date(v) { if (!v) return '—'; const d=typeof v==='number' ? new Date(v*1000) : new Date(v); return Number.isNaN(d.getTime()) ? value(v) : d.toLocaleString('ja-JP'); }
+  function duration(v) { const seconds=Math.max(0,Number(v)||0),days=Math.floor(seconds/86400),hours=Math.floor(seconds%86400/3600),minutes=Math.floor(seconds%3600/60);return [days?days+'日':'',hours?hours+'時間':'',minutes?minutes+'分':''].filter(Boolean).join(' ')||'1分未満'; }
   function items(data) { return Array.isArray(data) ? data : (data.items || data.tenants || data.users || data.sessions || []); }
   async function api(path, options={}) {
     const headers = {'accept':'application/json', ...(options.body ? {'content-type':'application/json'} : {}), ...(options.headers||{})};
@@ -120,7 +121,7 @@
     const data=await api(`/api/v1/tenants/${tid}/invitations?page=1&size=100`);table([{key:'code',label:'Code',mono:true},{key:'email',label:'Email'},{key:'role',label:'Role'},{key:'used_count',label:'Used',render:(v,r)=>`${v}/${r.max_uses}`},{key:'expires_at',label:'Expires',render:date}],items(data),row=>button('取消','danger small',async()=>{if(!confirm('この招待を取り消しますか？'))return;try{await api(`/api/v1/tenants/${tid}/invitations/${row.id}`,{method:'DELETE'});status('招待を取り消しました。','success');await render();}catch(e){status(e.message,'error');}}));
   }
   async function sessions() {
-    $('#actions').replaceChildren(toolbar());const data=await api('/api/v1/admin/sessions?page=1&size=100&sort=-created_at');table([{key:'session_id_hash',label:'Session',mono:true},{key:'user_id',label:'User',mono:true},{key:'tenant_id',label:'Tenant',mono:true},{key:'ip_address',label:'IP'},{key:'user_agent',label:'User Agent'},{key:'created_at',label:'Created',render:date}],items(data),row=>button('失効','danger small',async()=>{if(!confirm('このセッションを失効しますか？'))return;try{await api(`/admin/sessions/${encodeURIComponent(row.session_id_hash)}`,{method:'DELETE'});status('セッションを失効しました。','success');await render();}catch(e){status(e.message,'error');}}));
+    const data=await api('/api/v1/admin/sessions?page=1&size=100&sort=-last_active_at&q='+encodeURIComponent(state.query));const summary=document.createElement('div');summary.className='card';summary.textContent=`現在有効なセッション: ${data.total}件`;$('#actions').replaceChildren(summary,toolbar(true));table([{key:'session_id_hash',label:'Session',mono:true},{key:'display_name',label:'Name'},{key:'email',label:'Email'},{key:'user_id',label:'User ID',mono:true},{key:'tenant_name',label:'Tenant',render:(v,r)=>v?`${v}${r.tenant_slug?' ('+r.tenant_slug+')':''}`:r.tenant_id},{key:'ip_address',label:'IP'},{key:'created_at',label:'Started',render:date},{key:'last_active_at',label:'Last Active',render:date},{key:'expires_at',label:'Expires',render:date},{key:'remaining_seconds',label:'Remaining',render:duration},{key:'user_agent',label:'User Agent'}],items(data),row=>button('失効','danger small',async()=>{if(!confirm(`${row.email||row.user_id} のセッションを失効しますか？`))return;try{await api(`/admin/sessions/${encodeURIComponent(row.session_id_hash)}`,{method:'DELETE'});status('セッションを失効しました。','success');await render();}catch(e){status(e.message,'error');}}));
   }
   async function webhooks() {
     const tid=selectedTenant();$('#actions').replaceChildren(formCard('Webhook を作成',[{name:'endpoint_url',label:'Endpoint URL',type:'url',required:true,placeholder:'https://example.com/hook'},{name:'events',label:'Events',required:true,placeholder:'login.success,user.created'}],'+ Webhook 作成',d=>api(`/api/v1/tenants/${tid}/webhooks`,{method:'POST',body:JSON.stringify(d)})),toolbar());const data=await api(`/api/v1/tenants/${tid}/webhooks`);

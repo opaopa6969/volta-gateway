@@ -32,6 +32,7 @@ async fn setup_pool() -> (
         include_str!("../migrations/005_create_invitation_usages.sql"),
         include_str!("../migrations/006_create_auth_flows.sql"),
         include_str!("../migrations/007_create_auth_flow_transitions.sql"),
+        include_str!("../migrations/008_create_sessions.sql"),
     ];
     for sql in &migrations {
         sqlx::raw_sql(sql).execute(&pool).await.unwrap();
@@ -140,6 +141,73 @@ async fn user_upsert_conflict_updates() {
         .await
         .unwrap();
     assert_eq!(updated.display_name.as_deref(), Some("Bob Updated"));
+}
+
+#[tokio::test]
+#[ignore]
+async fn admin_session_list_only_returns_active_rows_with_identity_context() {
+    let (pool, _c) = setup_pool().await;
+    let store = PgStore::new(pool.clone());
+    let user = create_user(&store, "active@example.com", "google-active").await;
+    users(&store)
+        .update_display_name(user.id, "Active User")
+        .await
+        .unwrap();
+    let tenant_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO tenants (id, name, slug) VALUES ($1, 'Active Team', 'active-team')")
+        .bind(tenant_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let now = Utc::now().timestamp();
+    for (id, expires_at, invalidated_at, ip) in [
+        ("active-session", now + 3600, None, "203.0.113.10"),
+        ("expired-session", now - 1, None, "203.0.113.11"),
+        ("revoked-session", now + 3600, Some(now), "203.0.113.12"),
+    ] {
+        sqlx::query(
+            "INSERT INTO sessions \
+             (id, user_id, tenant_id, created_at, last_active_at, expires_at, invalidated_at, ip_address, user_agent) \
+             VALUES ($1, $2, $3, $4, $4, $5, $6, $7, 'Test Browser')",
+        )
+        .bind(id)
+        .bind(user.id.to_string())
+        .bind(tenant_id.to_string())
+        .bind(now)
+        .bind(expires_at)
+        .bind(invalidated_at)
+        .bind(ip)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    let (items, total) = store
+        .list_active_sessions_paginated(None, None, "last_active_at DESC", 50, 0)
+        .await
+        .unwrap();
+    assert_eq!(total, 1);
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["session_id"], "active-session");
+    assert_eq!(items[0]["email"], "active@example.com");
+    assert_eq!(items[0]["display_name"], "Active User");
+    assert_eq!(items[0]["tenant_name"], "Active Team");
+    assert_eq!(items[0]["tenant_slug"], "active-team");
+    assert_eq!(items[0]["ip_address"], "203.0.113.10");
+    assert!(items[0]["remaining_seconds"].as_i64().unwrap() > 3500);
+
+    let (by_ip, _) = store
+        .list_active_sessions_paginated(None, Some("203.0.113.10"), "created_at DESC", 50, 0)
+        .await
+        .unwrap();
+    assert_eq!(by_ip.len(), 1);
+    let (no_match, total) = store
+        .list_active_sessions_paginated(None, Some("expired"), "created_at DESC", 50, 0)
+        .await
+        .unwrap();
+    assert!(no_match.is_empty());
+    assert_eq!(total, 0);
 }
 
 // ─── TenantStore ───────────────────────────────────────────

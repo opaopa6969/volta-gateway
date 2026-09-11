@@ -92,4 +92,23 @@ mod tests {
         assert!(!ADMIN_HTML.contains("document.write"));
         assert!(ADMIN_HTML.contains("skipRender:true"));
     }
+
+    #[test]
+    fn embedded_console_exposes_active_session_identity_and_network_context() {
+        for field in [
+            "display_name",
+            "email",
+            "user_id",
+            "tenant_name",
+            "ip_address",
+            "user_agent",
+            "last_active_at",
+            "expires_at",
+            "remaining_seconds",
+        ] {
+            assert!(ADMIN_HTML.contains(field), "missing session field: {field}");
+        }
+        assert!(ADMIN_HTML.contains("現在有効なセッション"));
+        assert!(ADMIN_HTML.contains("/admin/sessions/${encodeURIComponent"));
+    }
 }
