@@ -1,4 +1,19 @@
+---
+status: current
+canonicalFor: gateway-auth-trust-contract
+contractVersion: auth-edge/1.0.0
+lastVerified: 2026-09-12
+language: en
+supersedes: []
+---
+
 # Gateway/auth trust contract
+
+**Owner:** `volta-gateway`
+
+**Contract version:** `auth-edge/1.0.0`
+
+**Wire assertion version:** `v1`
 
 This contract applies to the Rust topology: `volta-gateway` is the only public
 edge and `volta-auth-server` is the online authorization authority.
@@ -34,9 +49,29 @@ The gateway strips all client-supplied `X-Volta-*` headers, adds the identity
 returned by auth-server, then sends:
 
 ```text
+X-Volta-Assertion-Key-Id: <active key ID>
 X-Volta-Assertion-Timestamp: <Unix seconds>
 X-Volta-Assertion-Signature: v1=<lowercase hex HMAC-SHA256>
 ```
+
+The successful auth response may supply these identity headers. The gateway
+forwards them only after stripping the client's `X-Volta-*` namespace:
+
+| Header | Meaning | Presence |
+| --- | --- | --- |
+| `X-Volta-User-Id` | authenticated subject ID | authenticated user or temporary grant |
+| `X-Volta-Email` | subject email | when known |
+| `X-Volta-Tenant-Id` | active tenant ID | tenant-scoped user |
+| `X-Volta-Tenant-Slug` | active tenant slug | when resolved |
+| `X-Volta-Roles` | comma-separated roles | authenticated user |
+| `X-Volta-Display-Name` | display name | when known |
+| `X-Volta-JWT` | short-lived signed identity JWT | session authentication |
+| `X-Volta-Auth-Source` | `bearer`, `temporary-access`, or `local-bypass` | non-default auth path |
+| `X-Volta-Token-Id` | bearer/temporary grant identifier | token authentication |
+| `X-Volta-Scope` | space-delimited bearer scopes | when granted |
+
+`X-Volta-App-Id` and `X-Volta-Required-Role` travel from gateway to
+auth-server as policy inputs. They are not backend identity assertions.
 
 The HMAC input is UTF-8 with literal newlines and no final newline:
 
@@ -57,6 +92,11 @@ Consumers must reject a missing/unknown version, invalid hex/MAC, or timestamp
 outside their replay window, and must compare MAC bytes in constant time.
 Production backends that consume `X-Volta-User-Id`, `X-Volta-Tenant-Id`, or
 `X-Volta-Roles` must configure this secret and reject unsigned requests.
+
+`X-Volta-Assertion-Key-Id` selects the current or previous key during rotation.
+When more than one verification key is configured, consumers must reject a
+missing or unknown key ID. A single-key migration may accept a missing key ID
+only for the legacy key.
 
 Cross-service test vector:
 
@@ -96,3 +136,35 @@ The current cache is route-wide. Therefore `cache.enabled: true` requires
 challenge, `private`, and `no-store` responses are never stored.
 Requests carrying `Cookie` or `Authorization` bypass both cache lookup and
 storage, including on public routes.
+
+## Ownership and compatibility
+
+This document is the canonical contract for the gateway/auth boundary and the
+`X-Volta-*` namespace. `volta-auth-server`, in this repository, is the online
+identity producer; `volta-gateway` is the enforcing edge and downstream header
+producer. Other repositories are consumers and link here instead of copying
+the header contract.
+
+- Adding an optional identity header is backwards-compatible and increments
+  the document contract's minor version.
+- Tightening validation without changing the signed canonical form increments
+  the patch version when existing conforming consumers remain valid.
+- Removing/renaming a header, changing its meaning or encoding, or changing the
+  HMAC canonical form is breaking. It requires a new major contract version and
+  a new signature prefix (`v2=...`), with an overlap window for both versions.
+- Consumers ignore unknown optional identity headers but fail closed on an
+  unknown assertion signature version, missing required signed fields, or an
+  invalid assertion.
+
+## Migration and revert
+
+For compatible additions, deploy auth-server first, gateway second, and
+consumers last. For a breaking version, deploy dual-version consumer
+verification first, then a gateway capable of emitting the new version, switch
+producers, observe the overlap window, and only then remove `v1` acceptance.
+
+To revert a compatible documentation or optional-header release, revert the
+gateway merge and leave consumers accepting the optional header. To revert a
+breaking rollout during its overlap window, switch gateway emission back to
+`v1`; do not remove the old verification key or `v1` consumer path until the
+rollback window has closed.
