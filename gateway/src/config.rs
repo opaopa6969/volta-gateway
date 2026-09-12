@@ -3,6 +3,13 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
 use std::path::Path;
 
+pub const GATEWAY_CONFIG_CONTRACT_ID: &str = "volta-gateway:gateway-config";
+pub const GATEWAY_CONFIG_VERSION: u32 = 3;
+
+fn default_gateway_config_version() -> u32 {
+    GATEWAY_CONFIG_VERSION
+}
+
 #[derive(Debug, Clone)]
 pub struct WeightedBackend {
     pub url: String,
@@ -53,6 +60,10 @@ fn deserialize_backends<'de, D: Deserializer<'de>>(
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[allow(dead_code)]
 pub struct GatewayConfig {
+    /// Version of the top-level gateway YAML contract. Versionless files from
+    /// before #177 are interpreted as the current v3 for staged migration.
+    #[serde(default = "default_gateway_config_version")]
+    pub config_version: u32,
     pub server: ServerConfig,
     pub auth: AuthConfig,
     pub routing: Vec<RouteEntry>,
@@ -760,6 +771,15 @@ impl GatewayConfig {
     /// 終了コード付きの検証 (#95)。`(code, message)` を返す。
     pub fn validate_detailed(&self) -> Result<(), Vec<(u8, String)>> {
         let mut errors: Vec<(u8, String)> = vec![];
+        if self.config_version != GATEWAY_CONFIG_VERSION {
+            errors.push((
+                Self::EXIT_SCHEMA,
+                format!(
+                    "unsupported gateway config version: {} (supported: {}; contract: {})",
+                    self.config_version, GATEWAY_CONFIG_VERSION, GATEWAY_CONFIG_CONTRACT_ID
+                ),
+            ));
+        }
         if self.routing.is_empty() {
             errors.push((
                 Self::EXIT_SCHEMA,
@@ -1481,7 +1501,26 @@ routing:
     #[test]
     fn validate_passes_for_minimal_valid_config() {
         let cfg = parse_config(&minimal_config_yaml(""));
+        assert_eq!(cfg.config_version, GATEWAY_CONFIG_VERSION);
         assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn config_version_is_explicit_or_defaults_to_legacy_v3() {
+        let legacy = parse_config(&minimal_config_yaml(""));
+        assert_eq!(legacy.config_version, 3);
+
+        let explicit = parse_config(&minimal_config_yaml("config_version: 3"));
+        assert!(explicit.validate().is_ok());
+
+        let unsupported = parse_config(&minimal_config_yaml("config_version: 4"));
+        let errors = unsupported
+            .validate_detailed()
+            .expect_err("v4 must fail closed");
+        assert!(errors.iter().any(|(code, message)| {
+            *code == GatewayConfig::EXIT_SCHEMA
+                && message.contains("unsupported gateway config version: 4")
+        }));
     }
 
     // ── #95: --validate の終了コード分類 ─────────────────────────

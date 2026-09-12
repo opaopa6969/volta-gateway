@@ -1,6 +1,8 @@
 # volta-gateway — minimal config (5-service SaaS)
 # Only server, auth, and routing are required. Everything else has defaults.
 
+config_version: 3
+
 server:
   port: 8080
 

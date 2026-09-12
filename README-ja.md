@@ -137,7 +137,8 @@ curl -H "Host: app.localhost" http://localhost:8080/api/hi
 ```
 
 完全手順: [`docs/getting-started-ja.md`](docs/getting-started-ja.md) ·
-[English](docs/getting-started.md)。
+[English](docs/getting-started.md)。version 付き YAML 契約と移行規則は
+[`docs/gateway-config-contract.md`](docs/gateway-config-contract.md) を参照。
 
 ## Rust-only 認証サービス
 

@@ -139,7 +139,8 @@ curl -H "Host: app.localhost" http://localhost:8080/api/hi
 ```
 
 Full walkthrough: [`docs/getting-started.md`](docs/getting-started.md) ·
-[日本語](docs/getting-started-ja.md).
+[日本語](docs/getting-started-ja.md). The versioned YAML contract and migration
+rules are in [`docs/gateway-config-contract.md`](docs/gateway-config-contract.md).
 
 ## Rust-only identity service
 

@@ -1,3 +1,5 @@
+config_version: 3
+
 server:
   port: 18080
 
