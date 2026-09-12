@@ -10,8 +10,10 @@ powered by a state machine
 
 **Every request rides on rails** — the state machine ensures that only valid transitions happen. No request smuggling. No forgotten auth checks. No invisible failures.
 
-> Current architecture and trust-boundary contract:
-> [`docs/rust-only-foundation-spec.md`](docs/rust-only-foundation-spec.md).
+> Current architecture: [`docs/rust-only-foundation-spec.md`](docs/rust-only-foundation-spec.md).
+>
+> Canonical `X-Volta-*` and gateway/auth trust contract:
+> [`docs/gateway-auth-trust-contract.md`](docs/gateway-auth-trust-contract.md).
 
 ## Table of Contents
 

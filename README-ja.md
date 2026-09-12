@@ -9,8 +9,10 @@ Java `volta-auth-proxy` と Traefik は目標ランタイム構成には含め�
 
 **全てのリクエストはレールの上を走る** — ステートマシンが有効な遷移だけを許可する。リクエストスマグリングなし。認証チェック忘れなし。見えない障害なし。
 
-> 現行アーキテクチャと信頼境界の契約:
-> [`docs/rust-only-foundation-spec.md`](docs/rust-only-foundation-spec.md)
+> 現行アーキテクチャ: [`docs/rust-only-foundation-spec.md`](docs/rust-only-foundation-spec.md)
+>
+> `X-Volta-*` と gateway/auth 信頼境界の正本:
+> [`docs/gateway-auth-trust-contract.md`](docs/gateway-auth-trust-contract.md)
 
 ## 目次
 
