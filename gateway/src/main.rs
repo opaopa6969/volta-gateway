@@ -340,6 +340,12 @@ async fn main() {
         metrics.clone(),
         plugin_mgr,
         assertion_signer,
+    )
+    .with_rate_limit(&config.rate_limit);
+    info!(
+        global_rps = config.rate_limit.requests_per_second,
+        per_ip_rps = config.rate_limit.per_ip_rps,
+        "rate limit configured"
     );
 
     // BT-SEC-7: Admin API auth. When a token is configured (YAML or env

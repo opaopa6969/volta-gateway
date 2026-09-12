@@ -658,11 +658,15 @@ impl RouteEntry {
     }
 }
 
+/// Request rate limits, applied by `ProxyService::with_rate_limit`.
+///
+/// Both are fixed 1-second windows. `0` disables that limit.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[allow(dead_code)]
 pub struct RateLimitConfig {
+    /// Across all clients.
     #[serde(default = "default_rps")]
     pub requests_per_second: u32,
+    /// Per client IP (the real one, after `trusted_proxies` resolution).
     #[serde(default = "default_per_ip_rps")]
     pub per_ip_rps: u32,
 }

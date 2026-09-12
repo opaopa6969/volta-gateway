@@ -572,12 +572,34 @@ impl ProxyService {
             hot,
             metrics,
             plugin_manager,
+            // Defaults, matching config::default_rps / default_per_ip_rps.
+            // main() overrides them from the YAML via with_rate_limit().
             rate_limiter: RateLimiter::new(1000, 100),
             backend_selector: BackendSelector::new(),
             circuit_breaker: CircuitBreaker::new(5, 30),
             response_cache: crate::cache::ResponseCache::new(10_000),
             assertion_signer,
         }
+    }
+
+    /// Apply the `rate_limit` section of the config.
+    ///
+    /// The limits used to be hardcoded here as `RateLimiter::new(1000, 100)`,
+    /// so `rate_limit.requests_per_second` / `rate_limit.per_ip_rps` in
+    /// volta-gateway.yaml were parsed and then silently ignored. Raising them
+    /// in the YAML did nothing, and the effective per-IP ceiling stayed at 100
+    /// rps — which is what made volta-console's bulk health check (one burst of
+    /// ~150 requests from a single container IP) collect 429s and report
+    /// healthy services as unreachable (2026-09-12).
+    ///
+    /// A zero means "no limit", so an operator can turn the limiter off without
+    /// having to pick a number large enough to never trigger.
+    pub fn with_rate_limit(mut self, cfg: &crate::config::RateLimitConfig) -> Self {
+        self.rate_limiter = RateLimiter::new(
+            if cfg.requests_per_second == 0 { u64::MAX } else { cfg.requests_per_second as u64 },
+            if cfg.per_ip_rps == 0 { u64::MAX } else { cfg.per_ip_rps as u64 },
+        );
+        self
     }
 
     /// Handle a single request through the SM lifecycle.
