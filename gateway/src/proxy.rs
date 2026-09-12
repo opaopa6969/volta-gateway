@@ -596,8 +596,16 @@ impl ProxyService {
     /// having to pick a number large enough to never trigger.
     pub fn with_rate_limit(mut self, cfg: &crate::config::RateLimitConfig) -> Self {
         self.rate_limiter = RateLimiter::new(
-            if cfg.requests_per_second == 0 { u64::MAX } else { cfg.requests_per_second as u64 },
-            if cfg.per_ip_rps == 0 { u64::MAX } else { cfg.per_ip_rps as u64 },
+            if cfg.requests_per_second == 0 {
+                u64::MAX
+            } else {
+                cfg.requests_per_second as u64
+            },
+            if cfg.per_ip_rps == 0 {
+                u64::MAX
+            } else {
+                cfg.per_ip_rps as u64
+            },
         );
         self
     }
