@@ -1,6 +1,8 @@
 # volta-gateway — full config reference
 # All fields shown with defaults. Only server/auth/routing are required.
 
+config_version: 3
+
 server:
   port: 8080                    # HTTP listen port
   read_timeout_secs: 10         # TCP read timeout
