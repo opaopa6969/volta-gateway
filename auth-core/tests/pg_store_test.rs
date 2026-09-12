@@ -983,3 +983,70 @@ async fn session_stepup_marker() {
     assert!(s.is_required("sess-x").await.unwrap());
     assert!(!s.is_required("other").await.unwrap());
 }
+
+#[tokio::test]
+#[ignore]
+async fn session_keepalive_is_atomic_and_never_revives_expired_or_revoked() {
+    let (pool, _container) = setup_pool().await;
+    sqlx::raw_sql(include_str!("../migrations/008_create_sessions.sql"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let store = PgStore::new(pool);
+    let now = Utc::now().timestamp() as u64;
+    for (id, expiry, invalidated) in [
+        ("active", now + 60, None),
+        ("expired", now, None),
+        ("revoked", now + 60, Some(now)),
+    ] {
+        SessionStore::create(
+            &store,
+            SessionRecord {
+                session_id: id.into(),
+                user_id: "user".into(),
+                tenant_id: "tenant".into(),
+                return_to: None,
+                created_at: now,
+                last_active_at: now,
+                expires_at: expiry,
+                invalidated_at: invalidated,
+                mfa_verified_at: None,
+                ip_address: None,
+                user_agent: None,
+                csrf_token: None,
+                email: None,
+                tenant_slug: None,
+                roles: vec![],
+                display_name: None,
+            },
+        )
+        .await
+        .unwrap();
+    }
+    SessionStore::touch(&store, "active", now + 28800)
+        .await
+        .unwrap();
+    SessionStore::touch(&store, "active", now + 100)
+        .await
+        .unwrap();
+    assert_eq!(
+        SessionStore::find(&store, "active")
+            .await
+            .unwrap()
+            .unwrap()
+            .expires_at,
+        now + 28800
+    );
+    for id in ["expired", "revoked", "missing"] {
+        assert!(matches!(
+            SessionStore::touch(&store, id, now + 28800).await,
+            Err(volta_auth_core::error::AuthError::SessionNotFound)
+        ));
+        assert!(SessionStore::find(&store, id).await.unwrap().is_none());
+    }
+    // 認証確認の直後にログアウトされた場合も、後続の touch は失敗する。
+    SessionStore::revoke(&store, "active").await.unwrap();
+    assert!(SessionStore::touch(&store, "active", now + 30000)
+        .await
+        .is_err());
+}

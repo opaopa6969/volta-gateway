@@ -134,6 +134,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/logout", get(handlers::auth::logout_get))
         .route("/auth/logout", post(handlers::auth::logout_post))
         .route("/auth/refresh", post(handlers::auth::refresh))
+        .route(
+            "/auth/session/keepalive",
+            post(handlers::session::keepalive),
+        )
         .route("/auth/switch-tenant", post(handlers::auth::switch_tenant))
         // SAML
         .route("/auth/saml/login", get(handlers::saml::saml_login))

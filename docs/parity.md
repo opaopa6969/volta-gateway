@@ -105,6 +105,9 @@ method used at mount time.
 
 ### Sessions
 
+Rust 独自: `POST /auth/session/keepalive` は有効なセッションと Cookie の期限を延長します。
+カスタムヘッダ必須、期限切れ・失効済みは401（Java 側には追加しません）。
+
 | Method | Path                                        | Rust | Java | Notes |
 |--------|---------------------------------------------|:----:|:----:|-------|
 | GET    | `/api/me/sessions`                          | ✅   | ✅   | — |

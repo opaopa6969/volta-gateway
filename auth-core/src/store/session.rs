@@ -65,10 +65,13 @@ impl SessionStore for InMemorySessionStore {
 
     async fn touch(&self, session_id: &str, new_expires_at: u64) -> Result<(), AuthError> {
         let mut map = self.sessions.lock().unwrap();
-        if let Some(rec) = map.get_mut(session_id) {
-            rec.last_active_at = now_epoch();
-            rec.expires_at = new_expires_at;
-        }
+        let now = now_epoch();
+        let rec = map
+            .get_mut(session_id)
+            .filter(|r| r.is_valid_at(now))
+            .ok_or(AuthError::SessionNotFound)?;
+        rec.last_active_at = now;
+        rec.expires_at = rec.expires_at.max(new_expires_at);
         Ok(())
     }
 
@@ -215,5 +218,33 @@ mod tests {
         assert!(!store.find("s1").await.unwrap().unwrap().is_mfa_verified());
         store.mark_mfa_verified("s1").await.unwrap();
         assert!(store.find("s1").await.unwrap().unwrap().is_mfa_verified());
+    }
+    #[tokio::test]
+    async fn touch_does_not_shorten_or_revive_a_session() {
+        let store = InMemorySessionStore::new();
+        let record = test_session("active", "user");
+        let expires = record.expires_at;
+        store.create(record).await.unwrap();
+        store.touch("active", expires - 10).await.unwrap();
+        assert_eq!(
+            store.find("active").await.unwrap().unwrap().expires_at,
+            expires
+        );
+        store.revoke("active").await.unwrap();
+        assert!(matches!(
+            store.touch("active", expires + 10).await,
+            Err(AuthError::SessionNotFound)
+        ));
+        let mut expired = test_session("expired", "user");
+        expired.expires_at = now_epoch();
+        store.create(expired).await.unwrap();
+        assert!(matches!(
+            store.touch("expired", expires).await,
+            Err(AuthError::SessionNotFound)
+        ));
+        assert!(matches!(
+            store.touch("missing", expires).await,
+            Err(AuthError::SessionNotFound)
+        ));
     }
 }
