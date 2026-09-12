@@ -632,6 +632,147 @@ async fn proxy_rate_limit_returns_429() {
     server.abort();
 }
 
+/// Spawn `proxy` on an ephemeral port and return its address plus the join
+/// handle, so a test can drive real requests through the full `handle()` path.
+async fn serve_proxy(proxy: ProxyService) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        loop {
+            let (stream, remote_addr) = match listener.accept().await {
+                Ok(s) => s,
+                Err(_) => break,
+            };
+            let proxy = proxy.clone();
+            tokio::spawn(async move {
+                let service = service_fn(move |req: Request<Incoming>| {
+                    let proxy = proxy.clone();
+                    let addr = remote_addr;
+                    async move { Ok::<_, hyper::Error>(proxy.handle(req, addr).await) }
+                });
+                let _ = auto::Builder::new(TokioExecutor::new())
+                    .serve_connection(TokioIo::new(stream), service)
+                    .await;
+            });
+        }
+    });
+    (addr, handle)
+}
+
+/// Send `count` requests and report whether any came back 429.
+async fn any_429(proxy_addr: SocketAddr, host: &str, count: usize) -> bool {
+    let client: hyper_util::client::legacy::Client<_, Empty<Bytes>> =
+        hyper_util::client::legacy::Client::builder(TokioExecutor::new()).build_http();
+    for _ in 0..count {
+        let req = Request::builder()
+            .uri(format!("http://{}/api/test", proxy_addr))
+            .header("host", host)
+            .body(Empty::new())
+            .unwrap();
+        if client.request(req).await.unwrap().status() == StatusCode::TOO_MANY_REQUESTS {
+            return true;
+        }
+    }
+    false
+}
+
+/// The `rate_limit` section of volta-gateway.yaml was parsed and then ignored:
+/// ProxyService hardcoded `RateLimiter::new(1000, 100)`, so raising the limits
+/// in config did nothing and the real per-IP ceiling stayed at 100 rps. That is
+/// what made volta-console's bulk health check (one burst of ~150 requests from
+/// a single container IP) collect 429s and report healthy services as
+/// unreachable (2026-09-12).
+#[tokio::test]
+async fn configured_rate_limit_is_honoured() {
+    let (backend_addr, _bh) =
+        mock_server(|_req| Response::builder().status(200).body(empty_body()).unwrap()).await;
+    let (auth_addr, _ah) = mock_server(|_req| {
+        Response::builder()
+            .status(200)
+            .header("x-volta-user-id", "user")
+            .body(empty_body())
+            .unwrap()
+    })
+    .await;
+
+    let proxy = make_proxy(auth_addr, backend_addr, "app.test.com").with_rate_limit(
+        &volta_gateway::config::RateLimitConfig {
+            requests_per_second: 10_000,
+            per_ip_rps: 5_000,
+        },
+    );
+    let (proxy_addr, server) = serve_proxy(proxy).await;
+
+    // 200 requests is twice the hardcoded default of 100 — before the fix this
+    // tripped at request 101 regardless of the configured 5000.
+    assert!(
+        !any_429(proxy_addr, "app.test.com", 200).await,
+        "configured per_ip_rps=5000 must not 429 after 200 requests"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn rate_limit_zero_means_no_limit() {
+    let (backend_addr, _bh) =
+        mock_server(|_req| Response::builder().status(200).body(empty_body()).unwrap()).await;
+    let (auth_addr, _ah) = mock_server(|_req| {
+        Response::builder()
+            .status(200)
+            .header("x-volta-user-id", "user")
+            .body(empty_body())
+            .unwrap()
+    })
+    .await;
+
+    let proxy = make_proxy(auth_addr, backend_addr, "app.test.com").with_rate_limit(
+        &volta_gateway::config::RateLimitConfig {
+            requests_per_second: 0,
+            per_ip_rps: 0,
+        },
+    );
+    let (proxy_addr, server) = serve_proxy(proxy).await;
+
+    assert!(
+        !any_429(proxy_addr, "app.test.com", 200).await,
+        "0 must disable the limiter, not clamp it to zero requests"
+    );
+
+    server.abort();
+}
+
+/// A configured limit that is *lower* than the old hardcoded default must also
+/// take effect — otherwise "honours config" would just mean "always permissive".
+#[tokio::test]
+async fn configured_rate_limit_can_be_stricter_than_the_default() {
+    let (backend_addr, _bh) =
+        mock_server(|_req| Response::builder().status(200).body(empty_body()).unwrap()).await;
+    let (auth_addr, _ah) = mock_server(|_req| {
+        Response::builder()
+            .status(200)
+            .header("x-volta-user-id", "user")
+            .body(empty_body())
+            .unwrap()
+    })
+    .await;
+
+    let proxy = make_proxy(auth_addr, backend_addr, "app.test.com").with_rate_limit(
+        &volta_gateway::config::RateLimitConfig {
+            requests_per_second: 10_000,
+            per_ip_rps: 5,
+        },
+    );
+    let (proxy_addr, server) = serve_proxy(proxy).await;
+
+    assert!(
+        any_429(proxy_addr, "app.test.com", 50).await,
+        "configured per_ip_rps=5 must 429 well before 50 requests"
+    );
+
+    server.abort();
+}
+
 fn make_proxy_public(backend_addr: SocketAddr, host: &str) -> ProxyService {
     // Public route — auth is skipped, volta_url points to non-existent server
     let auth_config = AuthConfig {
