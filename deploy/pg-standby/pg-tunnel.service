@@ -1,0 +1,18 @@
+# p52 の user unit(~/.config/systemd/user/pg-tunnel.service)。primary の PG は loopback にしか居ないので、
+# ssh で silver-hawk の 127.0.0.1:54329 を p52 のダミー IF(volta0 = 10.52.0.1):54328 に引く。
+# コンテナ(rootless docker)からは host の loopback に届かないが、host の他のアドレスには届くので
+# ダミー IF に束縛する(nmcli con add type dummy ifname volta0 con-name volta0 ipv4.method manual ipv4.addresses 10.52.0.1/32)。
+# silver-hawk 側 authorized_keys: restrict,port-forwarding,permitopen="127.0.0.1:54329",command="echo tunnel-only" <pubkey>
+[Unit]
+Description=ssh tunnel to silver-hawk auth PG (10.52.0.1:54328 -> 127.0.0.1:54329) for streaming standby
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+ExecStartPre=/bin/sh -c "ip -4 addr show volta0 | grep -q 10.52.0.1"
+ExecStart=/usr/bin/ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i %h/.ssh/id_ed25519_pg_tunnel -L 10.52.0.1:54328:127.0.0.1:54329 opa@192.168.1.8
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
