@@ -48,7 +48,10 @@ pub async fn healthz(State(state): State<AppState>) -> Response {
             degraded("error")
         }
         Err(_) => {
-            tracing::warn!(timeout_s = DB_PROBE_TIMEOUT.as_secs(), "healthz: database probe timed out");
+            tracing::warn!(
+                timeout_s = DB_PROBE_TIMEOUT.as_secs(),
+                "healthz: database probe timed out"
+            );
             degraded("timeout")
         }
     }
