@@ -1,0 +1,31 @@
+# auth の本番 PostgreSQL(silver-hawk)。元は volta-auth-proxy(archived)の compose で動いていたものを
+# ここへ移した。project 名と volume は既存のまま(name: / external volume)なので、この compose で
+# `up -d` してもデータは同じ volume を使い続ける。
+#
+# 適用:  docker compose --env-file ~/.config/volta-auth-postgres.env -f deploy/auth-postgres/docker-compose.yml up -d
+#        (.env は ~/.config/volta-auth-postgres.env。deploy/auth-postgres/env.example を参照。git に入れない)
+name: volta-auth-proxy
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: volta-auth-postgres
+    restart: unless-stopped
+    ports:
+      # loopback だけ。LAN に出さない(2026-09-15 まで 0.0.0.0 だった)。
+      # standby(p52)は ssh トンネル(deploy/pg-standby/pg-tunnel.service)で 127.0.0.1:54329 に入る
+      - "127.0.0.1:54329:5432"
+    environment:
+      POSTGRES_DB: volta_auth
+      POSTGRES_USER: volta
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the env file}
+    volumes:
+      - volta_auth_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U volta -d volta_auth_rs" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+volumes:
+  volta_auth_pgdata:
+    external: true
+    name: volta-auth-proxy_volta_auth_pgdata

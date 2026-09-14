@@ -13,8 +13,8 @@
 # 使い方:  ./bootstrap.sh            # 初回。既に volume があれば拒否する(上書きしない)
 #          FORCE=1 ./bootstrap.sh    # 作り直す(volume を消してから basebackup)
 set -eu
-PRIMARY_HOST="${PRIMARY_HOST:-192.168.1.8}"
-PRIMARY_PORT="${PRIMARY_PORT:-54329}"
+PRIMARY_HOST="${PRIMARY_HOST:-10.52.0.1}"   # ssh トンネル(pg-tunnel.service)の入口。primary は loopback にしか居ない
+PRIMARY_PORT="${PRIMARY_PORT:-54328}"
 SLOT="${SLOT:-p52_standby}"
 NAME="${NAME:-volta-auth-postgres-standby}"
 VOL="${VOL:-volta_auth_standby_pgdata}"
