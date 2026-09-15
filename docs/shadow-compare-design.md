@@ -60,6 +60,20 @@ routing:
 3. **body** — GET なら無くてよいが、POST を測るなら要る
 4. 差が出たときに「なぜ」を後から追えること（レプリケーション遅延なのか、設定ずれなのか）
 
+## 2 本立てで見る
+
+影のコピーだけでは、**副作用・認証・レプリケーション遅延**の 3 つと永久に戦うことになる
+（4 節）。そこで軸を 2 本にする。
+
+| 軸 | 何が分かるか | 弱点 |
+|---|---|---|
+| **A. 実トラフィックのコピー**（1〜8 節） | 実データ・実セッションでしか出ない差 | 副作用のあるパスを避ける必要がある。lag で「正しい不一致」が出る |
+| **B. 判定用の口**（9 節） | 構成のずれ（版・設定・スキーマ・依存先・データの追随） | 実トラフィック固有の差は出ない |
+
+**切り替えられるかの大半は B で分かる。** 版がずれている、マイグレーションが当たっていない、
+依存先に届いていない — このどれかなら、実トラフィックを比べるまでもなく切り替えは失敗する。
+A は B が緑になった後の「最後の 1 割」を見るためのもの。
+
 ## 設計
 
 ### 1. 何を「同じ」とみなすか
@@ -221,6 +235,58 @@ volta-index は既に gateway の `/metrics` を topology に取り込んでい�
 - `enabled: false` と、管理 API からの即時停止（kill switch）
 - 影のエラーは**影の側の問題**として記録する。primary の SLO には混ぜない
 
+### 9. 判定用の口を、サービス側に実装させる（interface）
+
+`/healthz` は「生きているか」しか言わない。**生きていても、版がずれていれば切り替えは失敗する。**
+そこで health と同じ性質（**副作用ゼロ・内部からのみ・軽い**）を持つ別の口を規約にする。
+
+```
+GET /__volta/shadow        ループバック / プライベート IP からのみ。認証不要。副作用ゼロ
+200 application/json
+{
+  "service": "volta-index",
+  "role": "primary" | "standby",
+  "version":  { "git": "7e97c51", "config": "sha256:1a2b…", "schema": 12 },
+  "deps":     { "db": "ok", "auth": "ok", "runner_hub": "ok" },
+  "digest":   { "users": 145, "sessions": 38, "as_of": "2026-09-16T05:12:00Z" },
+  "shadow":   { "safe_paths": ["/", "/api/topology"], "unsafe_paths": ["/api/agent/", "/api/exec"] }
+}
+```
+
+primary と standby で突き合わせると、**切り替え前に落ちる理由がそのまま出る**:
+
+| 項目 | 違っていたら |
+|---|---|
+| `version.git` | 配布が届いていない（standby が古いコードで動く） |
+| `version.config` | 設定がずれている（前回の ForwardAuth の穴はこの類） |
+| `version.schema` | マイグレーションが当たっていない。**切り替えたら壊れる** |
+| `deps` | 依存先に届いていない（standby から DB / auth が見えない） |
+| `digest` | データが追いついていない。lag の実測値そのもの |
+| `shadow.safe_paths` | **サービス自身が「影に流してよいパス」を申告する。** gateway の allowlist をここから生成できる（4 節を手で書かなくて済む） |
+
+規約の要点:
+
+- **副作用ゼロを規約にする。** この口自体が何かを書いたら意味がない
+- **認証を要求しない。代わりに到達元を縛る**（ループバック / プライベート IP）。
+  `/healthz` と同じ扱いにして、gateway の外には出さない
+- **重い集計をしない。** `digest` はインデックスで数えられるものだけ。毎分叩かれる前提
+- `role` は自己申告（standby は自分が standby だと知っている）。
+  **primary が 2 つ見えたら二重マネージャ**で、それ自体が検出したい事故
+
+### 9.1 実装しているかを見張る
+
+規約は「書いてあるだけ」だと守られない。volta-index 側で:
+
+- catalog（サービスの登録簿）に「この口を実装しているか」を持ち、**critical なサービスに無ければ
+  `/topology.html` の drift に出す**（`no-shadow-interface`）
+- 重要サービス（hub / auth-server / gateway）は必須。それ以外は任意
+- 突き合わせの結果（版・スキーマ・依存の差）も drift にする（`standby-version-drift` など）
+
+### 9.2 順番
+
+**B（判定用の口）を先に作る。** A（実トラフィックのコピー）は B が緑になってからでよい。
+理由は上の表のとおりで、B で落ちるものを A で探しても手間が増えるだけ。
+
 ## 設定の形（案）
 
 ```yaml
@@ -255,12 +321,18 @@ routing:
 
 ## 段階
 
-1. **比較と計測**（この設計の範囲）。`trust: none` のまま、**allowlist に書いた副作用の無いパスだけ**で
-   一致率を出す。最初は `index.unlaxer.org` の画面と `/api/topology`（`refresh` 無し）から
-2. `trust: internal` を足し、auth の要る経路まで測れるようにする
-3. volta-index 側で一致率を `/topology.html` に出し、`ha-watch` が悪化を通知する
-4. p52 を cold から warm にして、hub / auth / gateway の影を常設する
-5. 影の一致率が数週間安定してから、`full` 訓練の頻度を下げるかを判断する
+**B（判定用の口）が先、A（コピーの答え合わせ）が後。**
+
+1. `/__volta/shadow` の規約を決めて、**hub（volta-index）に実装**する。
+   p52 の standby と突き合わせて、版・設定・スキーマ・依存・データの差を出す
+2. volta-index の catalog で「この口を実装しているか」を見て、critical なサービスに無ければ drift。
+   突き合わせの差も drift（`standby-version-drift` / `schema-drift`）
+3. auth-server / gateway にも実装する
+4. p52 を cold から warm にして（副作用を切った構成で）、1〜3 を常時回す
+5. ここまで緑になってから、**A の比較と計測**。`trust: none`・allowlist に書いた副作用の無いパスだけ
+   （`index.unlaxer.org` の画面と `/api/topology` の `refresh` 無しから）
+6. `trust: internal` で認証が要る経路まで。一致率を `/topology.html` に出し、`ha-watch` が悪化を通知
+7. 一致率が数週間安定してから、`full` 訓練の頻度を下げるかを判断する
 
 ## 未解決の問い
 
