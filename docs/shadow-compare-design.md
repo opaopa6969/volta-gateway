@@ -235,19 +235,24 @@ volta-index は既に gateway の `/metrics` を topology に取り込んでい�
 - `enabled: false` と、管理 API からの即時停止（kill switch）
 - 影のエラーは**影の側の問題**として記録する。primary の SLO には混ぜない
 
-### 9. 判定用の口を、サービス側に実装させる（interface）
+### 9. 判定用の口（規約は PLATFORM-002）
 
 `/healthz` は「生きているか」しか言わない。**生きていても、版がずれていれば切り替えは失敗する。**
-そこで health と同じ性質（**副作用ゼロ・内部からのみ・軽い**）を持つ別の口を規約にする。
+そこで health と同じ性質（**副作用ゼロ・内部からのみ・軽い**）を持つ別の口を規約にした。
+
+**正本は volta-platform の
+[PLATFORM-002: volta に参加するサービスが実装する口](https://github.com/opaopa6969/volta-platform/blob/main/docs/PLATFORM-002-SPEC-service-interface.md)**
+（契約 ID `volta-platform:service-interface/1.0.0`）。この文書は消費する側として要点だけ引く。
 
 ```
-GET /__volta/shadow        ループバック / プライベート IP からのみ。認証不要。副作用ゼロ
+GET /__volta/about         ループバック / プライベート IP からのみ。認証不要。副作用ゼロ
 200 application/json
 {
-  "service": "volta-index",
-  "role": "primary" | "standby",
-  "version":  { "git": "7e97c51", "config": "sha256:1a2b…", "schema": 12 },
-  "deps":     { "db": "ok", "auth": "ok", "runner_hub": "ok" },
+  "contract": "volta-platform:service-interface/1.0.0",
+  "service":  "volta-index",
+  "role":     "primary",
+  "version":  { "git": "7e97c51", "config": "sha256:1a2b…", "schema": "1.0.0" },
+  "deps":     { "db": "ok", "auth": "ok", "runner-hub": "ok" },
   "digest":   { "users": 145, "sessions": 38, "as_of": "2026-09-16T05:12:00Z" },
   "shadow":   { "safe_paths": ["/", "/api/topology"], "unsafe_paths": ["/api/agent/", "/api/exec"] }
 }
@@ -273,14 +278,12 @@ primary と standby で突き合わせると、**切り替え前に落ちる理�
 - `role` は自己申告（standby は自分が standby だと知っている）。
   **primary が 2 つ見えたら二重マネージャ**で、それ自体が検出したい事故
 
-### 9.1 実装しているかを見張る
+### 9.1 gateway にとっての使い道
 
-規約は「書いてあるだけ」だと守られない。volta-index 側で:
-
-- catalog（サービスの登録簿）に「この口を実装しているか」を持ち、**critical なサービスに無ければ
-  `/topology.html` の drift に出す**（`no-shadow-interface`）
-- 重要サービス（hub / auth-server / gateway）は必須。それ以外は任意
-- 突き合わせの結果（版・スキーマ・依存の差）も drift にする（`standby-version-drift` など）
+- **`shadow.safe_paths` から 4 節の allowlist を生成する。** 手で書いた allowlist は必ず古くなる。
+  サービス自身が「ここは影に流してよい」と言うのが正しい所在
+- gateway 自身もこの口を実装する（critical なので PLATFORM-002 では必須）
+- 実装しているかの検査と、版・設定・スキーマの差の drift は volta-index 側の仕事（PLATFORM-002 §6）
 
 ### 9.2 順番
 
@@ -323,7 +326,7 @@ routing:
 
 **B（判定用の口）が先、A（コピーの答え合わせ）が後。**
 
-1. `/__volta/shadow` の規約を決めて、**hub（volta-index）に実装**する。
+1. `/__volta/about` の規約（PLATFORM-002）に沿って **hub（volta-index）に実装**する。
    p52 の standby と突き合わせて、版・設定・スキーマ・依存・データの差を出す
 2. volta-index の catalog で「この口を実装しているか」を見て、critical なサービスに無ければ drift。
    突き合わせの差も drift（`standby-version-drift` / `schema-drift`）
