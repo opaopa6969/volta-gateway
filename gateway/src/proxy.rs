@@ -200,8 +200,16 @@ impl BackendSelector {
 }
 
 /// PROD-1: Background health checker for backends.
+/// Poll every backend's health path so the selector can route around a dead one.
+///
+/// Takes the hot state rather than a routing snapshot: SIGHUP swaps the routing
+/// table, and a checker holding the table it was born with keeps probing the old
+/// set forever. Anything added by a reload — including a second backend added to
+/// make a service highly available — was never probed, so the selector kept
+/// sending it traffic after it died and a restart was the only way to arm the
+/// check (2026-09-18, found while putting 14 services on two machines).
 pub fn spawn_health_checker(
-    routing: Arc<RoutingTable>,
+    hot: Arc<ArcSwap<HotState>>,
     selector: BackendSelector,
     interval_secs: u64,
     path: String,
@@ -213,6 +221,9 @@ pub fn spawn_health_checker(
 
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
+
+            // Re-read every cycle: a reload between two ticks must take effect.
+            let routing = hot.load().routing.clone();
 
             // Collect all unique backend URLs
             let mut backends: Vec<String> = Vec::new();
