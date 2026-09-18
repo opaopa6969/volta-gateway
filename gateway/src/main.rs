@@ -455,16 +455,14 @@ async fn main() {
     let max_concurrent = 10_000u32;
     let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent as usize));
 
-    // PROD-1: Backend health checker
-    {
-        let hot_snapshot = proxy.hot.load();
-        proxy::spawn_health_checker(
-            hot_snapshot.routing.clone(),
-            proxy.backend_selector.clone(),
-            config.healthcheck.interval_secs,
-            config.healthcheck.path.clone(),
-        );
-    }
+    // PROD-1: Backend health checker。hot ごと渡す（reload で増えた backend も
+    // 次の tick から検査されるように。snapshot を渡すと起動時の集合に固定される）
+    proxy::spawn_health_checker(
+        proxy.hot.clone(),
+        proxy.backend_selector.clone(),
+        config.healthcheck.interval_secs,
+        config.healthcheck.path.clone(),
+    );
 
     // Start HTTPS/ACME listener if TLS config is present
     if let Some(ref tls_config) = config.tls {
