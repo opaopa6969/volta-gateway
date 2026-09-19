@@ -18,6 +18,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ## [Unreleased]
 
 ### Added
+- **L4 (TCP/UDP) proxy IP allowlist** (GW-41). L4 routes have no auth by
+  design (DD-002), so an operator-configured source-IP CIDR allowlist
+  (`l4_proxy[].ip_allowlist`, reusing the same CIDR validation as HTTP route
+  allowlists) is now the access control: connections/packets from
+  non-matching source IPs are rejected before reaching the backend. Empty or
+  omitted list keeps prior (unrestricted) behavior.
 - **Embedded Rust admin console** at `/admin` and `/admin/*` for users,
   tenants, members, invitations, sessions, webhooks, IdP configs, audit,
   signing keys, and temporary access. `POST /api/v1/admin/users` atomically

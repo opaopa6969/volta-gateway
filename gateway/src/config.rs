@@ -117,6 +117,26 @@ pub struct L4ProxyEntry {
     pub protocol: String,
     /// Backend address (e.g. "10.0.0.5:5432")
     pub backend: String,
+    /// GW-41: Source IP CIDR allowlist. Empty = unrestricted (current behavior).
+    /// L4 proxy has no auth (DD-002), so this is its only access control.
+    #[serde(default)]
+    pub ip_allowlist: Vec<String>,
+}
+
+impl L4ProxyEntry {
+    /// Parsed allowlist, or `None` if unrestricted. Invalid CIDRs are rejected
+    /// by `GatewayConfig::validate`, so this is only called on validated config.
+    pub fn ip_allowlist_nets(&self) -> Option<Vec<ipnet::IpNet>> {
+        if self.ip_allowlist.is_empty() {
+            return None;
+        }
+        Some(
+            self.ip_allowlist
+                .iter()
+                .filter_map(|cidr| cidr.parse::<ipnet::IpNet>().ok())
+                .collect(),
+        )
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -854,6 +874,14 @@ impl GatewayConfig {
                         i, entry.protocol
                     ),
                 ));
+            }
+            for cidr in &entry.ip_allowlist {
+                if cidr.parse::<ipnet::IpNet>().is_err() {
+                    errors.push((
+                        Self::EXIT_SCHEMA,
+                        format!("invalid CIDR in l4_proxy[{}].ip_allowlist: {}", i, cidr),
+                    ));
+                }
             }
         }
         // Validate no backend configured
@@ -2136,6 +2164,64 @@ l4_proxy:
         assert!(errs
             .iter()
             .any(|e| e.contains("protocol must be 'tcp' or 'udp'")));
+    }
+
+    #[test]
+    fn validate_fails_for_invalid_l4_proxy_ip_allowlist_cidr() {
+        let yaml = r#"
+server:
+  port: 8080
+auth:
+  volta_url: "http://localhost:7070"
+routing:
+  - host: "example.com"
+    backend: "http://a:3000"
+l4_proxy:
+  - listen_port: 5432
+    backend: "10.0.0.5:5432"
+    protocol: "tcp"
+    ip_allowlist:
+      - "not-a-cidr"
+"#;
+        let cfg: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        let errs = cfg.validate().unwrap_err();
+        assert!(errs
+            .iter()
+            .any(|e| e.contains("invalid CIDR in l4_proxy[0].ip_allowlist")));
+    }
+
+    #[test]
+    fn l4_proxy_ip_allowlist_nets_parses_valid_cidrs() {
+        let yaml = r#"
+server:
+  port: 8080
+auth:
+  volta_url: "http://localhost:7070"
+routing:
+  - host: "example.com"
+    backend: "http://a:3000"
+l4_proxy:
+  - listen_port: 5432
+    backend: "10.0.0.5:5432"
+    protocol: "tcp"
+    ip_allowlist:
+      - "10.0.0.0/24"
+"#;
+        let cfg: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(cfg.validate().is_ok());
+        let nets = cfg.l4_proxy[0].ip_allowlist_nets().unwrap();
+        assert_eq!(nets.len(), 1);
+    }
+
+    #[test]
+    fn l4_proxy_ip_allowlist_nets_none_when_empty() {
+        let entry = L4ProxyEntry {
+            listen_port: 5432,
+            protocol: "tcp".into(),
+            backend: "10.0.0.5:5432".into(),
+            ip_allowlist: vec![],
+        };
+        assert!(entry.ip_allowlist_nets().is_none());
     }
 
     // ── cors_table / ip_allowlist_table ──────────────────────────

@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use tokio::io::copy_bidirectional;
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tracing::{error, info, warn};
@@ -9,17 +9,27 @@ use crate::config::L4ProxyEntry;
 pub fn spawn_l4_proxies(entries: &[L4ProxyEntry]) {
     for entry in entries {
         let entry = entry.clone();
+        let allowlist = entry.ip_allowlist_nets();
         tokio::spawn(async move {
             match entry.protocol.as_str() {
-                "tcp" => serve_tcp(entry.listen_port, &entry.backend).await,
-                "udp" => serve_udp(entry.listen_port, &entry.backend).await,
+                "tcp" => serve_tcp(entry.listen_port, &entry.backend, allowlist).await,
+                "udp" => serve_udp(entry.listen_port, &entry.backend, allowlist).await,
                 other => error!(protocol = other, "unsupported L4 protocol"),
             }
         });
     }
 }
 
-async fn serve_tcp(listen_port: u16, backend: &str) {
+/// GW-41: L4 proxy has no auth (DD-002), so a source-IP allowlist is its only
+/// access control. `None` allowlist means unrestricted (backward compatible).
+fn ip_allowed(ip: IpAddr, allowlist: &Option<Vec<ipnet::IpNet>>) -> bool {
+    match allowlist {
+        None => true,
+        Some(nets) => nets.iter().any(|net| net.contains(&ip)),
+    }
+}
+
+async fn serve_tcp(listen_port: u16, backend: &str, allowlist: Option<Vec<ipnet::IpNet>>) {
     let addr = SocketAddr::from(([0, 0, 0, 0], listen_port));
     let listener = match TcpListener::bind(addr).await {
         Ok(l) => l,
@@ -44,6 +54,15 @@ async fn serve_tcp(listen_port: u16, backend: &str) {
                 continue;
             }
         };
+
+        if !ip_allowed(client_addr.ip(), &allowlist) {
+            warn!(
+                port = listen_port,
+                client = %client_addr,
+                "L4/TCP connection rejected: source IP not in allowlist"
+            );
+            continue;
+        }
 
         let backend_addr = backend_addr.clone();
         tokio::spawn(async move {
@@ -84,7 +103,7 @@ async fn serve_tcp(listen_port: u16, backend: &str) {
     }
 }
 
-async fn serve_udp(listen_port: u16, backend: &str) {
+async fn serve_udp(listen_port: u16, backend: &str, allowlist: Option<Vec<ipnet::IpNet>>) {
     let addr = SocketAddr::from(([0, 0, 0, 0], listen_port));
     let socket = match UdpSocket::bind(addr).await {
         Ok(s) => s,
@@ -118,6 +137,15 @@ async fn serve_udp(listen_port: u16, backend: &str) {
             }
         };
 
+        if !ip_allowed(src.ip(), &allowlist) {
+            warn!(
+                port = listen_port,
+                client = %src,
+                "L4/UDP packet rejected: source IP not in allowlist"
+            );
+            continue;
+        }
+
         // Forward to backend
         if let Err(e) = socket.send_to(&buf[..len], backend_addr).await {
             warn!(port = listen_port, "L4/UDP send to backend failed: {e}");
@@ -139,5 +167,38 @@ async fn serve_udp(listen_port: u16, backend: &str) {
             Ok(Err(e)) => warn!(port = listen_port, "L4/UDP backend recv error: {e}"),
             Err(_) => {} // timeout — no response from backend, common for UDP
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn nets(cidrs: &[&str]) -> Option<Vec<ipnet::IpNet>> {
+        Some(cidrs.iter().map(|c| c.parse().unwrap()).collect())
+    }
+
+    #[test]
+    fn no_allowlist_allows_any_ip() {
+        let ip: IpAddr = "203.0.113.1".parse().unwrap();
+        assert!(ip_allowed(ip, &None));
+    }
+
+    #[test]
+    fn allowlist_allows_matching_ip() {
+        let ip: IpAddr = "10.0.0.5".parse().unwrap();
+        assert!(ip_allowed(ip, &nets(&["10.0.0.0/24"])));
+    }
+
+    #[test]
+    fn allowlist_rejects_non_matching_ip() {
+        let ip: IpAddr = "203.0.113.1".parse().unwrap();
+        assert!(!ip_allowed(ip, &nets(&["10.0.0.0/24"])));
+    }
+
+    #[test]
+    fn allowlist_checks_all_entries() {
+        let ip: IpAddr = "192.168.1.1".parse().unwrap();
+        assert!(ip_allowed(ip, &nets(&["10.0.0.0/24", "192.168.1.0/24"])));
     }
 }
