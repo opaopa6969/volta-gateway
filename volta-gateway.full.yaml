@@ -99,6 +99,8 @@ l4_proxy:
   - listen_port: 5433
     protocol: tcp
     backend: 10.0.0.5:5432       # PostgreSQL
+    ip_allowlist:                # empty/omitted = unrestricted
+      - 10.0.0.0/8
   - listen_port: 6380
     protocol: tcp
     backend: 10.0.0.6:6379       # Redis

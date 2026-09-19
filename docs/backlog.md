@@ -130,7 +130,7 @@ gateway の `path_prefix: /saml/` + `public: true` で Java に転送。
 |---|------|----------|
 | CR-10 | HTTPS backend (mTLS module ready) | 🟡 Medium |
 | GW-39 | proxy.rs 分割 (1,100行超) | 🟡 Medium |
-| GW-41 | L4 proxy IP 制限 | 🟡 Medium |
+| GW-41 | L4 proxy IP 制限 | ✅ Done |
 
 ## Design Decisions
 
