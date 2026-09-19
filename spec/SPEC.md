@@ -755,6 +755,14 @@ healthy backend; POST / PATCH are not retried (caller must handle).
 
 ### 5.9 Response cache
 
+`ResponseCache` の容量管理: 容量到達時は期限切れ項目を先に削除し、
+それでも空きがなければ最後の保存・更新・有効な hit が最も古い項目を
+削除する。同じキーの更新は他の有効項目を削除しない。hit は参照順序だけを
+更新し、保存時からの TTL は延長しない。`ResponseCache::new(0)` は保存しない。
+現在の proxy は共有キャッシュを `ResponseCache::new(10_000)` で生成する。
+この容量は Rust API の引数であり、以下の設計例の `cache.max_entries` を
+YAML から設定できることを意味しない。
+
 Per-route LRU response cache (`gateway/src/cache.rs`), keyed by `(host,
 path, query, vary-headers)`. Config:
 

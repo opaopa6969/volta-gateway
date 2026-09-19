@@ -52,6 +52,7 @@ struct CacheEntry {
     headers: Vec<(String, String)>,
     body: Bytes,
     created: Instant,
+    last_used: Instant,
     ttl: Duration,
     /// tramli-inspired state: Fresh → Stale → Evicted
     state: CacheEntryState,
@@ -111,6 +112,7 @@ impl ResponseCache {
         if let Some(entry) = entries.get_mut(key) {
             entry.transition_if_stale();
             if entry.is_fresh() {
+                entry.last_used = Instant::now();
                 return Some(CachedEntry {
                     status: entry.status,
                     headers: entry.headers.clone(),
@@ -132,10 +134,13 @@ impl ResponseCache {
         body: Bytes,
         ttl: Duration,
     ) {
+        if self.max_entries == 0 {
+            return;
+        }
         let mut entries = self.entries.lock().unwrap();
 
-        // LRU eviction: remove oldest stale entries if at capacity
-        if entries.len() >= self.max_entries {
+        // Replacing an existing key does not need another capacity slot.
+        if entries.len() >= self.max_entries && !entries.contains_key(&key) {
             // Find and remove stale entries first
             let stale_keys: Vec<String> = entries
                 .iter_mut()
@@ -152,11 +157,11 @@ impl ResponseCache {
                 entries.remove(&k);
             }
 
-            // If still at capacity, remove oldest entry
+            // If still at capacity, remove the least recently used entry.
             if entries.len() >= self.max_entries {
                 if let Some(oldest_key) = entries
                     .iter()
-                    .min_by_key(|(_, v)| v.created)
+                    .min_by_key(|(_, v)| v.last_used)
                     .map(|(k, _)| k.clone())
                 {
                     entries.remove(&oldest_key);
@@ -164,13 +169,15 @@ impl ResponseCache {
             }
         }
 
+        let now = Instant::now();
         entries.insert(
             key,
             CacheEntry {
                 status,
                 headers,
                 body,
-                created: Instant::now(),
+                created: now,
+                last_used: now,
                 ttl,
                 state: CacheEntryState::Fresh,
             },
@@ -214,4 +221,36 @@ pub fn is_response_cacheable(headers: &HeaderMap) -> bool {
 /// explicit credentials, even when the route itself is marked public.
 pub fn is_shared_cache_request(headers: &HeaderMap) -> bool {
     !headers.contains_key("cookie") && !headers.contains_key("authorization")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_hit_does_not_extend_ttl() {
+        let cache = ResponseCache::new(1);
+        let ttl = Duration::from_secs(300);
+        cache.put("key".into(), 200, vec![], Bytes::new(), ttl);
+        // Backdate the entry to test TTL independently of scheduler timing.
+        let created = Instant::now() - Duration::from_secs(30);
+        cache
+            .entries
+            .lock()
+            .unwrap()
+            .get_mut("key")
+            .unwrap()
+            .created = created;
+
+        assert!(cache.get("key").is_some());
+        {
+            let mut entries = cache.entries.lock().unwrap();
+            let entry = entries.get_mut("key").unwrap();
+            assert_eq!(entry.created, created, "a hit must preserve the TTL origin");
+            assert_eq!(entry.ttl, ttl);
+            entry.created -= ttl;
+        }
+        assert!(cache.get("key").is_none(), "expired entries must miss");
+        assert_eq!(cache.stats(), (0, 0));
+    }
 }

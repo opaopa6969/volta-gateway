@@ -82,47 +82,90 @@ fn cache_lru_eviction() {
     assert!(cache.get("k3").is_some());
 }
 
-/// # Regression guard: `ResponseCache::new(0)` is a degenerate but reachable
-/// configuration (e.g. a route with `cache.max_entries: 0` would be a misconfig
-/// that should behave as "never cache" rather than panic or loop forever).
-/// The eviction guard `entries.len() >= max_entries` fires immediately, so a
-/// `put` must not grow the map unboundedly and a subsequent `get` must miss.
+fn put_cache_entry(cache: &volta_gateway::cache::ResponseCache, key: &str, body: &'static str) {
+    cache.put(
+        key.into(),
+        200,
+        vec![],
+        bytes::Bytes::from_static(body.as_bytes()),
+        Duration::from_secs(300),
+    );
+}
+
+#[test]
+fn cache_hit_preserves_recently_used_entry_across_clones() {
+    let cache = volta_gateway::cache::ResponseCache::new(2);
+    put_cache_entry(&cache, "k1", "first");
+    std::thread::sleep(Duration::from_millis(1));
+    put_cache_entry(&cache, "k2", "second");
+    std::thread::sleep(Duration::from_millis(1));
+    assert!(cache.clone().get("k1").is_some());
+    put_cache_entry(&cache, "k3", "third");
+
+    assert!(
+        cache.get("k2").is_none(),
+        "least recently used must be evicted"
+    );
+    assert!(cache.get("k1").is_some());
+    assert!(cache.get("k3").is_some());
+    assert_eq!(cache.stats(), (2, 2));
+}
+
+#[test]
+fn cache_replacing_existing_key_does_not_evict_another_entry() {
+    let cache = volta_gateway::cache::ResponseCache::new(2);
+    put_cache_entry(&cache, "k1", "first");
+    std::thread::sleep(Duration::from_millis(1));
+    put_cache_entry(&cache, "k2", "second");
+    put_cache_entry(&cache, "k2", "updated");
+
+    assert_eq!(cache.stats(), (2, 2));
+    assert_eq!(cache.get("k1").unwrap().body, "first");
+    assert_eq!(cache.get("k2").unwrap().body, "updated");
+}
+
+#[test]
+fn cache_replacement_counts_as_recent_use() {
+    let cache = volta_gateway::cache::ResponseCache::new(2);
+    put_cache_entry(&cache, "k1", "first");
+    std::thread::sleep(Duration::from_millis(1));
+    put_cache_entry(&cache, "k2", "second");
+    std::thread::sleep(Duration::from_millis(1));
+    put_cache_entry(&cache, "k1", "updated");
+    put_cache_entry(&cache, "k3", "third");
+
+    assert!(cache.get("k2").is_none());
+    assert_eq!(cache.get("k1").unwrap().body, "updated");
+    assert!(cache.get("k3").is_some());
+}
+
+#[test]
+fn cache_evicts_expired_entries_before_live_entries() {
+    let cache = volta_gateway::cache::ResponseCache::new(2);
+    put_cache_entry(&cache, "live", "first");
+    cache.put(
+        "expired".into(),
+        200,
+        vec![],
+        bytes::Bytes::new(),
+        Duration::ZERO,
+    );
+    put_cache_entry(&cache, "new", "third");
+
+    assert!(cache.get("live").is_some());
+    assert!(cache.get("expired").is_none());
+    assert!(cache.get("new").is_some());
+    assert_eq!(cache.stats(), (2, 2));
+}
+
 #[test]
 fn cache_with_zero_max_entries_never_stores() {
     let cache = volta_gateway::cache::ResponseCache::new(0);
-
-    // First put: the map is empty (len 0 >= 0), so eviction runs. With no stale
-    // entries and no oldest entry to remove, the guard is a no-op; the entry
-    // is then inserted — so a single put on a zero-capacity cache currently
-    // *does* store one entry. Document that so a future fix is visible.
-    cache.put(
-        "k1".into(),
-        200,
-        vec![],
-        bytes::Bytes::new(),
-        Duration::from_secs(300),
-    );
-    // After the second put, the first entry is the oldest and is evicted,
-    // keeping the map size at 1 (not 0). A zero-cap cache therefore holds at
-    // most one entry — a latent bug. Assert the observed behaviour.
-    cache.put(
-        "k2".into(),
-        200,
-        vec![],
-        bytes::Bytes::new(),
-        Duration::from_secs(300),
-    );
-
-    // Exactly one of k1/k2 is retained; the other was evicted. The current
-    // implementation evicts the oldest (k1) when k2 is inserted.
-    assert!(
-        cache.get("k1").is_none(),
-        "k1 should have been evicted by k2 on a zero-cap cache"
-    );
-    assert!(
-        cache.get("k2").is_some(),
-        "k2 should be retained (zero-cap cache holds at most one entry)"
-    );
+    for key in ["k1", "k2"] {
+        put_cache_entry(&cache, key, "ignored");
+        assert!(cache.get(key).is_none());
+        assert_eq!(cache.stats(), (0, 0));
+    }
 }
 
 #[test]
