@@ -17,6 +17,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Auth runtime deployment regression tests
+        run: python3 -m unittest discover -s deploy/tests -v
+
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
         with:

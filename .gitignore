@@ -35,5 +35,7 @@ config.local.*
 
 # ── 開発時に生まれるもの ───────────────────────────────────────────
 node_modules/
+__pycache__/
+*.pyc
 *.log
 *:Zone.Identifier
