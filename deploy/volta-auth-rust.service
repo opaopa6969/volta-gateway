@@ -11,9 +11,9 @@ After=volta-auth-rust.socket
 
 [Service]
 Type=simple
-EnvironmentFile=/home/opa/.config/volta-auth-rust.env
-ExecStart=/home/opa/work/volta-workspace/volta-gateway/target/release/volta-auth-server
-WorkingDirectory=/home/opa/work/volta-workspace/volta-gateway
+EnvironmentFile=%h/.config/volta-auth-rust.env
+ExecStart=%h/.local/lib/volta-auth/bin/volta-auth-server
+WorkingDirectory=%h/.local/lib/volta-auth
 Restart=always
 RestartSec=3
 # DB is a docker container on 127.0.0.1:54329; Restart=always rides out startup races.
