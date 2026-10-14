@@ -1,20 +1,32 @@
 #!/bin/sh
-# standby を primary に昇格する(**手動**)。戻すには primary を作り直す(basebackup)ので、
-# 昇格は「元の primary が死んだと判断したとき」だけ。判断は人が行う。
-#
-# 昇格後にやること(このスクリプトの外):
-#   1. auth-server(この箱)を DATABASE_URL=この DB で起動
-#   2. gateway の ForwardAuth 先をこの箱に向ける
-#   3. 元の primary が戻ってきても**書き込みさせない**(止めるか、この箱の standby にする)
 set -eu
+umask 077
+CONFIRM=0
+SOURCE_FENCED=0
+for argument in "$@"; do
+  case "$argument" in
+    --confirm) CONFIRM=1;;
+    --confirm-source-fenced) SOURCE_FENCED=1;;
+    *) echo "unknown promotion argument" >&2; exit 2;;
+  esac
+done
 NAME="${NAME:-volta-auth-postgres-standby}"
-BIND_AFTER="${BIND_AFTER:-0.0.0.0:54329}"   # 昇格後は LAN に出す(auth-server が別の箱でも繋げるように)
-docker exec "$NAME" psql -U volta -d volta_auth -tAc "select pg_is_in_recovery()" | grep -q t || { echo "既に primary(recovery ではない)"; exit 0; }
-docker exec "$NAME" pg_ctl promote -D /var/lib/postgresql/data -w
-docker exec "$NAME" psql -U volta -d volta_auth -tAc "select 'in_recovery='||pg_is_in_recovery()"
-# 束縛を LAN に広げる(コンテナを作り直す。データは volume なので残る)
-VOL=$(docker inspect "$NAME" --format '{{range .Mounts}}{{.Name}}{{end}}')
-IMAGE=$(docker inspect "$NAME" --format '{{.Config.Image}}')
-docker rm -f "$NAME" >/dev/null
-docker run -d --name "$NAME" --restart unless-stopped -p "$BIND_AFTER:5432" -e POSTGRES_PASSWORD=unused -v "$VOL:/var/lib/postgresql/data" "$IMAGE" >/dev/null
-echo "promoted and rebound to $BIND_AFTER"
+case "${DOCKER_HOST:-}" in unix:///*) ;; *) echo "explicit local Docker socket required" >&2; exit 2;; esac
+printf '%s' "${EXPECTED_CONTAINER_ID:-}" | grep -Eq '^[0-9a-f]{64}$' || { echo "full container ID required" >&2; exit 2; }
+printf '%s' "${MIN_REPLAY_LSN:-}" | grep -Eq '^[0-9A-Fa-f]{1,8}/[0-9A-Fa-f]{1,8}$' || { echo "valid minimum replay LSN required" >&2; exit 2; }
+printf '%s' "$NAME" | grep -Eq '^[a-zA-Z0-9][a-zA-Z0-9_.-]*$' || exit 2
+if [ "$CONFIRM" = 1 ] && [ "$SOURCE_FENCED" != 1 ]; then echo "source fence acknowledgement required" >&2; exit 2; fi
+STATE="${PROMOTION_STATE_ROOT:-$HOME/.local/state/volta-pg-promotion}"
+mkdir -p -m 700 "$STATE"
+[ ! -L "$STATE" ] && [ "$(stat -c %a "$STATE")" = 700 ] || exit 2
+exec 9>"$STATE/promotion.lock"
+flock -n 9 || { echo "another promotion is in progress" >&2; exit 1; }
+observed=$(docker --host "$DOCKER_HOST" inspect "$NAME" --format '{{.Id}} {{.State.Running}}')
+[ "$observed" = "$EXPECTED_CONTAINER_ID true" ] || { echo "target identity/state drift" >&2; exit 1; }
+query() { timeout 75 docker --host "$DOCKER_HOST" exec "$EXPECTED_CONTAINER_ID" psql -v ON_ERROR_STOP=1 -U volta -d postgres -Atc "$1"; }
+[ "$(query 'SELECT pg_is_in_recovery()')" = t ] || { echo "target is not a verified standby" >&2; exit 1; }
+[ "$(query "SELECT pg_last_wal_replay_lsn() >= '$MIN_REPLAY_LSN'::pg_lsn")" = t ] || { echo "standby has not replayed the required LSN" >&2; exit 1; }
+if [ "$CONFIRM" = 0 ]; then echo "dry-run: target verified; no promotion performed"; exit 0; fi
+[ "$(query 'SELECT pg_promote(true,60)')" = t ] || { echo "promotion unconfirmed; inspect target before retry" >&2; exit 1; }
+[ "$(query 'SELECT pg_is_in_recovery()')" = f ] || { echo "primary state unconfirmed; inspect target before retry" >&2; exit 1; }
+echo "promoted in place; container identity, mounts and port bindings unchanged"

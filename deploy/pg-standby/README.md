@@ -35,4 +35,20 @@ host の loopback に届かない（slirp4netns の `--disable-host-loopback`）
 
 ## 昇格までに要るもの（未）
 
+昇格helperはin-place処理のみ。container削除・recreate・image pull・LANへのport公開を行わない。
+次の変数でlocal daemonとtarget identity、必要なreplay LSNを固定する。
+
+```
+DOCKER_HOST=unix:///run/user/1000/docker.sock EXPECTED_CONTAINER_ID=FULL_64_HEX_ID MIN_REPLAY_LSN=X/Y sh promote.sh
+```
+
+既定はread-only検証のみ（private lock directoryは作る）。明示的に
+`--confirm-source-fenced --confirm` を付けた場合だけpg_promoteを呼ぶ。
+identity/state drift、standby状態不明、replay不足、並行実行を拒否し、昇格後recovery=falseを確認する。
+既にprimaryなら成功と決めつけず拒否する。timeout後は実状態を観測してから判断する。
+source fence acknowledgementは操作側の申告であり、source停止を自動検証した証拠ではない。
+全writer/旧service/socketの停止・起動fence・旧DB restart policy無効化/停止・最終LSN確定と
+rollbackを別途検証してから確認flagを渡す。このhelper単独で本番切替を完了扱いにしない。
+公開portの変更が必要なら別の明示的な変更単位として扱い、自動で公開範囲を広げない。
+
 auth-server（Rust バイナリ + env）を p52 に置く、gateway の ForwardAuth を切替える、hub standby。これらは別 PR。
