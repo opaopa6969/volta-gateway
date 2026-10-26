@@ -1176,7 +1176,9 @@ with the same mock auth (see [`docs/benchmark-article.md`](../docs/benchmark-art
   double-decoded `%252e%252e` all rejected in `ProxyState::Validated`.
 - CORS default-deny (DD-001).
 - L4 TCP/UDP proxy is intentionally *not* auth-gated (DD-002): use
-  `ip_allowlist` instead.
+  `ip_allowlist` instead. UDP replies are accepted only from the configured
+  backend IP and port; packets from other sources are discarded while waiting
+  for a reply and do not extend the five-second response timeout.
 - Backend `X-Volta-*` response headers are stripped before forwarding to
   prevent identity forgery.
 - Trusted-proxy list narrows X-Forwarded-For / CF-Connecting-IP acceptance.

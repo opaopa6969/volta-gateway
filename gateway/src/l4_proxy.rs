@@ -45,6 +45,11 @@ async fn serve_tcp(listen_port: u16, backend: &str, allowlist: Option<Vec<ipnet:
         "L4/TCP proxy listening"
     );
 
+    serve_tcp_on(listener, backend, allowlist).await;
+}
+
+async fn serve_tcp_on(listener: TcpListener, backend: &str, allowlist: Option<Vec<ipnet::IpNet>>) {
+    let listen_port = listener.local_addr().unwrap().port();
     let backend_addr: String = backend.to_string();
     loop {
         let (client_stream, client_addr) = match listener.accept().await {
@@ -127,6 +132,15 @@ async fn serve_udp(listen_port: u16, backend: &str, allowlist: Option<Vec<ipnet:
         }
     };
 
+    serve_udp_on(socket, backend_addr, allowlist).await;
+}
+
+async fn serve_udp_on(
+    socket: UdpSocket,
+    backend_addr: SocketAddr,
+    allowlist: Option<Vec<ipnet::IpNet>>,
+) {
+    let listen_port = socket.local_addr().unwrap().port();
     let mut buf = vec![0u8; 65535];
     loop {
         let (len, src) = match socket.recv_from(&mut buf).await {
@@ -152,14 +166,24 @@ async fn serve_udp(listen_port: u16, backend: &str, allowlist: Option<Vec<ipnet:
             continue;
         }
 
-        // Wait for response from backend (with timeout)
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            socket.recv_from(&mut buf),
-        )
+        // Only the configured backend IP and port may answer. Rejected packets
+        // must not reset the overall response deadline.
+        match tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let (resp_len, peer) = socket.recv_from(&mut buf).await?;
+                if peer == backend_addr {
+                    return Ok::<usize, std::io::Error>(resp_len);
+                }
+                warn!(
+                    port = listen_port,
+                    source = %peer,
+                    "L4/UDP response rejected: source is not the configured backend"
+                );
+            }
+        })
         .await
         {
-            Ok(Ok((resp_len, _))) => {
+            Ok(Ok(resp_len)) => {
                 if let Err(e) = socket.send_to(&buf[..resp_len], src).await {
                     warn!(port = listen_port, "L4/UDP send to client failed: {e}");
                 }
@@ -200,5 +224,195 @@ mod tests {
     fn allowlist_checks_all_entries() {
         let ip: IpAddr = "192.168.1.1".parse().unwrap();
         assert!(ip_allowed(ip, &nets(&["10.0.0.0/24", "192.168.1.0/24"])));
+    }
+
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::time::timeout;
+
+    const IO_TIMEOUT: Duration = Duration::from_secs(2);
+    const REJECTION_WINDOW: Duration = Duration::from_millis(100);
+
+    // Abort long-running listeners even when a test assertion fails.
+    struct ProxyTask(tokio::task::JoinHandle<()>);
+
+    impl Drop for ProxyTask {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+
+    async fn tcp_roundtrip(allowlist: Option<Vec<ipnet::IpNet>>) {
+        let backend = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = listener.local_addr().unwrap();
+        let backend_addr = backend.local_addr().unwrap().to_string();
+        let _proxy = ProxyTask(tokio::spawn(async move {
+            serve_tcp_on(listener, &backend_addr, allowlist).await;
+        }));
+        let mut client = TcpStream::connect(proxy_addr).await.unwrap();
+        client.write_all(b"request").await.unwrap();
+        let (mut peer, _) = timeout(IO_TIMEOUT, backend.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut buf = [0; 7];
+        timeout(IO_TIMEOUT, peer.read_exact(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&buf, b"request");
+        peer.write_all(b"reply").await.unwrap();
+        let mut response = [0; 5];
+        timeout(IO_TIMEOUT, client.read_exact(&mut response))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&response, b"reply");
+    }
+
+    #[tokio::test]
+    async fn tcp_allowlist_permits_roundtrip() {
+        tcp_roundtrip(nets(&["127.0.0.1/32"])).await;
+    }
+
+    #[tokio::test]
+    async fn tcp_empty_allowlist_preserves_roundtrip() {
+        tcp_roundtrip(empty_allowlist()).await;
+    }
+
+    fn empty_allowlist() -> Option<Vec<ipnet::IpNet>> {
+        L4ProxyEntry {
+            listen_port: 1234,
+            protocol: "udp".into(),
+            backend: "127.0.0.1:5678".into(),
+            ip_allowlist: vec![],
+        }
+        .ip_allowlist_nets()
+    }
+
+    #[tokio::test]
+    async fn tcp_allowlist_rejects_before_backend_connect() {
+        let backend = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = listener.local_addr().unwrap();
+        let backend_addr = backend.local_addr().unwrap().to_string();
+        let _proxy = ProxyTask(tokio::spawn(async move {
+            serve_tcp_on(listener, &backend_addr, nets(&["192.0.2.0/24"])).await;
+        }));
+        let mut client = TcpStream::connect(proxy_addr).await.unwrap();
+        let mut buf = [0; 1];
+        let result = timeout(IO_TIMEOUT, client.read(&mut buf)).await.unwrap();
+        assert!(matches!(result, Ok(0)) || result.is_err());
+        assert!(timeout(REJECTION_WINDOW, backend.accept()).await.is_err());
+    }
+
+    async fn udp_proxy(allowlist: Option<Vec<ipnet::IpNet>>) -> (UdpSocket, SocketAddr, ProxyTask) {
+        let backend = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let backend_addr = backend.local_addr().unwrap();
+        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = socket.local_addr().unwrap();
+        let proxy = ProxyTask(tokio::spawn(serve_udp_on(socket, backend_addr, allowlist)));
+        (backend, proxy_addr, proxy)
+    }
+
+    async fn udp_roundtrip(allowlist: Option<Vec<ipnet::IpNet>>) {
+        let (backend, proxy_addr, _proxy) = udp_proxy(allowlist).await;
+        let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        client.send_to(b"request", proxy_addr).await.unwrap();
+        let mut buf = [0; 64];
+        let (len, peer) = timeout(IO_TIMEOUT, backend.recv_from(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&buf[..len], b"request");
+        backend.send_to(b"reply", peer).await.unwrap();
+        let (len, peer) = timeout(IO_TIMEOUT, client.recv_from(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&buf[..len], b"reply");
+        assert_eq!(peer, proxy_addr);
+    }
+
+    #[tokio::test]
+    async fn udp_allowlist_permits_roundtrip() {
+        udp_roundtrip(nets(&["127.0.0.1/32"])).await;
+    }
+
+    #[tokio::test]
+    async fn udp_empty_allowlist_preserves_roundtrip() {
+        udp_roundtrip(empty_allowlist()).await;
+    }
+
+    #[tokio::test]
+    async fn udp_allowlist_rejects_before_backend_forward() {
+        let (backend, proxy_addr, _proxy) = udp_proxy(nets(&["127.0.0.1/32"])).await;
+        let denied = UdpSocket::bind("127.0.0.2:0").await.unwrap();
+        denied.send_to(b"denied", proxy_addr).await.unwrap();
+        let mut buf = [0; 64];
+        assert!(timeout(REJECTION_WINDOW, backend.recv_from(&mut buf))
+            .await
+            .is_err());
+        // The listener must still serve permitted clients after rejection.
+        let allowed = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        allowed.send_to(b"allowed", proxy_addr).await.unwrap();
+        let (len, peer) = timeout(IO_TIMEOUT, backend.recv_from(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&buf[..len], b"allowed");
+        backend.send_to(b"reply", peer).await.unwrap();
+        let (len, _) = timeout(IO_TIMEOUT, allowed.recv_from(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&buf[..len], b"reply");
+    }
+
+    async fn rejects_injected_response(attacker_ip: &str, allowlist: Option<Vec<ipnet::IpNet>>) {
+        let (backend, proxy_addr, _proxy) = udp_proxy(allowlist).await;
+        let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let attacker = UdpSocket::bind((attacker_ip, 0)).await.unwrap();
+        client.send_to(b"request", proxy_addr).await.unwrap();
+        let mut buf = [0; 64];
+        // Seeing the request at the backend proves the proxy is awaiting its response.
+        let (len, peer) = timeout(IO_TIMEOUT, backend.recv_from(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&buf[..len], b"request");
+        attacker.send_to(b"injected", peer).await.unwrap();
+        assert!(
+            timeout(REJECTION_WINDOW, client.recv_from(&mut buf))
+                .await
+                .is_err(),
+            "a packet from a different backend address reached the client"
+        );
+        backend.send_to(b"real response", peer).await.unwrap();
+        let (len, peer) = timeout(IO_TIMEOUT, client.recv_from(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&buf[..len], b"real response");
+        assert_eq!(peer, proxy_addr);
+        assert!(timeout(REJECTION_WINDOW, backend.recv_from(&mut buf))
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn udp_response_rejects_ip_outside_allowlist() {
+        rejects_injected_response("127.0.0.2", nets(&["127.0.0.1/32"])).await;
+    }
+
+    #[tokio::test]
+    async fn udp_response_rejects_backend_ip_with_wrong_port() {
+        rejects_injected_response("127.0.0.1", nets(&["127.0.0.1/32"])).await;
+    }
+
+    #[tokio::test]
+    async fn udp_response_rejects_injection_with_empty_allowlist() {
+        rejects_injected_response("127.0.0.2", empty_allowlist()).await;
     }
 }
