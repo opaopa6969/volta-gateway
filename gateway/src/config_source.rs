@@ -40,6 +40,11 @@ pub struct ConfigSourceEntry {
     pub prod_env: Option<String>,
     #[serde(default)]
     pub prod_host: Option<String>,
+    /// services.json (legacy array) specific: domain appended to `name` when a
+    /// service has no explicit `host` (`<name>.<base_domain>`). Default
+    /// `unlaxer.org`.
+    #[serde(default)]
+    pub base_domain: Option<String>,
     /// Docker labels specific
     #[serde(default)]
     pub docker_socket: Option<String>,
@@ -151,7 +156,13 @@ pub struct ServicesJsonSource {
     /// When true, keep polling the file for changes after the initial load.
     /// Default false — a single load at startup, no hot-reload.
     watch: bool,
+    /// Legacy array format: host for a service without `host` is
+    /// `<name>.<base_domain>`.
+    base_domain: String,
 }
+
+/// Default for `config_sources[].base_domain` — the value that used to be hardcoded.
+pub const DEFAULT_BASE_DOMAIN: &str = "unlaxer.org";
 
 impl ServicesJsonSource {
     pub fn new(path: &str, prod_host: &str) -> Self {
@@ -164,12 +175,23 @@ impl ServicesJsonSource {
             prod_host: prod_host.to_string(),
             prod_env: prod_env.to_string(),
             watch: false,
+            base_domain: DEFAULT_BASE_DOMAIN.to_string(),
         }
     }
 
     /// Enable file-watch (poll-based hot reload).
     pub fn with_watch(mut self, watch: bool) -> Self {
         self.watch = watch;
+        self
+    }
+
+    /// Domain for services without an explicit `host` (legacy array format).
+    /// Blank keeps the default.
+    pub fn with_base_domain(mut self, base_domain: &str) -> Self {
+        let d = base_domain.trim().trim_matches('.');
+        if !d.is_empty() {
+            self.base_domain = d.to_string();
+        }
         self
     }
 
@@ -329,7 +351,7 @@ impl ServicesJsonSource {
         for svc in services {
             let host = match svc.host {
                 Some(h) => h,
-                None => format!("{}.unlaxer.org", svc.name),
+                None => format!("{}.{}", svc.name, self.base_domain),
             };
             let port = svc.port.unwrap_or(3000);
             let backend = format!("http://{}:{}", self.prod_host, port);
@@ -412,6 +434,7 @@ impl ConfigSource for ServicesJsonSource {
         let path = self.path.clone();
         let prod_host = self.prod_host.clone();
         let prod_env = self.prod_env.clone();
+        let base_domain = self.base_domain.clone();
         let mut last_modified = std::fs::metadata(&path)
             .ok()
             .and_then(|m| m.modified().ok());
@@ -427,7 +450,8 @@ impl ConfigSource for ServicesJsonSource {
 
             if current != last_modified {
                 last_modified = current;
-                let source = ServicesJsonSource::with_env(&path, &prod_host, &prod_env);
+                let source = ServicesJsonSource::with_env(&path, &prod_host, &prod_env)
+                    .with_base_domain(&base_domain);
                 match source.load() {
                     Ok(routes) => {
                         info!(
@@ -873,7 +897,9 @@ pub fn create_sources(entries: &[ConfigSourceEntry]) -> Vec<Box<dyn ConfigSource
                 let host = entry.prod_host.as_deref().unwrap_or("localhost");
                 let env = entry.prod_env.as_deref().unwrap_or("prod");
                 sources.push(Box::new(
-                    ServicesJsonSource::with_env(path, host, env).with_watch(entry.watch),
+                    ServicesJsonSource::with_env(path, host, env)
+                        .with_watch(entry.watch)
+                        .with_base_domain(entry.base_domain.as_deref().unwrap_or("")),
                 ));
                 info!(
                     source = "services-json",

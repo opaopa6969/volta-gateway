@@ -333,22 +333,49 @@ pub async fn temporary_access_page() -> Response {
 
 #[allow(dead_code)]
 fn temporary_access_page_html() -> Response {
-    Html(r#"<!doctype html><html lang="ja"><meta charset="utf-8"><title>一時アクセス</title><style>body{font-family:system-ui;max-width:42rem;margin:3rem auto;padding:0 1rem}label,input,select,button{display:block;width:100%;box-sizing:border-box;margin:.45rem 0;padding:.65rem}#result{margin-top:1rem;padding:1rem;background:#f4f4f4;word-break:break-all}.hidden{display:none}</style><h1>一時アクセスを発行</h1><form id="grant"><label>Tenant<select id="tenant" name="tenant_id" required></select></label><label>Subject<input name="subject" placeholder="user@example.com / program:name" required></label><label>Role<select name="role"><option>MEMBER</option><option>VIEWER</option><option>ADMIN</option></select></label><label>許可 domain<input name="domains" placeholder="kamishibai.unlaxer.org, *.unlaxer.org" required></label><label>除外 domain<input name="blocked_domains"></label><label>期間<select id="period"><option value="relative" selected>今からの時間</option><option value="absolute">開始・終了日時</option></select></label><div id="relative"><label>開始まで（時間）<input id="startHours" type="number" min="0" value="0"></label><label>有効時間<input id="durationHours" type="number" min="1" value="24"></label></div><div id="absolute" class="hidden"><label>開始<input id="startsAt" type="datetime-local"></label><label>終了<input id="expiresAt" type="datetime-local"></label></div><button>発行</button></form><div id="result" aria-live="polite"></div><script>const $=s=>document.querySelector(s),split=s=>s.split(',').map(x=>x.trim()).filter(Boolean),show=t=>$('#result').textContent=t;fetch('/select-tenant',{credentials:'include'}).then(r=>r.ok?r.json():Promise.reject(r.status)).then(d=>{$('#tenant').innerHTML=(d.tenants||[]).map(t=>`<option value="${t.id}">${t.name} (${t.slug})</option>`).join('');if(!d.tenants?.length)show('利用できる tenant がありません。');}).catch(e=>show('tenant の取得に失敗しました: '+e));$('#period').onchange=()=>{let a=$('#period').value==='absolute';$('#absolute').classList.toggle('hidden',!a);$('#relative').classList.toggle('hidden',a);$('#startsAt').required=a;$('#expiresAt').required=a};$('#grant').onsubmit=async e=>{e.preventDefault();let x=Object.fromEntries(new FormData(e.currentTarget)),now=Date.now();if($('#period').value==='relative'){x.starts_at=new Date(now+(+$('#startHours').value||0)*3600000).toISOString();x.expires_at=new Date(new Date(x.starts_at).getTime()+(+$('#durationHours').value||0)*3600000).toISOString()}else{x.starts_at=new Date($('#startsAt').value).toISOString();x.expires_at=new Date($('#expiresAt').value).toISOString()}x.domains=split(x.domains);x.blocked_domains=split(x.blocked_domains);try{let r=await fetch('/api/v1/temporary-access',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(x)}),d=await r.json();if(!r.ok)throw new Error(d?.error?.message||JSON.stringify(d));let target=x.domains[0].replace(/^\*\./,'app.'),link=location.origin+'/temporary-access/activate?token='+encodeURIComponent(d.bearer)+'&return_to='+encodeURIComponent('https://'+target+'/'),box=$('#result');box.replaceChildren();for(const [label,value] of [['Bearer','Authorization: Bearer '+d.bearer],['Link',link]]){let h=document.createElement('strong'),v=document.createElement(label==='Link'?'a':'code'),copy=document.createElement('button');h.textContent=label;v.textContent=value;if(label==='Link'){v.href=link;v.target='_blank';v.rel='noreferrer'}copy.type='button';copy.textContent='コピー';copy.onclick=()=>navigator.clipboard.writeText(value);box.append(h,v,copy,document.createElement('br'));}}catch(err){show('発行に失敗しました: '+err.message)}};</script></html>"#.to_string()).into_response()
+    Html(r#"<!doctype html><html lang="ja"><meta charset="utf-8"><title>一時アクセス</title><style>body{font-family:system-ui;max-width:42rem;margin:3rem auto;padding:0 1rem}label,input,select,button{display:block;width:100%;box-sizing:border-box;margin:.45rem 0;padding:.65rem}#result{margin-top:1rem;padding:1rem;background:#f4f4f4;word-break:break-all}.hidden{display:none}</style><h1>一時アクセスを発行</h1><form id="grant"><label>Tenant<select id="tenant" name="tenant_id" required></select></label><label>Subject<input name="subject" placeholder="user@example.com / program:name" required></label><label>Role<select name="role"><option>MEMBER</option><option>VIEWER</option><option>ADMIN</option></select></label><label>許可 domain<input name="domains" placeholder="app.example.com, *.example.com" required></label><label>除外 domain<input name="blocked_domains"></label><label>期間<select id="period"><option value="relative" selected>今からの時間</option><option value="absolute">開始・終了日時</option></select></label><div id="relative"><label>開始まで（時間）<input id="startHours" type="number" min="0" value="0"></label><label>有効時間<input id="durationHours" type="number" min="1" value="24"></label></div><div id="absolute" class="hidden"><label>開始<input id="startsAt" type="datetime-local"></label><label>終了<input id="expiresAt" type="datetime-local"></label></div><button>発行</button></form><div id="result" aria-live="polite"></div><script>const $=s=>document.querySelector(s),split=s=>s.split(',').map(x=>x.trim()).filter(Boolean),show=t=>$('#result').textContent=t;fetch('/select-tenant',{credentials:'include'}).then(r=>r.ok?r.json():Promise.reject(r.status)).then(d=>{$('#tenant').innerHTML=(d.tenants||[]).map(t=>`<option value="${t.id}">${t.name} (${t.slug})</option>`).join('');if(!d.tenants?.length)show('利用できる tenant がありません。');}).catch(e=>show('tenant の取得に失敗しました: '+e));$('#period').onchange=()=>{let a=$('#period').value==='absolute';$('#absolute').classList.toggle('hidden',!a);$('#relative').classList.toggle('hidden',a);$('#startsAt').required=a;$('#expiresAt').required=a};$('#grant').onsubmit=async e=>{e.preventDefault();let x=Object.fromEntries(new FormData(e.currentTarget)),now=Date.now();if($('#period').value==='relative'){x.starts_at=new Date(now+(+$('#startHours').value||0)*3600000).toISOString();x.expires_at=new Date(new Date(x.starts_at).getTime()+(+$('#durationHours').value||0)*3600000).toISOString()}else{x.starts_at=new Date($('#startsAt').value).toISOString();x.expires_at=new Date($('#expiresAt').value).toISOString()}x.domains=split(x.domains);x.blocked_domains=split(x.blocked_domains);try{let r=await fetch('/api/v1/temporary-access',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(x)}),d=await r.json();if(!r.ok)throw new Error(d?.error?.message||JSON.stringify(d));let target=x.domains[0].replace(/^\*\./,'app.'),link=location.origin+'/temporary-access/activate?token='+encodeURIComponent(d.bearer)+'&return_to='+encodeURIComponent(location.protocol+'//'+target+'/'),box=$('#result');box.replaceChildren();for(const [label,value] of [['Bearer','Authorization: Bearer '+d.bearer],['Link',link]]){let h=document.createElement('strong'),v=document.createElement(label==='Link'?'a':'code'),copy=document.createElement('button');h.textContent=label;v.textContent=value;if(label==='Link'){v.href=link;v.target='_blank';v.rel='noreferrer'}copy.type='button';copy.textContent='コピー';copy.onclick=()=>navigator.clipboard.writeText(value);box.append(h,v,copy,document.createElement('br'));}}catch(err){show('発行に失敗しました: '+err.message)}};</script></html>"#.to_string()).into_response()
 }
 
 #[allow(dead_code)]
 fn temporary_access_page_html_v1() -> Response {
-    Html(r#"<!doctype html><html lang="ja"><meta charset="utf-8"><title>一時アクセス</title><style>body{font-family:system-ui;max-width:42rem;margin:3rem auto;padding:0 1rem}label,input,select,button{display:block;width:100%;box-sizing:border-box;margin:.45rem 0;padding:.65rem}pre{white-space:pre-wrap;background:#f4f4f4;padding:1rem}.hidden{display:none}</style><h1>一時アクセスを発行</h1><form id="grant"><label>Tenant<select id="tenant" name="tenant_id" required></select></label><label>Subject<input name="subject" placeholder="user@example.com / program:name" required></label><label>Role<select name="role"><option>MEMBER</option><option>VIEWER</option><option>ADMIN</option></select></label><label>許可 domain<input name="domains" placeholder="kamishibai.unlaxer.org, *.unlaxer.org" required></label><label>除外 domain<input name="blocked_domains" placeholder="admin.unlaxer.org"></label><label>期間方式<select id="period"><option value="relative" selected>今からの時間</option><option value="absolute">開始・終了日時</option></select></label><div id="relative"><label>開始まで（時間）<input id="startHours" type="number" min="0" value="0"></label><label>有効時間<input id="durationHours" type="number" min="1" value="24"></label></div><div id="absolute" class="hidden"><label>開始<input id="startsAt" type="datetime-local"></label><label>終了<input id="expiresAt" type="datetime-local"></label></div><button>発行</button></form><pre id="output" aria-live="polite"></pre><script>const $=s=>document.querySelector(s),split=s=>s.split(',').map(x=>x.trim()).filter(Boolean);fetch('/select-tenant',{credentials:'include'}).then(r=>r.ok?r.json():Promise.reject(r.status)).then(d=>{$('#tenant').innerHTML=(d.tenants||[]).map(t=>`<option value="${t.id}">${t.name} (${t.slug})</option>`).join('');if(!d.tenants?.length)$('#output').textContent='利用できる tenant がありません。';}).catch(e=>$('#output').textContent='tenant の取得に失敗しました: '+e);$('#period').onchange=()=>{let a=$('#period').value==='absolute';$('#absolute').classList.toggle('hidden',!a);$('#relative').classList.toggle('hidden',a);$('#startsAt').required=a;$('#expiresAt').required=a};$('#grant').onsubmit=async e=>{e.preventDefault();let x=Object.fromEntries(new FormData(e.currentTarget)),now=Date.now();if($('#period').value==='relative'){x.starts_at=new Date(now+(+$('#startHours').value||0)*3600000).toISOString();x.expires_at=new Date(new Date(x.starts_at).getTime()+(+$('#durationHours').value||0)*3600000).toISOString()}else{x.starts_at=new Date($('#startsAt').value).toISOString();x.expires_at=new Date($('#expiresAt').value).toISOString()}x.domains=split(x.domains);x.blocked_domains=split(x.blocked_domains);try{let r=await fetch('/api/v1/temporary-access',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(x)}),d=await r.json();if(!r.ok)throw new Error(d?.error?.message||JSON.stringify(d));let target=x.domains[0].replace(/^\*\./,'app.'),link=location.origin+'/temporary-access/activate?token='+encodeURIComponent(d.bearer)+'&return_to='+encodeURIComponent('https://'+target+'/');$('#output').textContent='Bearer\\nAuthorization: Bearer '+d.bearer+'\\n\\nLink\\n'+link;}catch(err){$('#output').textContent='発行に失敗しました: '+err.message}};</script></html>"#.to_string()).into_response()
+    Html(r#"<!doctype html><html lang="ja"><meta charset="utf-8"><title>一時アクセス</title><style>body{font-family:system-ui;max-width:42rem;margin:3rem auto;padding:0 1rem}label,input,select,button{display:block;width:100%;box-sizing:border-box;margin:.45rem 0;padding:.65rem}pre{white-space:pre-wrap;background:#f4f4f4;padding:1rem}.hidden{display:none}</style><h1>一時アクセスを発行</h1><form id="grant"><label>Tenant<select id="tenant" name="tenant_id" required></select></label><label>Subject<input name="subject" placeholder="user@example.com / program:name" required></label><label>Role<select name="role"><option>MEMBER</option><option>VIEWER</option><option>ADMIN</option></select></label><label>許可 domain<input name="domains" placeholder="app.example.com, *.example.com" required></label><label>除外 domain<input name="blocked_domains" placeholder="admin.example.com"></label><label>期間方式<select id="period"><option value="relative" selected>今からの時間</option><option value="absolute">開始・終了日時</option></select></label><div id="relative"><label>開始まで（時間）<input id="startHours" type="number" min="0" value="0"></label><label>有効時間<input id="durationHours" type="number" min="1" value="24"></label></div><div id="absolute" class="hidden"><label>開始<input id="startsAt" type="datetime-local"></label><label>終了<input id="expiresAt" type="datetime-local"></label></div><button>発行</button></form><pre id="output" aria-live="polite"></pre><script>const $=s=>document.querySelector(s),split=s=>s.split(',').map(x=>x.trim()).filter(Boolean);fetch('/select-tenant',{credentials:'include'}).then(r=>r.ok?r.json():Promise.reject(r.status)).then(d=>{$('#tenant').innerHTML=(d.tenants||[]).map(t=>`<option value="${t.id}">${t.name} (${t.slug})</option>`).join('');if(!d.tenants?.length)$('#output').textContent='利用できる tenant がありません。';}).catch(e=>$('#output').textContent='tenant の取得に失敗しました: '+e);$('#period').onchange=()=>{let a=$('#period').value==='absolute';$('#absolute').classList.toggle('hidden',!a);$('#relative').classList.toggle('hidden',a);$('#startsAt').required=a;$('#expiresAt').required=a};$('#grant').onsubmit=async e=>{e.preventDefault();let x=Object.fromEntries(new FormData(e.currentTarget)),now=Date.now();if($('#period').value==='relative'){x.starts_at=new Date(now+(+$('#startHours').value||0)*3600000).toISOString();x.expires_at=new Date(new Date(x.starts_at).getTime()+(+$('#durationHours').value||0)*3600000).toISOString()}else{x.starts_at=new Date($('#startsAt').value).toISOString();x.expires_at=new Date($('#expiresAt').value).toISOString()}x.domains=split(x.domains);x.blocked_domains=split(x.blocked_domains);try{let r=await fetch('/api/v1/temporary-access',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(x)}),d=await r.json();if(!r.ok)throw new Error(d?.error?.message||JSON.stringify(d));let target=x.domains[0].replace(/^\*\./,'app.'),link=location.origin+'/temporary-access/activate?token='+encodeURIComponent(d.bearer)+'&return_to='+encodeURIComponent(location.protocol+'//'+target+'/');$('#output').textContent='Bearer\\nAuthorization: Bearer '+d.bearer+'\\n\\nLink\\n'+link;}catch(err){$('#output').textContent='発行に失敗しました: '+err.message}};</script></html>"#.to_string()).into_response()
 }
 
 #[allow(dead_code)]
 fn temporary_access_page_previous() -> Response {
-    Html(r#"<!doctype html><html lang="ja"><meta charset="utf-8"><title>一時アクセス</title><style>body{font-family:system-ui;max-width:42rem;margin:3rem auto;padding:0 1rem}input,select{width:100%;padding:.65rem;margin:.3rem 0}button{padding:.7rem 1rem}pre{white-space:pre-wrap;background:#f4f4f4;padding:1rem}.relative{display:none}</style><h1>一時アクセスを発行</h1><p>subject はメールアドレスまたは <code>program:kamishibai-bot</code> のようなプログラム識別子です。</p><form id=f><label>Tenant<select name=tenant_id id=tenant required></select></label><label>Subject<input name=subject placeholder="user@example.com または program:name" required></label><label>Role<select name=role><option>MEMBER</option><option>VIEWER</option><option>ADMIN</option></select></label><label>許可 domain（allowlist、<code>*.unlaxer.org</code> 可）<input name=domains required></label><label>除外 domain（blocklist、任意）<input name=blocked_domains></label><label>期間入力<select id=mode><option value=absolute>開始・終了日時</option><option value=relative>今からの期間</option></select></label><span id=absolute><label>開始<input name=starts_at type=datetime-local required></label><label>終了<input name=expires_at type=datetime-local required></label></span><span id=relative class=relative><label>開始までの時間<input id=start_hours type=number min=0 value=0></label><label>有効時間<input id=duration_hours type=number min=1 value=24></label></span><button>一時アクセスを発行</button></form><pre id=o></pre><script>const split=s=>s.split(',').map(x=>x.trim()).filter(Boolean),abs=document.querySelector('#absolute'),rel=document.querySelector('#relative');mode.onchange=()=>{let r=mode.value==='relative';rel.style.display=r?'block':'none';abs.style.display=r?'none':'block'};fetch('/select-tenant',{credentials:'include'}).then(r=>r.json()).then(d=>tenant.innerHTML=(d.tenants||[]).map(t=>'<option value="'+t.id+'">'+t.name+' ('+t.slug+')</option>').join(''));f.onsubmit=async e=>{e.preventDefault();let x=Object.fromEntries(new FormData(f)),now=Date.now();if(mode.value==='relative'){x.starts_at=new Date(now+(+start_hours.value||0)*3600000).toISOString();x.expires_at=new Date(new Date(x.starts_at).getTime()+(+duration_hours.value||0)*3600000).toISOString()}else{x.starts_at=new Date(x.starts_at).toISOString();x.expires_at=new Date(x.expires_at).toISOString()}x.domains=split(x.domains);x.blocked_domains=split(x.blocked_domains);let r=await fetch('/api/v1/temporary-access',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(x)});if(!r.ok){o.textContent='発行に失敗しました。';return}let d=await r.json(),link=location.origin+'/temporary-access/activate?token='+encodeURIComponent(d.bearer)+'&return_to='+encodeURIComponent('https://'+x.domains[0].replace(/^\*\./,'app.')+'/');o.textContent='Bearer\\nAuthorization: Bearer '+d.bearer+'\\n\\nLink\\n'+link;};</script></html>"#.to_string()).into_response()
+    Html(r#"<!doctype html><html lang="ja"><meta charset="utf-8"><title>一時アクセス</title><style>body{font-family:system-ui;max-width:42rem;margin:3rem auto;padding:0 1rem}input,select{width:100%;padding:.65rem;margin:.3rem 0}button{padding:.7rem 1rem}pre{white-space:pre-wrap;background:#f4f4f4;padding:1rem}.relative{display:none}</style><h1>一時アクセスを発行</h1><p>subject はメールアドレスまたは <code>program:kamishibai-bot</code> のようなプログラム識別子です。</p><form id=f><label>Tenant<select name=tenant_id id=tenant required></select></label><label>Subject<input name=subject placeholder="user@example.com または program:name" required></label><label>Role<select name=role><option>MEMBER</option><option>VIEWER</option><option>ADMIN</option></select></label><label>許可 domain（allowlist、<code>*.example.com</code> 可）<input name=domains required></label><label>除外 domain（blocklist、任意）<input name=blocked_domains></label><label>期間入力<select id=mode><option value=absolute>開始・終了日時</option><option value=relative>今からの期間</option></select></label><span id=absolute><label>開始<input name=starts_at type=datetime-local required></label><label>終了<input name=expires_at type=datetime-local required></label></span><span id=relative class=relative><label>開始までの時間<input id=start_hours type=number min=0 value=0></label><label>有効時間<input id=duration_hours type=number min=1 value=24></label></span><button>一時アクセスを発行</button></form><pre id=o></pre><script>const split=s=>s.split(',').map(x=>x.trim()).filter(Boolean),abs=document.querySelector('#absolute'),rel=document.querySelector('#relative');mode.onchange=()=>{let r=mode.value==='relative';rel.style.display=r?'block':'none';abs.style.display=r?'none':'block'};fetch('/select-tenant',{credentials:'include'}).then(r=>r.json()).then(d=>tenant.innerHTML=(d.tenants||[]).map(t=>'<option value="'+t.id+'">'+t.name+' ('+t.slug+')</option>').join(''));f.onsubmit=async e=>{e.preventDefault();let x=Object.fromEntries(new FormData(f)),now=Date.now();if(mode.value==='relative'){x.starts_at=new Date(now+(+start_hours.value||0)*3600000).toISOString();x.expires_at=new Date(new Date(x.starts_at).getTime()+(+duration_hours.value||0)*3600000).toISOString()}else{x.starts_at=new Date(x.starts_at).toISOString();x.expires_at=new Date(x.expires_at).toISOString()}x.domains=split(x.domains);x.blocked_domains=split(x.blocked_domains);let r=await fetch('/api/v1/temporary-access',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(x)});if(!r.ok){o.textContent='発行に失敗しました。';return}let d=await r.json(),link=location.origin+'/temporary-access/activate?token='+encodeURIComponent(d.bearer)+'&return_to='+encodeURIComponent(location.protocol+'//'+x.domains[0].replace(/^\*\./,'app.')+'/');o.textContent='Bearer\\nAuthorization: Bearer '+d.bearer+'\\n\\nLink\\n'+link;};</script></html>"#.to_string()).into_response()
 }
 
 #[allow(dead_code)]
 fn temporary_access_page_legacy() -> Response {
-    Html(r#"<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>一時アクセス — Volta Auth</title><style>body{font-family:system-ui;max-width:42rem;margin:3rem auto;padding:0 1rem}input,select{width:100%;padding:.65rem;margin:.3rem 0}button{padding:.7rem 1rem}pre{white-space:pre-wrap;background:#f4f4f4;padding:1rem}</style><h1>一時アクセスを発行</h1><p>role、許可 domain、開始・終了時刻を指定します。token はこの画面で一度だけ表示されます。</p><form id=f><input name=tenant_id placeholder="Tenant UUID" required><input name=subject type=email placeholder="利用者のメールアドレス" required><select name=role><option>MEMBER</option><option>VIEWER</option><option>ADMIN</option></select><input name=domains placeholder="許可 domain（例: kamishibai.unlaxer.org、複数はカンマ区切り）" required><label>開始<input name=starts_at type=datetime-local required></label><label>終了<input name=expires_at type=datetime-local required></label><button>一時アクセスを発行</button></form><pre id=o></pre><script>f.onsubmit=async e=>{e.preventDefault();let x=Object.fromEntries(new FormData(f));x.domains=x.domains.split(',').map(v=>v.trim()).filter(Boolean);x.starts_at=new Date(x.starts_at).toISOString();x.expires_at=new Date(x.expires_at).toISOString();let r=await fetch('/api/v1/temporary-access',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(x)});if(!r.ok){o.textContent='発行に失敗しました。';return}let d=await r.json(),link=location.origin+'/temporary-access/activate?token='+encodeURIComponent(d.bearer)+'&return_to='+encodeURIComponent('https://'+x.domains[0]+'/');o.textContent='Bearer\\nAuthorization: Bearer '+d.bearer+'\\n\\nLink\\n'+link;};</script></html>"#.to_string()).into_response()
+    Html(r#"<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>一時アクセス — Volta Auth</title><style>body{font-family:system-ui;max-width:42rem;margin:3rem auto;padding:0 1rem}input,select{width:100%;padding:.65rem;margin:.3rem 0}button{padding:.7rem 1rem}pre{white-space:pre-wrap;background:#f4f4f4;padding:1rem}</style><h1>一時アクセスを発行</h1><p>role、許可 domain、開始・終了時刻を指定します。token はこの画面で一度だけ表示されます。</p><form id=f><input name=tenant_id placeholder="Tenant UUID" required><input name=subject type=email placeholder="利用者のメールアドレス" required><select name=role><option>MEMBER</option><option>VIEWER</option><option>ADMIN</option></select><input name=domains placeholder="許可 domain（例: app.example.com、複数はカンマ区切り）" required><label>開始<input name=starts_at type=datetime-local required></label><label>終了<input name=expires_at type=datetime-local required></label><button>一時アクセスを発行</button></form><pre id=o></pre><script>f.onsubmit=async e=>{e.preventDefault();let x=Object.fromEntries(new FormData(f));x.domains=x.domains.split(',').map(v=>v.trim()).filter(Boolean);x.starts_at=new Date(x.starts_at).toISOString();x.expires_at=new Date(x.expires_at).toISOString();let r=await fetch('/api/v1/temporary-access',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(x)});if(!r.ok){o.textContent='発行に失敗しました。';return}let d=await r.json(),link=location.origin+'/temporary-access/activate?token='+encodeURIComponent(d.bearer)+'&return_to='+encodeURIComponent(location.protocol+'//'+x.domains[0]+'/');o.textContent='Bearer\\nAuthorization: Bearer '+d.bearer+'\\n\\nLink\\n'+link;};</script></html>"#.to_string()).into_response()
+}
+
+/// `Set-Cookie` value for the temporary-access credential.
+///
+/// `Domain` follows `COOKIE_DOMAIN` (unset → no `Domain` attribute, i.e. the
+/// cookie stays on the auth host). `Secure` is set when `secure` is true. With
+/// the production env (`COOKIE_DOMAIN=.unlaxer.org`, https) this is byte-for-byte
+/// the value that used to be hardcoded.
+fn temporary_access_cookie(token: &str, max_age: i64, cookie_domain: &str, secure: bool) -> String {
+    let mut cookie = format!("__volta_temporary_access={token}; Path=/");
+    let domain = cookie_domain.trim();
+    if !domain.is_empty() {
+        cookie.push_str(&format!("; Domain={domain}"));
+    }
+    cookie.push_str(&format!("; Max-Age={max_age}; HttpOnly"));
+    if secure {
+        cookie.push_str("; Secure");
+    }
+    cookie.push_str("; SameSite=Lax");
+    cookie
+}
+
+/// The temporary-access cookie used to be `Secure` unconditionally. Keep that
+/// for https deployments (and whenever `FORCE_SECURE_COOKIE=true`); drop it only
+/// when `BASE_URL` is plain http, where browsers would discard a Secure cookie.
+fn temporary_access_secure(s: &AppState) -> bool {
+    s.force_secure_cookie || !s.base_url.starts_with("http://")
 }
 
 #[derive(serde::Deserialize)]
@@ -364,7 +391,7 @@ pub async fn activate_temporary_access(
     Query(q): Query<ActivateTemporaryAccessQuery>,
 ) -> Response {
     let parsed = match url::Url::parse(&q.return_to) {
-        Ok(url) if url.scheme() == "https" && url.path().starts_with('/') => url,
+        Ok(url) if s.return_to.allows_scheme(url.scheme()) && url.path().starts_with('/') => url,
         _ => {
             return ApiError::bad_request("INVALID_RETURN_TO", "invalid return URL").into_response()
         }
@@ -385,7 +412,14 @@ pub async fn activate_temporary_access(
     let mut response = Redirect::to(parsed.as_str()).into_response();
     response.headers_mut().append(
         "set-cookie",
-        format!("__volta_temporary_access={}; Path=/; Domain=.unlaxer.org; Max-Age={}; HttpOnly; Secure; SameSite=Lax", q.token, seconds).parse().unwrap(),
+        temporary_access_cookie(
+            &q.token,
+            seconds,
+            &s.cookie_domain,
+            temporary_access_secure(&s),
+        )
+        .parse()
+        .unwrap(),
     );
     response
         .headers_mut()
@@ -421,7 +455,7 @@ pub async fn exchange_temporary_access(
             .into_response();
     };
     let parsed = match url::Url::parse(&req.return_to) {
-        Ok(url) if url.scheme() == "https" && url.path().starts_with('/') => url,
+        Ok(url) if s.return_to.allows_scheme(url.scheme()) && url.path().starts_with('/') => url,
         _ => {
             return ApiError::bad_request("INVALID_RETURN_TO", "invalid return URL").into_response()
         }
@@ -442,7 +476,14 @@ pub async fn exchange_temporary_access(
     let mut response = Json(serde_json::json!({"redirect_to": parsed.as_str()})).into_response();
     response.headers_mut().append(
         "set-cookie",
-        format!("__volta_temporary_access={}; Path=/; Domain=.unlaxer.org; Max-Age={}; HttpOnly; Secure; SameSite=Lax", token, seconds).parse().unwrap(),
+        temporary_access_cookie(
+            token,
+            seconds,
+            &s.cookie_domain,
+            temporary_access_secure(&s),
+        )
+        .parse()
+        .unwrap(),
     );
     no_cache_headers(&mut response);
     response
@@ -517,4 +558,40 @@ pub async fn admin_sessions_page() -> Response {
             "current",
         ],
     )
+}
+
+#[cfg(test)]
+mod temporary_access_cookie_tests {
+    use super::temporary_access_cookie;
+
+    #[test]
+    fn production_env_keeps_the_previous_cookie() {
+        // COOKIE_DOMAIN=.unlaxer.org + https BASE_URL: identical to the value that
+        // used to be hardcoded.
+        assert_eq!(
+            temporary_access_cookie("vta_x", 60, ".unlaxer.org", true),
+            "__volta_temporary_access=vta_x; Path=/; Domain=.unlaxer.org; Max-Age=60; HttpOnly; Secure; SameSite=Lax"
+        );
+    }
+
+    #[test]
+    fn domain_follows_cookie_domain() {
+        let c = temporary_access_cookie("vta_x", 60, ".example.com", true);
+        assert!(c.contains("; Domain=.example.com;"), "{c}");
+    }
+
+    #[test]
+    fn unset_cookie_domain_makes_a_host_only_cookie() {
+        let c = temporary_access_cookie("vta_x", 60, "", true);
+        assert!(!c.contains("Domain="), "{c}");
+    }
+
+    #[test]
+    fn secure_can_be_dropped_for_plain_http_dev() {
+        let c = temporary_access_cookie("vta_x", 60, "", false);
+        assert_eq!(
+            c,
+            "__volta_temporary_access=vta_x; Path=/; Max-Age=60; HttpOnly; SameSite=Lax"
+        );
+    }
 }

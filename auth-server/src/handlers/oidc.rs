@@ -121,9 +121,17 @@ pub async fn login(
     Query(q): Query<LoginQuery>,
     jar: CookieJar,
 ) -> Response {
-    let return_to = q
-        .return_to
-        .unwrap_or_else(|| format!("{}/", state.base_url));
+    // An unchecked `return_to` is an open redirect (callback → Location) and,
+    // as a `javascript:` URL, script injection into the passkey page below.
+    // Anything outside the allowed domains falls back to the auth root.
+    let return_to = match q.return_to {
+        Some(rt) if state.return_to.allows(&rt) => rt,
+        Some(_) => {
+            tracing::warn!("login: return_to rejected (not an allowed domain)");
+            format!("{}/", state.base_url)
+        }
+        None => format!("{}/", state.base_url),
+    };
     let callback_url = format!("{}/callback", state.base_url);
     let adding = q.add.as_deref() == Some("1");
     // Multi-account: force the IdP chooser so "add account" doesn't silently
@@ -176,7 +184,7 @@ pub async fn login(
     let template = r#"<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ログイン</title>__STYLE__</head><body>
 <h1>Volta にログイン</h1>
 <input id="uname" name="username" autocomplete="username webauthn" placeholder="メールアドレス（パスキー候補が表示されます）" style="width:100%;padding:.7rem;margin:.4rem 0;border:1px solid #ccc;border-radius:8px;box-sizing:border-box;font-size:.95rem">
-<a class="btn g" href="__AUTH_URL__">Google でログイン</a>
+<a class="btn g" href="__AUTH_URL__">__IDP_LABEL__ でログイン</a>
 <button class="btn" id="pk-btn" onclick="passkeyLogin()">パスキーでログイン</button>
 <a class="btn" href="/register">アカウントを作成</a>
 <div id="status"></div>
@@ -214,6 +222,10 @@ startConditional();
     let html = template
         .replace("__STYLE__", PAGE_STYLE)
         .replace("__AUTH_URL__", &html_escape(&auth_url))
+        .replace(
+            "__IDP_LABEL__",
+            &html_escape(&state.idp.config().button_label()),
+        )
         .replace("__RETURN_TO__", &js_literal(&return_to))
         .replace("__WEBAUTHN_JS__", WEBAUTHN_JS);
     let mut resp = Html(html).into_response();
@@ -489,10 +501,19 @@ async fn complete_oidc(
         token_resp.id_token.as_ref(),
         state.idp.config().issuer_url.as_ref(),
     ) {
-        let verifier = volta_auth_core::oidc::IdTokenVerifier::from_issuer(
-            issuer.trim_end_matches('/'),
-            &state.idp.config().client_id,
-        );
+        let cfg = state.idp.config();
+        let verifier = match cfg.jwks_url.as_ref() {
+            // Discovered (or explicit IDP_JWKS_URL): the issuer is the exact `iss`.
+            Some(jwks) => volta_auth_core::oidc::IdTokenVerifier::new(
+                issuer.clone(),
+                cfg.client_id.clone(),
+                jwks.clone(),
+            ),
+            None => volta_auth_core::oidc::IdTokenVerifier::from_issuer(
+                issuer.trim_end_matches('/'),
+                &cfg.client_id,
+            ),
+        };
         match verifier
             .verify(id_token, &flow.nonce, &token_resp.access_token)
             .await

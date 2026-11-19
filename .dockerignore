@@ -1,2 +1,12 @@
 target/
 .git/
+**/node_modules/
+# Never send local secrets / runtime config into the build context.
+.env
+.env.*
+*.overlay.json
+*.local.yaml
+*.local.yml
+*.pem
+*.key
+deploy/compose/.env

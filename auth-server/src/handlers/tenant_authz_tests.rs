@@ -94,6 +94,8 @@ fn test_state(pool: PgPool) -> AppState {
             token_url: None,
             userinfo_url: None,
             scopes: vec![],
+            jwks_url: None,
+            display_name: None,
         })),
         jwt_issuer: JwtIssuer::new_hs256(JWT_SECRET, 300),
         jwt_verifier: JwtVerifier::new_hs256(JWT_SECRET),
@@ -110,6 +112,11 @@ fn test_state(pool: PgPool) -> AppState {
         notifications: Arc::new(NotificationService::new(NotificationConfig::default())),
         notify_channel: "DUMMY".into(),
         email_verification_enabled: false,
+        return_to: Arc::new(crate::return_to::ReturnToPolicy::from_settings(
+            None,
+            "",
+            "http://localhost",
+        )),
     }
 }
 

@@ -45,6 +45,103 @@ pub struct IdpConfig {
     pub token_url: Option<String>,
     pub userinfo_url: Option<String>,
     pub scopes: Vec<String>,
+    /// JWKS endpoint for `id_token` verification. Filled by OIDC discovery;
+    /// when absent the verifier falls back to `<issuer>/.well-known/jwks.json`.
+    #[serde(default)]
+    pub jwks_url: Option<String>,
+    /// Label for the login button ("<name> でログイン"). `None` → derived from
+    /// `provider` (google → Google, …, unknown → SSO).
+    #[serde(default)]
+    pub display_name: Option<String>,
+}
+
+/// Subset of an OIDC discovery document
+/// (`<issuer>/.well-known/openid-configuration`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct OidcDiscovery {
+    pub issuer: String,
+    pub authorization_endpoint: String,
+    pub token_endpoint: String,
+    #[serde(default)]
+    pub userinfo_endpoint: Option<String>,
+    #[serde(default)]
+    pub jwks_uri: Option<String>,
+}
+
+/// Fetch `<issuer>/.well-known/openid-configuration`.
+pub async fn discover(issuer: &str) -> Result<OidcDiscovery, String> {
+    let url = format!(
+        "{}/.well-known/openid-configuration",
+        issuer.trim_end_matches('/')
+    );
+    let resp = reqwest::Client::new()
+        .get(&url)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| format!("OIDC discovery failed ({url}): {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("OIDC discovery failed ({url}): {}", resp.status()));
+    }
+    resp.json::<OidcDiscovery>()
+        .await
+        .map_err(|e| format!("OIDC discovery parse error ({url}): {e}"))
+}
+
+impl IdpConfig {
+    /// Fill the endpoints that were not set explicitly from a discovery
+    /// document. Explicit settings always win. The document's `issuer` must
+    /// match the configured one (ignoring a trailing slash) — OIDC Discovery §4.3.
+    pub fn apply_discovery(&mut self, doc: &OidcDiscovery) -> Result<(), String> {
+        if let Some(configured) = &self.issuer_url {
+            if configured.trim_end_matches('/') != doc.issuer.trim_end_matches('/') {
+                return Err(format!(
+                    "discovery issuer mismatch: configured {configured}, document says {}",
+                    doc.issuer
+                ));
+            }
+        }
+        // The exact `iss` value the IdP stamps into its tokens.
+        self.issuer_url = Some(doc.issuer.clone());
+        self.auth_url
+            .get_or_insert_with(|| doc.authorization_endpoint.clone());
+        self.token_url
+            .get_or_insert_with(|| doc.token_endpoint.clone());
+        if self.userinfo_url.is_none() {
+            self.userinfo_url = doc.userinfo_endpoint.clone();
+        }
+        if self.jwks_url.is_none() {
+            self.jwks_url = doc.jwks_uri.clone();
+        }
+        Ok(())
+    }
+
+    /// Whether the auth/token endpoints still need discovery (not set
+    /// explicitly and not built into `provider`).
+    pub fn needs_discovery(&self) -> bool {
+        self.issuer_url.is_some()
+            && (self.auth_url.is_none() || self.token_url.is_none() || self.userinfo_url.is_none())
+    }
+
+    /// Label for the login button.
+    pub fn button_label(&self) -> String {
+        if let Some(name) = self
+            .display_name
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+        {
+            return name.trim().to_string();
+        }
+        match self.provider.as_str() {
+            "google" => "Google",
+            "github" => "GitHub",
+            "microsoft" => "Microsoft",
+            "linkedin" => "LinkedIn",
+            "apple" => "Apple",
+            _ => "SSO",
+        }
+        .to_string()
+    }
 }
 
 /// User info returned from IdP.
@@ -347,7 +444,89 @@ mod tests {
             token_url: None,
             userinfo_url: None,
             scopes: vec![],
+            jwks_url: None,
+            display_name: None,
         })
+    }
+
+    fn discovery_doc() -> OidcDiscovery {
+        OidcDiscovery {
+            issuer: "https://idp.example.com/realms/x".into(),
+            authorization_endpoint: "https://idp.example.com/auth".into(),
+            token_endpoint: "https://idp.example.com/token".into(),
+            userinfo_endpoint: Some("https://idp.example.com/userinfo".into()),
+            jwks_uri: Some("https://idp.example.com/certs".into()),
+        }
+    }
+
+    fn generic_config() -> IdpConfig {
+        IdpConfig {
+            provider: "oidc".into(),
+            client_id: "cid".into(),
+            client_secret: "cs".into(),
+            issuer_url: Some("https://idp.example.com/realms/x/".into()),
+            auth_url: None,
+            token_url: None,
+            userinfo_url: None,
+            scopes: vec![],
+            jwks_url: None,
+            display_name: None,
+        }
+    }
+
+    #[test]
+    fn discovery_fills_missing_endpoints() {
+        let mut c = generic_config();
+        assert!(c.needs_discovery());
+        c.apply_discovery(&discovery_doc()).unwrap();
+        assert_eq!(
+            c.issuer_url.as_deref(),
+            Some("https://idp.example.com/realms/x")
+        );
+        assert_eq!(c.auth_url.as_deref(), Some("https://idp.example.com/auth"));
+        assert_eq!(
+            c.token_url.as_deref(),
+            Some("https://idp.example.com/token")
+        );
+        assert_eq!(
+            c.userinfo_url.as_deref(),
+            Some("https://idp.example.com/userinfo")
+        );
+        assert_eq!(c.jwks_url.as_deref(), Some("https://idp.example.com/certs"));
+        assert!(!c.needs_discovery());
+        let url = IdpClient::new(c).authorization_url("https://app/cb", "s", "n");
+        assert!(url.starts_with("https://idp.example.com/auth?"), "{url}");
+    }
+
+    #[test]
+    fn explicit_endpoints_win_over_discovery() {
+        let mut c = generic_config();
+        c.token_url = Some("https://override/token".into());
+        c.apply_discovery(&discovery_doc()).unwrap();
+        assert_eq!(c.token_url.as_deref(), Some("https://override/token"));
+    }
+
+    #[test]
+    fn discovery_rejects_a_different_issuer() {
+        let mut c = generic_config();
+        c.issuer_url = Some("https://other.example.com".into());
+        assert!(c.apply_discovery(&discovery_doc()).is_err());
+    }
+
+    #[test]
+    fn google_without_issuer_needs_no_discovery() {
+        // Production: IDP_PROVIDER=google and no IDP_ISSUER_URL.
+        let c = test_client().config().clone();
+        assert!(!c.needs_discovery());
+        assert_eq!(c.button_label(), "Google");
+    }
+
+    #[test]
+    fn button_label_prefers_display_name() {
+        let mut c = generic_config();
+        assert_eq!(c.button_label(), "SSO");
+        c.display_name = Some("Keycloak".into());
+        assert_eq!(c.button_label(), "Keycloak");
     }
 
     #[test]
