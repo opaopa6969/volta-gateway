@@ -6,7 +6,7 @@ use axum::Json;
 use axum_extra::extract::CookieJar;
 
 use crate::error::ApiError;
-use crate::helpers::require_admin;
+use crate::helpers::require_system_admin;
 use crate::state::AppState;
 use volta_auth_core::store::SigningKeyStore;
 
@@ -15,7 +15,8 @@ pub async fn list_keys(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> Result<Response, ApiError> {
-    let _ = require_admin(&state, &jar).await?;
+    // 署名鍵はデプロイ全体で共有するので、システム管理者だけ。
+    let _ = require_system_admin(&state, &jar, None).await?;
     let keys = SigningKeyStore::list(&state.db)
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
@@ -40,7 +41,8 @@ pub async fn rotate_key(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> Result<Response, ApiError> {
-    let _ = require_admin(&state, &jar).await?;
+    // 署名鍵はデプロイ全体で共有するので、システム管理者だけ。
+    let _ = require_system_admin(&state, &jar, None).await?;
     // Load current active key
     let current = SigningKeyStore::load_active(&state.db)
         .await
@@ -79,7 +81,8 @@ pub async fn revoke_key(
     jar: CookieJar,
     Path(kid): Path<String>,
 ) -> Result<Response, ApiError> {
-    let _ = require_admin(&state, &jar).await?;
+    // 署名鍵はデプロイ全体で共有するので、システム管理者だけ。
+    let _ = require_system_admin(&state, &jar, None).await?;
     SigningKeyStore::revoke(&state.db, &kid)
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;

@@ -23,7 +23,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::ApiError;
-use crate::handlers::{admin, manage, webhook};
+use crate::handlers::{admin, extra, manage, mfa, signing_key, webhook};
 use crate::pagination::PageRequest;
 use crate::state::AppState;
 use volta_auth_core::record::*;
@@ -31,6 +31,8 @@ use volta_auth_core::store::pg::PgStore;
 use volta_auth_core::store::*;
 
 const JWT_SECRET: &[u8] = b"tenant-authz-test-secret-0123456789abcdef";
+/// `SYSTEM_ADMIN_EMAILS` に載せるテスト用のシステム管理者。
+const SYSTEM_ADMIN_EMAIL: &str = "root@example.com";
 
 struct Fixture {
     _container: testcontainers::ContainerAsync<testcontainers_modules::postgres::Postgres>,
@@ -117,6 +119,7 @@ fn test_state(pool: PgPool) -> AppState {
             "",
             "http://localhost",
         )),
+        system_admins: Arc::new(crate::helpers::SystemAdmins::parse(SYSTEM_ADMIN_EMAIL)),
     }
 }
 
@@ -847,5 +850,449 @@ async fn other_tenant_admin_endpoints_require_membership_and_role() {
             .await
         ),
         StatusCode::FORBIDDEN
+    );
+}
+
+// ─── オーナー移譲 ──────────────────────────────────────────────
+
+async fn role_of(db: &PgStore, user: Uuid, tenant: Uuid) -> Option<String> {
+    MembershipStore::find(db, user, tenant)
+        .await
+        .unwrap()
+        .map(|m| m.role)
+}
+
+#[tokio::test]
+#[ignore]
+async fn transfer_ownership_is_owner_only_and_within_tenant() {
+    let f = setup().await;
+    let s = &f.state;
+    let a = f.tenant_a;
+    let transfer = |jar: CookieJar, headers: HeaderMap, tid: Uuid, to: Uuid| {
+        extra::transfer_ownership(
+            State(s.clone()),
+            jar,
+            headers,
+            Path(tid),
+            Json(extra::TransferReq { to_user_id: to }),
+        )
+    };
+
+    // OWNER 以外（ADMIN / MEMBER）は移譲できない。ロールも変わらない。
+    assert_eq!(
+        status(transfer(f.admin_a.jar(), no_bearer(), a, f.admin_a.user_id).await),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        status(transfer(f.member_a.jar(), no_bearer(), a, f.member_a.user_id).await),
+        StatusCode::FORBIDDEN
+    );
+    // 他テナントの OWNER も不可
+    assert_eq!(
+        status(transfer(f.owner_b.jar(), no_bearer(), a, f.owner_b.user_id).await),
+        StatusCode::FORBIDDEN
+    );
+    // Bearer（M2M）は OWNER scope でも不可
+    assert_eq!(
+        status(transfer(empty_jar(), bearer(s, a, "OWNER"), a, f.admin_a.user_id).await),
+        StatusCode::FORBIDDEN
+    );
+    // 移譲先がテナント外・自分自身・無効なメンバー → 400、実行者は OWNER のまま
+    assert_eq!(
+        status(transfer(f.owner_a.jar(), no_bearer(), a, f.owner_b.user_id).await),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        status(transfer(f.owner_a.jar(), no_bearer(), a, f.owner_a.user_id).await),
+        StatusCode::BAD_REQUEST
+    );
+    let inactive = actor(&s.db, "inactive-a@example.com", a, "MEMBER").await;
+    sqlx::query("UPDATE memberships SET is_active = false WHERE user_id = $1")
+        .bind(inactive.user_id)
+        .execute(s.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        status(transfer(f.owner_a.jar(), no_bearer(), a, inactive.user_id).await),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        role_of(&s.db, f.owner_a.user_id, a).await.as_deref(),
+        Some("OWNER")
+    );
+    assert_eq!(
+        role_of(&s.db, f.admin_a.user_id, a).await.as_deref(),
+        Some("ADMIN")
+    );
+    assert_eq!(
+        role_of(&s.db, f.member_a.user_id, a).await.as_deref(),
+        Some("MEMBER")
+    );
+
+    // OWNER → 同テナントの有効なメンバーへは移譲でき、実行者は ADMIN になる
+    assert_eq!(
+        status(transfer(f.owner_a.jar(), no_bearer(), a, f.member_a.user_id).await),
+        StatusCode::OK
+    );
+    assert_eq!(
+        role_of(&s.db, f.member_a.user_id, a).await.as_deref(),
+        Some("OWNER")
+    );
+    assert_eq!(
+        role_of(&s.db, f.owner_a.user_id, a).await.as_deref(),
+        Some("ADMIN")
+    );
+    // 降格後はもう移譲できない
+    assert_eq!(
+        status(transfer(f.owner_a.jar(), no_bearer(), a, f.admin_a.user_id).await),
+        StatusCode::FORBIDDEN
+    );
+    // 他テナントには影響しない
+    assert_eq!(
+        role_of(&s.db, f.owner_b.user_id, f.tenant_b)
+            .await
+            .as_deref(),
+        Some("OWNER")
+    );
+}
+
+// ─── MFA（本人のみ） ────────────────────────────────────────────
+
+async fn mfa_rows(db: &PgStore, user: Uuid) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM user_mfa WHERE user_id = $1")
+        .bind(user)
+        .fetch_one(db.pool())
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+#[ignore]
+async fn mfa_user_endpoints_are_self_only() {
+    let f = setup().await;
+    let s = &f.state;
+    let victim = f.member_a.user_id;
+
+    // 他人（同じテナントの OWNER でも）は userId を指定して操作できない
+    for jar in [f.owner_a.jar(), f.admin_a.jar(), f.owner_b.jar()] {
+        assert_eq!(
+            status(mfa::totp_setup(State(s.clone()), jar.clone(), Path(victim)).await),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            status(
+                mfa::totp_verify_setup(
+                    State(s.clone()),
+                    jar.clone(),
+                    Path(victim),
+                    Json(mfa::VerifyCode {
+                        code: "000000".into()
+                    }),
+                )
+                .await
+            ),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            status(mfa::totp_disable(State(s.clone()), jar.clone(), Path(victim)).await),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            status(mfa::regenerate_recovery_codes(State(s.clone()), jar, Path(victim)).await),
+            StatusCode::FORBIDDEN
+        );
+    }
+    assert_eq!(mfa_rows(&s.db, victim).await, 0);
+    assert_eq!(
+        RecoveryCodeStore::count_unused(&s.db, victim)
+            .await
+            .unwrap(),
+        0
+    );
+
+    // 本人は設定を始められる
+    let body =
+        body_json(mfa::totp_setup(State(s.clone()), f.member_a.jar(), Path(victim)).await).await;
+    assert!(body["secret"].as_str().is_some_and(|x| !x.is_empty()));
+    assert_eq!(mfa_rows(&s.db, victim).await, 1);
+    // 未ログインは 401
+    assert_eq!(
+        status(mfa::totp_setup(State(s.clone()), empty_jar(), Path(victim)).await),
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+// ─── テナント横断の管理 API（システム管理者のみ） ─────────────────
+
+#[tokio::test]
+#[ignore]
+async fn cross_tenant_admin_apis_require_system_admin() {
+    let f = setup().await;
+    let s = &f.state;
+    // システム管理者はテナントのロールに依らない（ここでは tenant_a の MEMBER）
+    let root = actor(&s.db, SYSTEM_ADMIN_EMAIL, f.tenant_a, "MEMBER").await;
+
+    let tenants = |jar: CookieJar, headers: HeaderMap| {
+        admin::admin_list_tenants(State(s.clone()), jar, headers, page())
+    };
+    let users = |jar: CookieJar, headers: HeaderMap| {
+        admin::admin_list_users(State(s.clone()), jar, headers, page())
+    };
+
+    // テナントの OWNER / ADMIN では横断 API を使えない
+    for x in [&f.owner_a, &f.admin_a, &f.owner_b, &f.member_a] {
+        assert_eq!(
+            status(tenants(x.jar(), no_bearer()).await),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            status(users(x.jar(), no_bearer()).await),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            status(extra::admin_list_sessions(State(s.clone()), x.jar(), page()).await),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            status(
+                extra::admin_export_user(State(s.clone()), x.jar(), Path(f.owner_b.user_id)).await
+            ),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            status(admin::outbox_flush(State(s.clone()), x.jar(), no_bearer()).await),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            status(signing_key::list_keys(State(s.clone()), x.jar()).await),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            status(
+                admin::hard_delete_user(
+                    State(s.clone()),
+                    x.jar(),
+                    no_bearer(),
+                    Path(f.owner_b.user_id)
+                )
+                .await
+            ),
+            StatusCode::FORBIDDEN
+        );
+    }
+    let owner_b = UserStore::find_by_id(&s.db, f.owner_b.user_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(owner_b.deleted_at.is_none());
+
+    // Bearer は ADMIN / OWNER でも不可。システム管理者の cookie に Bearer を足しても不可。
+    assert_eq!(
+        status(tenants(empty_jar(), bearer(s, f.tenant_a, "OWNER")).await),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        status(tenants(root.jar(), bearer(s, f.tenant_a, "ADMIN")).await),
+        StatusCode::FORBIDDEN
+    );
+
+    // システム管理者は全テナント・全ユーザーを見られる
+    let body = body_json(tenants(root.jar(), no_bearer()).await).await;
+    assert_eq!(body["total"], 2, "{body}");
+    assert_eq!(status(users(root.jar(), no_bearer()).await), StatusCode::OK);
+    assert_eq!(
+        status(extra::admin_list_sessions(State(s.clone()), root.jar(), page()).await),
+        StatusCode::OK
+    );
+    assert_eq!(
+        status(signing_key::list_keys(State(s.clone()), root.jar()).await),
+        StatusCode::OK
+    );
+
+    // SYSTEM_ADMIN_EMAILS 未設定なら誰も使えない（安全側）
+    let mut unset = s.clone();
+    unset.system_admins = Arc::new(crate::helpers::SystemAdmins::default());
+    assert_eq!(
+        status(admin::admin_list_tenants(State(unset), root.jar(), no_bearer(), page()).await),
+        StatusCode::FORBIDDEN
+    );
+
+    // 無効化されたシステム管理者は使えない
+    sqlx::query("UPDATE users SET is_active = false WHERE id = $1")
+        .bind(root.user_id)
+        .execute(s.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        status(tenants(root.jar(), no_bearer()).await),
+        StatusCode::FORBIDDEN
+    );
+}
+
+// ─── セッション失効（本人のみ） ─────────────────────────────────
+
+#[tokio::test]
+#[ignore]
+async fn revoking_a_session_by_id_is_limited_to_own_sessions() {
+    let f = setup().await;
+    let s = &f.state;
+    // 他人のセッションは見つからない扱い（400）で、失効もしない
+    assert_eq!(
+        status(
+            extra::revoke_session_by_id(
+                State(s.clone()),
+                f.owner_a.jar(),
+                Path(f.member_a.session_id.clone())
+            )
+            .await
+        ),
+        StatusCode::BAD_REQUEST
+    );
+    assert!(SessionStore::find(&s.db, &f.member_a.session_id)
+        .await
+        .unwrap()
+        .is_some());
+    // 自分のセッションは失効できる
+    assert_eq!(
+        status(
+            extra::revoke_session_by_id(
+                State(s.clone()),
+                f.member_a.jar(),
+                Path(f.member_a.session_id.clone())
+            )
+            .await
+        ),
+        StatusCode::OK
+    );
+    assert!(SessionStore::find(&s.db, &f.member_a.session_id)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+// ─── 一時アクセス（テナント単位） ───────────────────────────────
+
+fn temporary_access(tenant: Uuid, role: &str) -> Json<extra::CreateTemporaryAccessReq> {
+    Json(extra::CreateTemporaryAccessReq {
+        tenant_id: tenant,
+        subject: "guest@example.com".into(),
+        role: role.into(),
+        domains: vec!["app.example.com".into()],
+        blocked_domains: vec![],
+        starts_at: Utc::now(),
+        expires_at: Utc::now() + chrono::Duration::hours(1),
+    })
+}
+
+#[tokio::test]
+#[ignore]
+async fn temporary_access_is_tenant_scoped() {
+    let f = setup().await;
+    let s = &f.state;
+    let create = |x: &Actor, tid: Uuid, role: &str| {
+        extra::create_temporary_access(
+            State(s.clone()),
+            x.jar(),
+            no_bearer(),
+            temporary_access(tid, role),
+        )
+    };
+
+    // 他テナント向け・MEMBER による発行は 403
+    assert_eq!(
+        status(create(&f.admin_a, f.tenant_b, "MEMBER").await),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        status(create(&f.member_a, f.tenant_a, "MEMBER").await),
+        StatusCode::FORBIDDEN
+    );
+    // 自テナントの ADMIN は発行できる
+    let body = body_json(create(&f.admin_a, f.tenant_a, "MEMBER").await).await;
+    let id = Uuid::parse_str(body["id"].as_str().unwrap()).unwrap();
+
+    // 一覧・失効も対象テナントの ADMIN 以上だけ
+    let list = |x: &Actor, tid: Uuid| {
+        extra::list_temporary_access(
+            State(s.clone()),
+            x.jar(),
+            no_bearer(),
+            Query(extra::TemporaryAccessListQuery { tenant_id: tid }),
+        )
+    };
+    assert_eq!(
+        status(list(&f.owner_b, f.tenant_a).await),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(status(list(&f.admin_a, f.tenant_a).await), StatusCode::OK);
+    let revoke = |x: &Actor, id: Uuid| {
+        extra::revoke_temporary_access(State(s.clone()), x.jar(), no_bearer(), Path(id))
+    };
+    assert_eq!(status(revoke(&f.owner_b, id).await), StatusCode::FORBIDDEN);
+    assert_eq!(
+        status(revoke(&f.admin_a, Uuid::new_v4()).await),
+        StatusCode::FORBIDDEN
+    );
+    let grants = s.db.list_temporary_access_grants(f.tenant_a).await.unwrap();
+    assert!(grants[0].revoked_at.is_none());
+    assert_eq!(status(revoke(&f.admin_a, id).await), StatusCode::OK);
+    let grants = s.db.list_temporary_access_grants(f.tenant_a).await.unwrap();
+    assert!(grants[0].revoked_at.is_some());
+}
+
+// ─── M2M トークンの roles ────────────────────────────────────────
+
+#[tokio::test]
+#[ignore]
+async fn m2m_token_roles_drop_unknown_scopes() {
+    let f = setup().await;
+    let s = &f.state;
+    // scopes の検証が入る前に保存された client を再現する
+    let secret = "legacy-secret";
+    M2mClientStore::create(
+        &s.db,
+        M2mClientRecord {
+            id: Uuid::new_v4(),
+            tenant_id: f.tenant_a,
+            client_id: "m2m_legacy".into(),
+            client_secret_hash: crate::handlers::mfa::sha256_hex_pub(secret),
+            scopes: "admin,SUPERUSER, member".into(),
+            is_active: true,
+            created_at: Utc::now(),
+        },
+    )
+    .await
+    .unwrap();
+
+    let body = body_json(
+        manage::oauth_token(
+            State(s.clone()),
+            HeaderMap::new(),
+            axum::extract::Form(manage::TokenReq {
+                grant_type: "client_credentials".into(),
+                client_id: "m2m_legacy".into(),
+                client_secret: Some(secret.into()),
+                device_code: None,
+                code: None,
+                redirect_uri: None,
+                code_verifier: None,
+                refresh_token: None,
+                subject_token: None,
+                subject_token_type: None,
+                scope: None,
+                audience: None,
+            }),
+        )
+        .await,
+    )
+    .await;
+    let claims = s
+        .jwt_verifier
+        .verify(body["access_token"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(claims.roles.as_deref(), Some("ADMIN,MEMBER"));
+    assert_eq!(
+        claims.tenant_id.as_deref(),
+        Some(f.tenant_a.to_string().as_str())
     );
 }

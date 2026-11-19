@@ -9,7 +9,7 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum_extra::extract::CookieJar;
 
 use crate::error::no_cache_headers;
-use crate::helpers::require_admin;
+use crate::helpers::{require_admin, require_system_admin};
 use crate::state::AppState;
 
 const ADMIN_HTML: &str = include_str!("../admin_ui.html");
@@ -40,8 +40,15 @@ pub async fn page(
         return StatusCode::NOT_FOUND.into_response();
     }
 
-    match require_admin(&state, &jar).await {
-        Ok(_) => {
+    // システム管理者、またはいずれかのテナントの ADMIN / OWNER なら画面を出す。
+    // 画面から呼ぶ API はそれぞれで認可するので、横断系の操作は API 側で 403 になる。
+    let allowed = match require_system_admin(&state, &jar, None).await {
+        Ok(_) => Ok(()),
+        Err(error) if error.status == StatusCode::UNAUTHORIZED => Err(error),
+        Err(_) => require_admin(&state, &jar).await.map(|_| ()),
+    };
+    match allowed {
+        Ok(()) => {
             let mut response = Html(ADMIN_HTML).into_response();
             no_cache_headers(&mut response);
             response.headers_mut().insert(

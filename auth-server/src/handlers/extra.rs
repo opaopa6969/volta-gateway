@@ -9,11 +9,14 @@ use axum_extra::extract::CookieJar;
 use uuid::Uuid;
 
 use crate::error::{no_cache_headers, ApiError};
-use crate::helpers::{clear_session_cookie, extract_session_id, require_admin};
+use crate::helpers::{
+    authorize_role_grant, clear_session_cookie, extract_session_id, require_session,
+    require_system_admin, require_tenant_role,
+};
 use crate::state::AppState;
 use volta_auth_core::crypto::{random_token_hex, session_id_fingerprint, sha256_hex};
 use volta_auth_core::record::TemporaryAccessGrantRecord;
-use volta_auth_core::store::{MembershipStore, SessionStore, TenantStore, UserStore};
+use volta_auth_core::store::{SessionStore, TenantStore, UserStore};
 
 fn auth_sync(jar: &CookieJar) -> Result<String, ApiError> {
     extract_session_id(jar).ok_or_else(|| ApiError::unauthorized("SESSION_EXPIRED", "re-login"))
@@ -27,7 +30,8 @@ pub async fn admin_list_sessions(
     jar: CookieJar,
     axum::extract::Query(q): axum::extract::Query<crate::pagination::PageRequest>,
 ) -> Result<Response, ApiError> {
-    let _ = require_admin(&s, &jar).await?;
+    // 全テナントのセッションを返すので、システム管理者だけ。
+    let _ = require_system_admin(&s, &jar, None).await?;
     let req = q.normalized();
     let order = crate::pagination::PageRequest::order_sql(
         req.sort.as_deref(),
@@ -67,7 +71,8 @@ pub async fn admin_revoke_session(
     jar: CookieJar,
     Path(sid): Path<String>,
 ) -> Result<Response, ApiError> {
-    let _ = require_admin(&s, &jar).await?;
+    // 任意のセッションを失効できるので、システム管理者だけ。
+    let _ = require_system_admin(&s, &jar, None).await?;
     let sid =
         s.db.resolve_session_reference(&sid, None)
             .await
@@ -85,9 +90,10 @@ pub async fn revoke_session_by_id(
     jar: CookieJar,
     Path(sid): Path<String>,
 ) -> Result<Response, ApiError> {
-    let _ = auth_sync(&jar)?;
+    // 自分のセッションだけを対象にする（他人のセッションは見つからない扱い）。
+    let session = require_session(&s, &jar).await?;
     let sid =
-        s.db.resolve_session_reference(&sid, None)
+        s.db.resolve_session_reference(&sid, Some(&session.user_id))
             .await
             .map_err(|e| ApiError::internal(&e.to_string()))?
             .ok_or_else(|| ApiError::bad_request("SESSION_NOT_FOUND", "session not found"))?;
@@ -122,36 +128,98 @@ pub struct TransferReq {
 }
 
 /// POST /api/v1/tenants/{tenantId}/transfer-ownership
+///
+/// 対象テナントの OWNER だけが実行できる。移譲先は同じテナントの有効なメンバー
+/// （有効な users 行を持つ本人以外）に限る。移譲後、実行者は ADMIN になる。
+/// 降格と昇格は 1 transaction で行い、途中で失敗しても OWNER がいなくならない。
 pub async fn transfer_ownership(
     State(s): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
     Path(tid): Path<Uuid>,
     Json(b): Json<TransferReq>,
 ) -> Result<Response, ApiError> {
-    let sid = auth_sync(&jar)?;
-    let session = SessionStore::find(&s.db, &sid)
-        .await
-        .map_err(|e| ApiError::internal(&e.to_string()))?
-        .ok_or_else(|| ApiError::unauthorized("SESSION_EXPIRED", "re-login"))?;
-    let from_uid: Uuid = session
-        .user_id
-        .parse()
-        .map_err(|_| ApiError::internal("bad uid"))?;
+    let actor = require_tenant_role(&s, &jar, &headers, tid, "OWNER").await?;
+    // 降格する membership を持つ利用者本人の操作に限る（M2M client は不可）。
+    let from_uid = match (actor.via_bearer, actor.user_uuid()) {
+        (false, Some(uid)) => uid,
+        _ => {
+            return Err(ApiError::forbidden(
+                "FORBIDDEN",
+                "この操作を行う権限がありません",
+            ))
+        }
+    };
+    if b.to_user_id == from_uid {
+        return Err(ApiError::bad_request(
+            "INVALID_TARGET",
+            "自分自身には移譲できません",
+        ));
+    }
 
-    // Demote current owner to ADMIN, promote target to OWNER
-    let from_m = MembershipStore::find(&s.db, from_uid, tid)
-        .await
-        .map_err(|e| ApiError::internal(&e.to_string()))?
-        .ok_or_else(|| ApiError::forbidden("TENANT_ACCESS_DENIED", "not a member"))?;
-    MembershipStore::update_role(&s.db, from_m.id, "ADMIN")
+    let mut tx =
+        s.db.pool()
+            .begin()
+            .await
+            .map_err(|e| ApiError::internal(&e.to_string()))?;
+
+    // 移譲先: 同じテナントの有効な membership と、有効で削除されていない users 行。
+    let to_membership = sqlx::query_scalar::<_, Uuid>(
+        "SELECT m.id FROM memberships m JOIN users u ON u.id = m.user_id \
+         WHERE m.tenant_id = $1 AND m.user_id = $2 AND m.is_active = true \
+           AND u.is_active = true AND u.deleted_at IS NULL \
+         FOR UPDATE OF m",
+    )
+    .bind(tid)
+    .bind(b.to_user_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| ApiError::internal(&e.to_string()))?
+    .ok_or_else(|| {
+        ApiError::bad_request(
+            "NOT_FOUND",
+            "移譲先はこのテナントの有効なメンバーである必要があります",
+        )
+    })?;
+
+    // 実行者を ADMIN に降格する。条件付き更新で、判定後にロールが変わっていたら中止。
+    let demoted = sqlx::query(
+        "UPDATE memberships SET role = 'ADMIN' \
+         WHERE tenant_id = $1 AND user_id = $2 AND is_active = true AND upper(role) = 'OWNER'",
+    )
+    .bind(tid)
+    .bind(from_uid)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError::internal(&e.to_string()))?;
+    if demoted.rows_affected() != 1 {
+        return Err(ApiError::forbidden(
+            "FORBIDDEN",
+            "この操作を行う権限がありません",
+        ));
+    }
+
+    sqlx::query("UPDATE memberships SET role = 'OWNER' WHERE id = $1")
+        .bind(to_membership)
+        .execute(&mut *tx)
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
 
-    let to_m = MembershipStore::find(&s.db, b.to_user_id, tid)
-        .await
-        .map_err(|e| ApiError::internal(&e.to_string()))?
-        .ok_or_else(|| ApiError::bad_request("NOT_FOUND", "target user not a member"))?;
-    MembershipStore::update_role(&s.db, to_m.id, "OWNER")
+    sqlx::query(
+        "INSERT INTO audit_logs \
+         (event_type, actor_id, tenant_id, target_type, target_id, detail, request_id) \
+         VALUES ('tenant.ownership.transferred', $1, $2, 'user', $3, $4, $5)",
+    )
+    .bind(from_uid)
+    .bind(tid)
+    .bind(b.to_user_id.to_string())
+    .bind(serde_json::json!({"from": from_uid, "to": b.to_user_id}))
+    .bind(Uuid::new_v4())
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError::internal(&e.to_string()))?;
+
+    tx.commit()
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
 
@@ -210,7 +278,8 @@ pub async fn admin_export_user(
     jar: CookieJar,
     Path(uid): Path<Uuid>,
 ) -> Result<Response, ApiError> {
-    let _ = require_admin(&s, &jar).await?;
+    // 任意のユーザーの所属テナントまで返すので、システム管理者だけ。
+    let _ = require_system_admin(&s, &jar, None).await?;
     let user = UserStore::find_by_id(&s.db, uid)
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
@@ -239,9 +308,20 @@ pub struct CreateTemporaryAccessReq {
 pub async fn create_temporary_access(
     State(s): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
     Json(req): Json<CreateTemporaryAccessReq>,
 ) -> Result<Response, ApiError> {
-    let issuer = require_admin(&s, &jar).await?;
+    // 発行先テナントの ADMIN 以上で、発行者は利用者本人（created_by は users 参照）。
+    let actor = require_tenant_role(&s, &jar, &headers, req.tenant_id, "ADMIN").await?;
+    let created_by = match (actor.via_bearer, actor.user_uuid()) {
+        (false, Some(uid)) => uid,
+        _ => {
+            return Err(ApiError::forbidden(
+                "FORBIDDEN",
+                "この操作を行う権限がありません",
+            ))
+        }
+    };
     let role = req.role.trim().to_ascii_uppercase();
     let valid_pattern = |d: &String| {
         if d == "*" {
@@ -268,10 +348,8 @@ pub async fn create_temporary_access(
     if let Some(message) = error {
         return Err(ApiError::bad_request("INVALID_TEMPORARY_ACCESS", message));
     }
-    let created_by = issuer
-        .user_id
-        .parse()
-        .map_err(|_| ApiError::internal("bad issuer"))?;
+    // 自分より上のロールは付与できない。
+    authorize_role_grant(&actor.role, &role)?;
     let bearer = format!("vta_{}", random_token_hex(32));
     let grant = TemporaryAccessGrantRecord {
         id: Uuid::new_v4(),
@@ -301,9 +379,10 @@ pub struct TemporaryAccessListQuery {
 pub async fn list_temporary_access(
     State(s): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
     Query(q): Query<TemporaryAccessListQuery>,
 ) -> Result<Response, ApiError> {
-    let _ = require_admin(&s, &jar).await?;
+    require_tenant_role(&s, &jar, &headers, q.tenant_id, "ADMIN").await?;
     let grants =
         s.db.list_temporary_access_grants(q.tenant_id)
             .await
@@ -315,9 +394,24 @@ pub async fn list_temporary_access(
 pub async fn revoke_temporary_access(
     State(s): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<Response, ApiError> {
-    let _ = require_admin(&s, &jar).await?;
+    if crate::helpers::extract_session_id(&jar).is_none() && !headers.contains_key("authorization")
+    {
+        return Err(ApiError::unauthorized("SESSION_EXPIRED", "re-login"));
+    }
+    // grant の属するテナントの ADMIN 以上だけが失効できる。存在しない id も 403
+    // にして、他テナントの grant の有無を区別させない。
+    let tenant_id = sqlx::query_scalar::<_, Uuid>(
+        "SELECT tenant_id FROM temporary_access_grants WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(s.db.pool())
+    .await
+    .map_err(|e| ApiError::internal(&e.to_string()))?
+    .ok_or_else(|| ApiError::forbidden("FORBIDDEN", "この操作を行う権限がありません"))?;
+    require_tenant_role(&s, &jar, &headers, tenant_id, "ADMIN").await?;
     s.db.revoke_temporary_access_grant(id)
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;

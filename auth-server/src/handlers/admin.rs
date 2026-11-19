@@ -10,7 +10,8 @@ use uuid::Uuid;
 
 use crate::error::ApiError;
 use crate::helpers::{
-    authorize_role_grant, require_admin_with_headers, require_session as auth, require_tenant_role,
+    authorize_role_grant, require_admin_with_headers, require_session as auth,
+    require_system_admin, require_tenant_role,
 };
 use crate::state::AppState;
 use volta_auth_core::store::*;
@@ -268,7 +269,8 @@ pub async fn hard_delete_user(
     headers: HeaderMap,
     Path(uid): Path<Uuid>,
 ) -> Result<Response, ApiError> {
-    let _ = auth_admin(&s, &jar, &headers).await?;
+    // 任意のユーザーを全テナントから消すので、システム管理者だけ。
+    let _ = require_system_admin(&s, &jar, Some(&headers)).await?;
     // #18 GDPR hard delete must cover:
     //   - audit_logs         (anonymize actor_id + detail)
     //   - outbox_events      (delete any pending event that names this user)
@@ -297,7 +299,8 @@ pub async fn admin_list_tenants(
     headers: HeaderMap,
     Query(q): Query<crate::pagination::PageRequest>,
 ) -> Result<Response, ApiError> {
-    let _ = auth_admin(&s, &jar, &headers).await?;
+    // 全テナントの一覧はシステム管理者だけ。
+    let _ = require_system_admin(&s, &jar, Some(&headers)).await?;
     let req = q.normalized();
     let order = crate::pagination::PageRequest::order_sql(
         req.sort.as_deref(),
@@ -317,7 +320,8 @@ pub async fn admin_list_users(
     headers: HeaderMap,
     Query(q): Query<crate::pagination::PageRequest>,
 ) -> Result<Response, ApiError> {
-    let _ = auth_admin(&s, &jar, &headers).await?;
+    // 全ユーザーの一覧はシステム管理者だけ。
+    let _ = require_system_admin(&s, &jar, Some(&headers)).await?;
     let req = q.normalized();
     let order = crate::pagination::PageRequest::order_sql(
         req.sort.as_deref(),
@@ -504,7 +508,8 @@ pub async fn outbox_flush(
     jar: CookieJar,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let _ = auth_admin(&s, &jar, &headers).await?;
+    // 全テナント分の outbox を処理するので、システム管理者だけ。
+    let _ = require_system_admin(&s, &jar, Some(&headers)).await?;
     let pending = OutboxStore::claim_pending(&s.db, 100)
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;

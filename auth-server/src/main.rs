@@ -224,6 +224,18 @@ async fn main() {
 
     let return_to_policy = return_to::ReturnToPolicy::from_env(&cookie_domain, &base_url);
 
+    // Cross-tenant admin APIs (all tenants / all users / signing keys / ...) are
+    // limited to explicitly listed system administrators. Unset = nobody.
+    let system_admins = helpers::SystemAdmins::from_env();
+    if system_admins.is_empty() {
+        info!("SYSTEM_ADMIN_EMAILS unset — cross-tenant admin APIs are disabled");
+    } else {
+        info!(
+            count = system_admins.len(),
+            "system administrators configured"
+        );
+    }
+
     let state = AppState {
         db,
         idp: Arc::new(idp),
@@ -246,6 +258,7 @@ async fn main() {
         notify_channel,
         email_verification_enabled,
         return_to: Arc::new(return_to_policy),
+        system_admins: Arc::new(system_admins),
     };
 
     // Outbox worker — poll every 5s, deliver webhooks
