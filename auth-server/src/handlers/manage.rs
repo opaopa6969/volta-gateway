@@ -738,7 +738,8 @@ pub async fn oauth_token(
             email: None,
             tenant_id: Some(client.tenant_id.to_string()),
             tenant_slug: None,
-            roles: Some(client.scopes.clone()),
+            // 既知のロールだけをトークンに載せる（検証導入前に保存された値への備え）。
+            roles: Some(crate::helpers::sanitize_issued_m2m_scopes(&client.scopes)),
             name: None,
             app_id: None,
             iat: None,

@@ -91,6 +91,7 @@ IdP でログインさせる場合は下の「汎用 OIDC」を設定し、IdP �
 | 変数 | 既定（未設定時） | 説明 |
 |---|---|---|
 | `ALLOWED_RETURN_TO_DOMAINS` | `COOKIE_DOMAIN` から導出。それも空なら `BASE_URL` のホストのみ | ログイン/ログアウト後に戻してよいホスト。カンマ区切り。`example.com` はそのホストのみ、`.example.com` / `*.example.com` はそのドメインとサブドメイン。`BASE_URL` のホストは常に許可。相対パス（`/app`）は常に許可。スキームは https、`BASE_URL` が http のときだけ http も可 |
+| `SYSTEM_ADMIN_EMAILS` | 未設定（＝誰もいない） | テナントを横断する管理 API（`/api/v1/admin/tenants`・`/api/v1/admin/users` の一覧・`/api/v1/admin/sessions`・`/api/v1/admin/keys`・`/api/v1/users/{id}/data`・`/api/v1/users/{id}/export`・`/api/v1/admin/outbox/flush`・`/api/v1/oauth/clients`・`/scim/v2/*`・`/viz/auth/stream` 等）を使えるシステム管理者のメールアドレス。カンマ区切り、大小無視。cookie ログインのみ（Bearer 不可）。テナントの ADMIN / OWNER であることは条件にならない。未設定なら横断 API は全員 403（テナント単位の管理は従来どおり） |
 | `AUTH_AUTO_MIGRATE` | `false` | `true` で起動時に `auth-core/migrations` を適用（sqlx、`_sqlx_migrations` 表で管理）。**既に手で作ったスキーマ（`users` はあるが `_sqlx_migrations` が無い DB）では起動を拒否する** |
 | `IDP_ISSUER_URL` | 未設定 | 汎用 OIDC の issuer。設定すると起動時に `/.well-known/openid-configuration` を読んで各エンドポイントを埋め、`id_token` を検証する |
 | `IDP_AUTH_URL` / `IDP_TOKEN_URL` / `IDP_USERINFO_URL` / `IDP_JWKS_URL` | 未設定 | エンドポイントの明示指定（discovery より優先） |

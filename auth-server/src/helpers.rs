@@ -298,6 +298,115 @@ pub fn require_self(session: &SessionRecord, user_id: Uuid) -> Result<(), ApiErr
     Ok(())
 }
 
+/// 発行済み M2M client の scopes を、トークンの roles に入れる前に絞り込む。
+///
+/// 作成時の検証（[`normalize_m2m_scopes`]）より前に作られた client が残っていても、
+/// 既知のロール以外はトークンに載せない。未知の値は捨て、大文字に正規化し、
+/// 重複を除いてカンマ区切りで返す（全部捨てたら空文字）。
+pub fn sanitize_issued_m2m_scopes(scopes: &str) -> String {
+    let policy = PolicyEngine::default_policy();
+    let mut out: Vec<String> = Vec::new();
+    for raw in scopes.split(|c: char| c == ',' || c.is_whitespace()) {
+        let scope = raw.trim().to_ascii_uppercase();
+        if scope.is_empty() || !policy.is_known_role(&scope) {
+            continue;
+        }
+        if !out.contains(&scope) {
+            out.push(scope);
+        }
+    }
+    out.join(",")
+}
+
+// ─── システム管理者（テナント横断の管理 API） ─────────────────────
+
+/// テナントを横断する管理 API（全テナント・全ユーザーの一覧、ユーザーの完全削除、
+/// 署名鍵、全セッション等）を使えるシステム管理者の一覧。
+///
+/// 環境変数 `SYSTEM_ADMIN_EMAILS`（カンマ／空白区切りのメールアドレス）で明示する。
+/// **未設定・空なら誰もシステム管理者ではない**（横断 API は全員 403）。
+/// テナントの ADMIN / OWNER であることはシステム管理者の条件にならない。
+#[derive(Debug, Clone, Default)]
+pub struct SystemAdmins {
+    emails: Vec<String>,
+}
+
+impl SystemAdmins {
+    pub const ENV: &'static str = "SYSTEM_ADMIN_EMAILS";
+
+    pub fn parse(raw: &str) -> Self {
+        let mut emails: Vec<String> = Vec::new();
+        for e in raw.split(|c: char| c == ',' || c.is_whitespace()) {
+            let e = e.trim().to_ascii_lowercase();
+            if e.contains('@') && !emails.contains(&e) {
+                emails.push(e);
+            }
+        }
+        Self { emails }
+    }
+
+    pub fn from_env() -> Self {
+        std::env::var(Self::ENV)
+            .map(|v| Self::parse(&v))
+            .unwrap_or_default()
+    }
+
+    pub fn len(&self) -> usize {
+        self.emails.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.emails.is_empty()
+    }
+
+    pub fn contains(&self, email: &str) -> bool {
+        let email = email.trim().to_ascii_lowercase();
+        !email.is_empty() && self.emails.contains(&email)
+    }
+}
+
+fn system_admin_forbidden() -> ApiError {
+    ApiError::forbidden("FORBIDDEN", "この操作はシステム管理者のみ実行できます")
+}
+
+/// システム管理者かどうかの判定（DB を触らない純粋関数）。
+///
+/// `user` は呼び出し元の users 行。存在し、有効で、削除されておらず、
+/// メールアドレスが [`SystemAdmins`] に含まれるときだけ通す。
+pub fn authorize_system_admin(
+    admins: &SystemAdmins,
+    user: Option<&volta_auth_core::record::UserRecord>,
+) -> Result<(), ApiError> {
+    let user = user.ok_or_else(system_admin_forbidden)?;
+    if !user.is_active || user.deleted_at.is_some() || !admins.contains(&user.email) {
+        return Err(system_admin_forbidden());
+    }
+    Ok(())
+}
+
+/// テナント横断の管理 API の共通認可。
+///
+/// - 対話ログインの cookie セッションだけを受け付ける。`Authorization: Bearer`
+///   （M2M client やトークン）はテナントに閉じた権限なので、付いていれば 403。
+/// - セッションの利用者の users 行を引き、[`authorize_system_admin`] で判定する。
+///   メールアドレスはセッションではなく DB の値を使う。
+pub async fn require_system_admin(
+    state: &AppState,
+    jar: &CookieJar,
+    headers: Option<&HeaderMap>,
+) -> Result<SessionRecord, ApiError> {
+    if headers.and_then(bearer_token).is_some() {
+        return Err(system_admin_forbidden());
+    }
+    let session = require_session(state, jar).await?;
+    let uid = Uuid::parse_str(session.user_id.trim()).map_err(|_| system_admin_forbidden())?;
+    let user = volta_auth_core::store::UserStore::find_by_id(&state.db, uid)
+        .await
+        .map_err(|e| ApiError::internal(&e.to_string()))?;
+    authorize_system_admin(&state.system_admins, user.as_ref())?;
+    Ok(session)
+}
+
 fn split_roles(roles: Option<&str>) -> Vec<String> {
     roles
         .unwrap_or("")
@@ -743,6 +852,68 @@ mod tests {
         assert!(require_self(&s, me).is_ok());
         // M2M（UUID でない subject）は本人扱いしない
         assert!(require_self(&session_for("m2m_abcd1234"), me).is_err());
+    }
+
+    #[test]
+    fn issued_m2m_scopes_drop_unknown_values() {
+        // 作成時の検証より前に保存された値が残っていても、既知のロールだけに絞る。
+        assert_eq!(
+            sanitize_issued_m2m_scopes("admin, superuser,MEMBER admin"),
+            "ADMIN,MEMBER"
+        );
+        assert_eq!(sanitize_issued_m2m_scopes("root,*,system"), "");
+        assert_eq!(sanitize_issued_m2m_scopes(""), "");
+        assert_eq!(sanitize_issued_m2m_scopes("OWNER"), "OWNER");
+    }
+
+    fn user_with(email: &str, active: bool, deleted: bool) -> volta_auth_core::record::UserRecord {
+        volta_auth_core::record::UserRecord {
+            id: Uuid::from_u128(1),
+            email: email.into(),
+            display_name: None,
+            google_sub: None,
+            created_at: chrono::Utc::now(),
+            is_active: active,
+            locale: None,
+            deleted_at: deleted.then(chrono::Utc::now),
+        }
+    }
+
+    #[test]
+    fn system_admins_parse_and_match_case_insensitively() {
+        let admins =
+            SystemAdmins::parse(" Root@Example.com, ops@example.com  root@example.com,,x ");
+        assert_eq!(admins.len(), 2);
+        assert!(admins.contains("root@example.com"));
+        assert!(admins.contains(" OPS@example.COM "));
+        assert!(!admins.contains("other@example.com"));
+        assert!(!admins.contains(""));
+        assert!(SystemAdmins::parse("").is_empty());
+    }
+
+    #[test]
+    fn system_admin_requires_explicit_listing() {
+        let admins = SystemAdmins::parse("root@example.com");
+        assert!(
+            authorize_system_admin(&admins, Some(&user_with("ROOT@example.com", true, false)))
+                .is_ok()
+        );
+        // 一覧にない・無効・削除済み・users 行なしは 403
+        for user in [
+            Some(user_with("admin@example.com", true, false)),
+            Some(user_with("root@example.com", false, false)),
+            Some(user_with("root@example.com", true, true)),
+            None,
+        ] {
+            let err = authorize_system_admin(&admins, user.as_ref()).unwrap_err();
+            assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+        }
+        // 未設定なら誰も通らない（安全側）
+        let none = SystemAdmins::default();
+        assert!(
+            authorize_system_admin(&none, Some(&user_with("root@example.com", true, false)))
+                .is_err()
+        );
     }
 
     #[test]

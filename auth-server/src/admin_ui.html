@@ -97,11 +97,11 @@
   function toolbar(searchable=false) { const bar=document.createElement('div');bar.className='toolbar';if(searchable){const input=document.createElement('input');input.type='search';input.placeholder='検索…';input.value=state.query;input.addEventListener('keydown',e=>{if(e.key==='Enter'){state.query=input.value.trim();render();}});bar.append(input,button('検索','secondary',()=>{state.query=input.value.trim();render();}));}const spacer=document.createElement('span');spacer.className='spacer';bar.append(spacer,button('再読込','secondary',async()=>{await loadTenants();await render();}));return bar; }
   function selectedTenant() { if (!state.tenantId) throw new Error('操作対象テナントを選択してください。'); return state.tenantId; }
   async function loadTenants() {
-    const data=await api('/api/v1/admin/tenants?page=1&size=500&sort=name'); state.tenants=items(data); if(!state.tenants.some(t=>t.id===state.tenantId))state.tenantId=state.tenants[0]?.id||'';
+    let data; try { data=await api('/api/v1/admin/tenants?page=1&size=500&sort=name'); } catch { data=await api('/api/v1/users/me/tenants'); } state.tenants=items(data).filter(t=>!t.role||['OWNER','ADMIN'].includes(String(t.role).toUpperCase())); if(!state.tenants.some(t=>t.id===state.tenantId))state.tenantId=state.tenants[0]?.id||'';
     const select=$('#tenant-select');select.replaceChildren();state.tenants.forEach(t=>{const o=document.createElement('option');o.value=t.id;o.textContent=`${t.name} (${t.slug})`;select.append(o);});select.value=state.tenantId;select.disabled=!state.tenants.length;select.addEventListener('change',()=>{state.tenantId=select.value;localStorage.setItem('volta.admin.tenant',state.tenantId);render();});
   }
   async function dashboard() {
-    $('#actions').replaceChildren(); const urls=['/api/v1/admin/users?size=1','/api/v1/admin/tenants?size=1','/api/v1/admin/sessions?size=1','/api/v1/admin/audit?size=1']; const labels=['Users','Tenants','Active Sessions','Audit Events']; const data=await Promise.all(urls.map(u=>api(u)));
+    $('#actions').replaceChildren(); const urls=['/api/v1/admin/users?size=1','/api/v1/admin/tenants?size=1','/api/v1/admin/sessions?size=1','/api/v1/admin/audit?size=1']; const labels=['Users','Tenants','Active Sessions','Audit Events']; const data=(await Promise.allSettled(urls.map(u=>api(u)))).map(r=>r.status==='fulfilled'?r.value:{total:'—'});
     const grid=document.createElement('div');grid.className='stats';data.forEach((d,i)=>{const c=document.createElement('div');c.className='stat';const strong=document.createElement('strong');strong.textContent=d.total??items(d).length;const span=document.createElement('span');span.textContent=labels[i];c.append(strong,span);grid.append(c);});$('#view').replaceChildren(grid);
   }
   async function users() {

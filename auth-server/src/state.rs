@@ -56,4 +56,7 @@ pub struct AppState {
     /// Allowed `return_to` targets for login / logout redirects
     /// (`ALLOWED_RETURN_TO_DOMAINS`, else `COOKIE_DOMAIN`, else BASE_URL host).
     pub return_to: Arc<ReturnToPolicy>,
+    /// System administrators allowed to use cross-tenant admin APIs
+    /// (`SYSTEM_ADMIN_EMAILS`). Empty = nobody (fail-closed).
+    pub system_admins: Arc<crate::helpers::SystemAdmins>,
 }

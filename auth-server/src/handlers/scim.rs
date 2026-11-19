@@ -9,7 +9,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::error::ApiError;
-use crate::helpers::require_admin_with_headers;
+use crate::helpers::require_system_admin;
 use crate::state::AppState;
 use volta_auth_core::store::UserStore;
 
@@ -39,7 +39,8 @@ pub async fn list_users(
     jar: CookieJar,
     headers: axum::http::HeaderMap,
 ) -> Result<Response, ApiError> {
-    let _ = require_admin_with_headers(&s, &jar, Some(&headers)).await?;
+    // SCIM の Users はテナントに閉じていない（全ユーザーが対象）ので、システム管理者だけ。
+    let _ = require_system_admin(&s, &jar, Some(&headers)).await?;
     // Simplified — real impl would filter by tenant from Bearer token
     Ok(Json(scim_list(vec![])).into_response())
 }
@@ -59,7 +60,8 @@ pub async fn create_user(
     headers: axum::http::HeaderMap,
     Json(b): Json<ScimCreateUser>,
 ) -> Result<Response, ApiError> {
-    let _ = require_admin_with_headers(&s, &jar, Some(&headers)).await?;
+    // SCIM の Users はテナントに閉じていない（全ユーザーが対象）ので、システム管理者だけ。
+    let _ = require_system_admin(&s, &jar, Some(&headers)).await?;
     let user = UserStore::upsert(
         &s.db,
         volta_auth_core::record::UserRecord {
@@ -94,7 +96,8 @@ pub async fn get_user(
     headers: axum::http::HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<Response, ApiError> {
-    let _ = require_admin_with_headers(&s, &jar, Some(&headers)).await?;
+    // SCIM の Users はテナントに閉じていない（全ユーザーが対象）ので、システム管理者だけ。
+    let _ = require_system_admin(&s, &jar, Some(&headers)).await?;
     let user = UserStore::find_by_id(&s.db, id)
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?
@@ -116,7 +119,8 @@ pub async fn replace_user(
     Path(id): Path<Uuid>,
     Json(b): Json<ScimCreateUser>,
 ) -> Result<Response, ApiError> {
-    let _ = require_admin_with_headers(&s, &jar, Some(&headers)).await?;
+    // SCIM の Users はテナントに閉じていない（全ユーザーが対象）ので、システム管理者だけ。
+    let _ = require_system_admin(&s, &jar, Some(&headers)).await?;
     UserStore::update_display_name(&s.db, id, b.display_name.as_deref().unwrap_or(""))
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
@@ -141,7 +145,8 @@ pub async fn patch_user(
     Path(id): Path<Uuid>,
     Json(b): Json<serde_json::Value>,
 ) -> Result<Response, ApiError> {
-    let _ = require_admin_with_headers(&s, &jar, Some(&headers)).await?;
+    // SCIM の Users はテナントに閉じていない（全ユーザーが対象）ので、システム管理者だけ。
+    let _ = require_system_admin(&s, &jar, Some(&headers)).await?;
     // Simplified PATCH — extract displayName from Operations
     if let Some(ops) = b.get("Operations").and_then(|v| v.as_array()) {
         for op in ops {
@@ -174,7 +179,8 @@ pub async fn delete_user(
     headers: axum::http::HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<Response, ApiError> {
-    let _ = require_admin_with_headers(&s, &jar, Some(&headers)).await?;
+    // SCIM の Users はテナントに閉じていない（全ユーザーが対象）ので、システム管理者だけ。
+    let _ = require_system_admin(&s, &jar, Some(&headers)).await?;
     UserStore::soft_delete(&s.db, id)
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
@@ -187,7 +193,8 @@ pub async fn list_groups(
     jar: CookieJar,
     headers: axum::http::HeaderMap,
 ) -> Result<Response, ApiError> {
-    let _ = require_admin_with_headers(&s, &jar, Some(&headers)).await?;
+    // SCIM の Users はテナントに閉じていない（全ユーザーが対象）ので、システム管理者だけ。
+    let _ = require_system_admin(&s, &jar, Some(&headers)).await?;
     Ok(Json(scim_list(vec![])).into_response())
 }
 
@@ -198,7 +205,8 @@ pub async fn create_group(
     headers: axum::http::HeaderMap,
     Json(_b): Json<serde_json::Value>,
 ) -> Result<Response, ApiError> {
-    let _ = require_admin_with_headers(&s, &jar, Some(&headers)).await?;
+    // SCIM の Users はテナントに閉じていない（全ユーザーが対象）ので、システム管理者だけ。
+    let _ = require_system_admin(&s, &jar, Some(&headers)).await?;
     // Groups map to tenants — simplified stub
     let mut resp = Json(serde_json::json!({
         "schemas": ["urn:ietf:params:scim:schemas:core:2.0:Group"],

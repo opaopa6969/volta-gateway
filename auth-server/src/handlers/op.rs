@@ -1183,7 +1183,8 @@ pub async fn create_client(
     jar: CookieJar,
     Json(b): Json<CreateClientReq>,
 ) -> Result<Response, ApiError> {
-    crate::helpers::require_admin(&s, &jar).await?;
+    // OP の client はテナントに属さない全体設定なので、システム管理者だけ。
+    crate::helpers::require_system_admin(&s, &jar, None).await?;
     let client_id = format!("volta-{}", &Uuid::new_v4().simple().to_string()[..16]);
     let (secret, secret_hash) = if b.confidential {
         let sec = random_token_hex(32);
@@ -1222,7 +1223,8 @@ pub async fn create_client(
 }
 
 pub async fn list_clients(State(s): State<AppState>, jar: CookieJar) -> Result<Response, ApiError> {
-    crate::helpers::require_admin(&s, &jar).await?;
+    // OP の client はテナントに属さない全体設定なので、システム管理者だけ。
+    crate::helpers::require_system_admin(&s, &jar, None).await?;
     let clients = OAuthClientStore::list_clients(&s.db)
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;

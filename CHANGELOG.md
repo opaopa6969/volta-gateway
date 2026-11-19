@@ -33,6 +33,22 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   follows `COOKIE_DOMAIN` / `BASE_URL` instead of a fixed `.unlaxer.org`.
 
 ### Security
+- auth-server authorization follow-ups:
+  - Cross-tenant admin APIs (listing all tenants / users / sessions, user
+    export and hard delete, signing keys, outbox flush, OP client registry,
+    SCIM, `/viz/auth/stream`, flow transitions) now require a **system
+    administrator** listed in the new `SYSTEM_ADMIN_EMAILS` (cookie session
+    only). Unset = nobody; tenant ADMIN / OWNER no longer qualifies. The
+    embedded `/admin` console falls back to the caller's own tenants.
+  - `POST /api/v1/tenants/{id}/transfer-ownership` is OWNER-only; the target
+    must be an active member of the same tenant. Demote + promote run in one
+    transaction.
+  - `/api/v1/users/{userId}/mfa/*` acts only on the signed-in user.
+  - Temporary-access grants are checked against the grant's tenant
+    (ADMIN or above); `DELETE /auth/sessions/{id}` only finds the caller's
+    own sessions.
+  - `client_credentials` tokens carry only known roles from the client's
+    stored scopes.
 - `/login?return_to=` is now checked against the same allow-list as logout
   (it was unchecked: open redirect, and a `javascript:` URL reached the
   passkey script). Disallowed values fall back to `BASE_URL/`. The SAML ACS

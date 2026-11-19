@@ -20,7 +20,7 @@ use tokio_stream::StreamExt;
 use uuid::Uuid;
 
 use crate::error::ApiError;
-use crate::helpers::require_admin;
+use crate::helpers::require_system_admin;
 use crate::state::AppState;
 
 /// GET /viz/auth/stream — SSE stream of LOGIN_SUCCESS / LOGOUT / SESSION_EXPIRED.
@@ -31,7 +31,8 @@ pub async fn auth_stream(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
-    let _ = require_admin(&state, &jar).await?;
+    // デプロイ全体の認証イベントを扱うので、システム管理者だけ。
+    let _ = require_system_admin(&state, &jar, None).await?;
 
     let rx = state.auth_events.subscribe();
     let stream = BroadcastStream::new(rx).filter_map(|item| {
@@ -814,7 +815,8 @@ pub async fn flow_transitions(
     jar: CookieJar,
     Path(flow_id): Path<Uuid>,
 ) -> Result<Response, ApiError> {
-    let _ = require_admin(&state, &jar).await?;
+    // デプロイ全体の認証イベントを扱うので、システム管理者だけ。
+    let _ = require_system_admin(&state, &jar, None).await?;
 
     let exists: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM auth_flows WHERE id = $1")
         .bind(flow_id)

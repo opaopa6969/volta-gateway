@@ -8,7 +8,7 @@ use axum_extra::extract::CookieJar;
 use serde::Deserialize;
 
 use crate::error::{no_cache_headers, ApiError};
-use crate::helpers::{extract_session_id, set_session_cookie};
+use crate::helpers::{extract_session_id, require_self, set_session_cookie};
 use crate::state::AppState;
 use volta_auth_core::store::{MfaStore, RecoveryCodeStore, SessionStore};
 use volta_auth_core::totp;
@@ -117,7 +117,9 @@ pub async fn totp_setup(
     jar: CookieJar,
     Path(user_id): Path<uuid::Uuid>,
 ) -> Result<Response, ApiError> {
-    let _session = verify_session(&state, &jar).await?;
+    let session = verify_session(&state, &jar).await?;
+    // パスの userId は本人に限る（他人の MFA は操作できない）。
+    require_self(&session, user_id)?;
 
     let secret = totp::generate_secret();
     let uri = format!(
@@ -153,7 +155,9 @@ pub async fn totp_verify_setup(
     Path(user_id): Path<uuid::Uuid>,
     Json(body): Json<VerifyCode>,
 ) -> Result<Response, ApiError> {
-    let _session = verify_session(&state, &jar).await?;
+    let session = verify_session(&state, &jar).await?;
+    // パスの userId は本人に限る（他人の MFA は操作できない）。
+    require_self(&session, user_id)?;
 
     // Find the MFA record (even inactive, since we just set it up)
     let mfa = sqlx::query_as::<_, volta_auth_core::record::MfaRecord>(
@@ -196,7 +200,9 @@ pub async fn totp_disable(
     jar: CookieJar,
     Path(user_id): Path<uuid::Uuid>,
 ) -> Result<Response, ApiError> {
-    let _session = verify_session(&state, &jar).await?;
+    let session = verify_session(&state, &jar).await?;
+    // パスの userId は本人に限る（他人の MFA は操作できない）。
+    require_self(&session, user_id)?;
 
     MfaStore::deactivate(&state.db, user_id, "totp")
         .await
@@ -250,7 +256,9 @@ pub async fn regenerate_recovery_codes(
     jar: CookieJar,
     Path(user_id): Path<uuid::Uuid>,
 ) -> Result<Response, ApiError> {
-    let _session = verify_session(&state, &jar).await?;
+    let session = verify_session(&state, &jar).await?;
+    // パスの userId は本人に限る（他人の MFA は操作できない）。
+    require_self(&session, user_id)?;
 
     let codes = generate_recovery_codes(10);
     let hashes: Vec<String> = codes.iter().map(|c| sha256_hex(c)).collect();
