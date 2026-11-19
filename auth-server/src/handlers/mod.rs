@@ -16,6 +16,8 @@ pub mod saml;
 pub mod scim;
 pub mod session;
 pub mod signing_key;
+#[cfg(test)]
+mod tenant_authz_tests;
 pub mod user;
 pub mod viz;
 pub mod webhook;

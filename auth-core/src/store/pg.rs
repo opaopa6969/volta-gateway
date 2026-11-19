@@ -671,13 +671,15 @@ impl InvitationStore for PgStore {
         .map_err(AuthError::from)
     }
 
-    async fn cancel(&self, id: Uuid) -> Result<(), AuthError> {
-        sqlx::query("UPDATE invitations SET max_uses = 0 WHERE id = $1")
-            .bind(id)
-            .execute(&self.pool)
-            .await
-            .map_err(AuthError::from)?;
-        Ok(())
+    async fn cancel(&self, tenant_id: Uuid, id: Uuid) -> Result<bool, AuthError> {
+        let result =
+            sqlx::query("UPDATE invitations SET max_uses = 0 WHERE id = $1 AND tenant_id = $2")
+                .bind(id)
+                .bind(tenant_id)
+                .execute(&self.pool)
+                .await
+                .map_err(AuthError::from)?;
+        Ok(result.rows_affected() > 0)
     }
 }
 

@@ -50,6 +50,10 @@ jobs:
       - name: PostgreSQL integration tests
         run: cargo test -p volta-auth-core --features postgres --test pg_store_test -- --ignored --test-threads=1
 
+      # テナント管理 API の認可（ハンドラ単位、PostgreSQL を使う）。
+      - name: Tenant management authorization tests
+        run: cargo test -p volta-auth-server tenant_authz -- --ignored --test-threads=1
+
       # ── SPEC §12.8 の要件 (#83) ────────────────────────────────────
       #
       # 以前は build + test だけで、SPEC が要求する5項目が1つも無かった。

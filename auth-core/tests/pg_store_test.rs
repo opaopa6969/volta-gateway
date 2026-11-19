@@ -430,10 +430,70 @@ async fn invitation_cancel() {
         .await
         .unwrap();
 
-    invitations(&store).cancel(inv_id).await.unwrap();
+    assert!(invitations(&store).cancel(tenant.id, inv_id).await.unwrap());
 
     let found = invitations(&store)
         .find_by_code("inv-cancel-123")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!found.is_usable_at(Utc::now()));
+}
+
+#[tokio::test]
+#[ignore]
+async fn invitation_cancel_is_scoped_to_tenant() {
+    let (pool, _c) = setup_pool().await;
+    let store = PgStore::new(pool);
+
+    let owner_a = create_user(&store, "scope-a@example.com", "google-scope-a").await;
+    let owner_b = create_user(&store, "scope-b@example.com", "google-scope-b").await;
+    let tenant_a = tenants(&store)
+        .create_personal(owner_a.id, "Scope A", "scope-a")
+        .await
+        .unwrap();
+    let tenant_b = tenants(&store)
+        .create_personal(owner_b.id, "Scope B", "scope-b")
+        .await
+        .unwrap();
+
+    let inv_id = Uuid::new_v4();
+    invitations(&store)
+        .create(InvitationRecord {
+            id: inv_id,
+            tenant_id: tenant_a.id,
+            code: "inv-scope-a".into(),
+            email: None,
+            role: "MEMBER".into(),
+            max_uses: 5,
+            used_count: 0,
+            created_by: owner_a.id,
+            created_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::hours(24),
+        })
+        .await
+        .unwrap();
+
+    // 別テナントを指定した取り消しは何も変えない
+    assert!(!invitations(&store)
+        .cancel(tenant_b.id, inv_id)
+        .await
+        .unwrap());
+    let found = invitations(&store)
+        .find_by_code("inv-scope-a")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(found.is_usable_at(Utc::now()));
+    assert_eq!(found.max_uses, 5);
+
+    // 正しいテナントなら取り消せる
+    assert!(invitations(&store)
+        .cancel(tenant_a.id, inv_id)
+        .await
+        .unwrap());
+    let found = invitations(&store)
+        .find_by_code("inv-scope-a")
         .await
         .unwrap()
         .unwrap();
