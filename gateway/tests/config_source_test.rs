@@ -56,6 +56,50 @@ fn services_json_defaults() {
 }
 
 #[test]
+fn services_json_base_domain_is_configurable() {
+    let source = volta_gateway::config_source::ServicesJsonSource::new("/dummy", "localhost")
+        .with_base_domain("scm.example.com");
+    let routes = source.parse_services(r#"[{"name": "app"}]"#).unwrap();
+    assert_eq!(routes[0].host, "app.scm.example.com");
+
+    // Blank keeps the default (unlaxer.org) — existing configs are unchanged.
+    let source = volta_gateway::config_source::ServicesJsonSource::new("/dummy", "localhost")
+        .with_base_domain("  ");
+    let routes = source.parse_services(r#"[{"name": "app"}]"#).unwrap();
+    assert_eq!(routes[0].host, "app.unlaxer.org");
+}
+
+#[tokio::test]
+async fn services_json_base_domain_from_yaml() {
+    use volta_gateway::config::GatewayConfig;
+    use volta_gateway::config_source::create_sources;
+
+    let dir = std::env::temp_dir().join(format!("volta_base_domain_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("services.json");
+    std::fs::write(&path, r#"[{"name": "app", "port": 3000}]"#).unwrap();
+    let yaml = format!(
+        r#"
+server:
+  port: 8080
+auth:
+  volta_url: http://localhost:7070
+routing: []
+config_sources:
+  - type: services-json
+    path: "{}"
+    base_domain: example.org
+"#,
+        path.display()
+    );
+    let config: GatewayConfig = serde_yaml::from_str(&yaml).unwrap();
+    let sources = create_sources(&config.config_sources);
+    let routes = sources[0].load().unwrap();
+    assert_eq!(routes[0].host, "app.example.org");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn services_json_with_cors_and_strip() {
     let source = volta_gateway::config_source::ServicesJsonSource::new("/dummy", "localhost");
     let json = r#"[{

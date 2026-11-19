@@ -40,6 +40,9 @@ impl FlowState for PasskeyState {
 #[derive(Debug, Clone)]
 pub struct PasskeyInitData {
     pub session_id: String,
+    /// WebAuthn relying-party id — the caller passes `WEBAUTHN_RP_ID`
+    /// (the same value `passkey::PasskeyService` is built with).
+    pub rp_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -75,10 +78,10 @@ impl StateProcessor<PasskeyState> for ChallengeProcessor {
         data_types!(PasskeyChallenge)
     }
     fn process(&self, ctx: &mut FlowContext) -> Result<(), FlowError> {
-        let _init = ctx.get::<PasskeyInitData>()?;
+        let rp_id = ctx.get::<PasskeyInitData>()?.rp_id.clone();
         ctx.put(PasskeyChallenge {
             challenge: "challenge-placeholder".to_string(),
-            rp_id: "unlaxer.org".into(),
+            rp_id,
         });
         Ok(())
     }
@@ -185,12 +188,16 @@ mod tests {
             TypeId::of::<PasskeyInitData>(),
             Box::new(PasskeyInitData {
                 session_id: "s1".into(),
+                rp_id: "auth.example.com".into(),
             }),
         )];
         let flow_id = engine.start_flow(def, "test", data).unwrap();
+        let flow = engine.store.get(&flow_id).unwrap();
+        assert_eq!(flow.current_state(), PasskeyState::ChallengeIssued);
+        // rp_id comes from the caller (WEBAUTHN_RP_ID), not a hardcoded domain.
         assert_eq!(
-            engine.store.get(&flow_id).unwrap().current_state(),
-            PasskeyState::ChallengeIssued
+            flow.context.find::<PasskeyChallenge>().unwrap().rp_id,
+            "auth.example.com"
         );
     }
 
@@ -202,6 +209,7 @@ mod tests {
             TypeId::of::<PasskeyInitData>(),
             Box::new(PasskeyInitData {
                 session_id: "s1".into(),
+                rp_id: "auth.example.com".into(),
             }),
         )];
         let flow_id = engine.start_flow(def, "test", data).unwrap();

@@ -183,9 +183,11 @@ pub async fn saml_callback(
     .await
     .map_err(|e| ApiError::internal(&e.to_string()))?;
 
+    // Same allow-list as /login (return_to::ReturnToPolicy): the RelayState
+    // comes back from the browser, so an unchecked value is an open redirect.
     let redirect_to = relay
         .return_to
-        .filter(|r| !r.is_empty())
+        .filter(|r| !r.is_empty() && s.return_to.allows(r))
         .unwrap_or_else(|| "/select-tenant".to_string());
 
     if is_json_accept(&headers) {

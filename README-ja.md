@@ -139,6 +139,8 @@ curl -H "Host: app.localhost" http://localhost:8080/api/hi
 完全手順: [`docs/getting-started-ja.md`](docs/getting-started-ja.md) ·
 [English](docs/getting-started.md)。version 付き YAML 契約と移行規則は
 [`docs/gateway-config-contract.md`](docs/gateway-config-contract.md) を参照。
+volta-platform 以外で動かす（Docker イメージ + postgres / auth-server / gateway の
+compose 例）: [`docs/standalone-deploy.md`](docs/standalone-deploy.md)。
 
 ## Rust-only 認証サービス
 
@@ -396,6 +398,7 @@ cargo test -p volta-auth-core --features postgres -- --ignored
 ## ドキュメント
 
 - [Getting Started](docs/getting-started-ja.md) · [English](docs/getting-started.md)
+- [volta-platform 以外で使う（独立デプロイ）](docs/standalone-deploy.md) — Dockerfile、compose 例、環境変数と既定値
 - [アーキテクチャ](docs/architecture-ja.md) · [English](docs/architecture.md) — FlowEngine、ルーティング、auth-server 8 マージルータ、プラグイン
 - [Rust-only 基盤仕様](docs/rust-only-foundation-spec.md) — 現行の構成・信頼境界・リリース条件
 - [Rust ↔ Java パリティ（履歴）](docs/parity-ja.md) · [English](docs/parity.md) — 過去実装とのルート毎対比

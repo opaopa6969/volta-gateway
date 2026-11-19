@@ -18,6 +18,26 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ## [Unreleased]
 
 ### Added
+- **Standalone deployment** outside unlaxer.org / volta-platform
+  ([`docs/standalone-deploy.md`](docs/standalone-deploy.md)):
+  `Dockerfile.auth-server` / `Dockerfile.gateway` (multi-stage, non-root
+  `debian:bookworm-slim`) and a compose example in `deploy/compose/`
+  (postgres + auth-server + gateway + whoami, with `smoke-test.sh`).
+  New auth-server settings, all defaulting to the previous behaviour:
+  `ALLOWED_RETURN_TO_DOMAINS` (else derived from `COOKIE_DOMAIN`, else the
+  `BASE_URL` host), `AUTH_AUTO_MIGRATE` (default false; refuses a
+  hand-managed schema), generic OIDC via `IDP_ISSUER_URL` + discovery
+  (`IDP_AUTH_URL` / `IDP_TOKEN_URL` / `IDP_USERINFO_URL` / `IDP_JWKS_URL` /
+  `IDP_SCOPES` / `IDP_DISPLAY_NAME`). Gateway: `config_sources[].base_domain`
+  for services.json (default `unlaxer.org`). The temporary-access cookie now
+  follows `COOKIE_DOMAIN` / `BASE_URL` instead of a fixed `.unlaxer.org`.
+
+### Security
+- `/login?return_to=` is now checked against the same allow-list as logout
+  (it was unchecked: open redirect, and a `javascript:` URL reached the
+  passkey script). Disallowed values fall back to `BASE_URL/`. The SAML ACS
+  RelayState `return_to` uses the same check (fallback `/select-tenant`).
+
 - **L4 (TCP/UDP) proxy IP allowlist** (GW-41). L4 routes have no auth by
   design (DD-002), so an operator-configured source-IP CIDR allowlist
   (`l4_proxy[].ip_allowlist`, reusing the same CIDR validation as HTTP route

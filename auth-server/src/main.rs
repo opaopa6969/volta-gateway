@@ -11,6 +11,7 @@ pub mod op_keys;
 mod outbox_worker;
 pub mod pagination;
 pub mod rate_limit;
+mod return_to;
 pub mod saml;
 pub mod saml_dsig;
 pub mod saml_sig;
@@ -56,10 +57,25 @@ async fn main() {
     let base_url = env("BASE_URL", &format!("http://localhost:{}", port));
     let state_key = env("STATE_SIGNING_KEY", &jwt_secret);
 
-    // IdP config
-    let idp_provider = env("IDP_PROVIDER", "google");
-    let idp_client_id = env("IDP_CLIENT_ID", "");
-    let idp_client_secret = env("IDP_CLIENT_SECRET", "");
+    // IdP config. Without IDP_ISSUER_URL / IDP_*_URL this is the built-in
+    // provider table exactly as before (production: IDP_PROVIDER=google).
+    let mut idp_config = idp_config_from(|k| std::env::var(k).ok());
+    if idp_config.needs_discovery() {
+        let issuer = idp_config.issuer_url.clone().unwrap_or_default();
+        match volta_auth_core::idp::discover(&issuer).await {
+            Ok(doc) => match idp_config.apply_discovery(&doc) {
+                Ok(()) => info!(issuer = %doc.issuer, "OIDC discovery applied"),
+                Err(e) => {
+                    eprintln!("IDP_ISSUER_URL: {e}");
+                    std::process::exit(1);
+                }
+            },
+            // Do not take the whole auth-server down when the IdP is briefly
+            // unreachable (compose start order): magic link / passkey still work,
+            // and the IdP login fails visibly until the next restart.
+            Err(e) => tracing::error!("{e}; IdP login is unavailable until restart"),
+        }
+    }
 
     // Database
     let pool = PgPool::connect(&database_url).await.unwrap_or_else(|e| {
@@ -69,18 +85,18 @@ async fn main() {
 
     info!("database connected");
 
+    // Optional: apply auth-core/migrations at startup (AUTH_AUTO_MIGRATE=true).
+    // Off by default — production manages its schema by hand.
+    if env_flag(&env("AUTH_AUTO_MIGRATE", "false")) {
+        if let Err(e) = auto_migrate(&pool).await {
+            eprintln!("AUTH_AUTO_MIGRATE: {e}");
+            std::process::exit(1);
+        }
+    }
+
     let db = PgStore::new(pool);
 
-    let idp = IdpClient::new(IdpConfig {
-        provider: idp_provider,
-        client_id: idp_client_id,
-        client_secret: idp_client_secret,
-        issuer_url: None,
-        auth_url: None,
-        token_url: None,
-        userinfo_url: None,
-        scopes: vec![],
-    });
+    let idp = IdpClient::new(idp_config);
 
     // Backlog P2 #9: validate every flow descriptor before serving traffic.
     // Any violation (unreachable state, cycle in Auto/Branch graph, multi-
@@ -206,6 +222,8 @@ async fn main() {
     // verifies with the shared secret). `None` → OP token signing unavailable.
     let op_issuer = op_keys::bootstrap_op_issuer(&db, session_ttl).await;
 
+    let return_to_policy = return_to::ReturnToPolicy::from_env(&cookie_domain, &base_url);
+
     let state = AppState {
         db,
         idp: Arc::new(idp),
@@ -227,6 +245,7 @@ async fn main() {
         notifications: notifications.clone(),
         notify_channel,
         email_verification_enabled,
+        return_to: Arc::new(return_to_policy),
     };
 
     // Outbox worker — poll every 5s, deliver webhooks
@@ -360,9 +379,167 @@ fn env(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
 }
 
+/// `1` / `true` / `yes` / `on` (case-insensitive).
+fn env_flag(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+/// Build the IdP config from env-style lookups.
+///
+/// | var | effect |
+/// |---|---|
+/// | `IDP_PROVIDER` | built-in provider (`google` default, `github`, `microsoft`, …) or any name for a generic OIDC IdP |
+/// | `IDP_CLIENT_ID` / `IDP_CLIENT_SECRET` | OAuth client |
+/// | `IDP_ISSUER_URL` | OIDC issuer: enables discovery + `id_token` verification |
+/// | `IDP_AUTH_URL` / `IDP_TOKEN_URL` / `IDP_USERINFO_URL` / `IDP_JWKS_URL` | explicit endpoints (win over discovery) |
+/// | `IDP_SCOPES` | space- or comma-separated scopes (default: provider's) |
+/// | `IDP_DISPLAY_NAME` | login button label |
+///
+/// Blank values count as unset, so an env file line `IDP_ISSUER_URL=` keeps
+/// the built-in behaviour.
+fn idp_config_from(get: impl Fn(&str) -> Option<String>) -> IdpConfig {
+    let opt = |k: &str| {
+        get(k)
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    IdpConfig {
+        provider: opt("IDP_PROVIDER").unwrap_or_else(|| "google".into()),
+        client_id: get("IDP_CLIENT_ID").unwrap_or_default(),
+        client_secret: get("IDP_CLIENT_SECRET").unwrap_or_default(),
+        issuer_url: opt("IDP_ISSUER_URL"),
+        auth_url: opt("IDP_AUTH_URL"),
+        token_url: opt("IDP_TOKEN_URL"),
+        userinfo_url: opt("IDP_USERINFO_URL"),
+        scopes: opt("IDP_SCOPES")
+            .map(|s| {
+                s.split(|c: char| c == ',' || c.is_whitespace())
+                    .filter(|x| !x.is_empty())
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        jwks_url: opt("IDP_JWKS_URL"),
+        display_name: opt("IDP_DISPLAY_NAME"),
+    }
+}
+
+/// Apply `auth-core/migrations` (embedded at build time) with sqlx's migrator.
+///
+/// sqlx records applied versions in `_sqlx_migrations`. A database whose schema
+/// was created by hand (the production one: `users` exists, no
+/// `_sqlx_migrations`) is refused instead of having every migration re-run on
+/// top of it.
+async fn auto_migrate(pool: &PgPool) -> Result<(), String> {
+    let (tracked, has_schema): (bool, bool) = sqlx::query_as(
+        "SELECT to_regclass('public._sqlx_migrations') IS NOT NULL, \
+                to_regclass('public.users') IS NOT NULL",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(|e| format!("schema check failed: {e}"))?;
+    if let Some(reason) = refuse_auto_migrate(tracked, has_schema) {
+        return Err(reason.into());
+    }
+    sqlx::migrate!("../auth-core/migrations")
+        .run(pool)
+        .await
+        .map_err(|e| format!("migration failed: {e}"))?;
+    info!("auth-core migrations applied (AUTH_AUTO_MIGRATE)");
+    Ok(())
+}
+
+/// Why auto-migration must not touch this database, if it must not.
+fn refuse_auto_migrate(tracked: bool, has_schema: bool) -> Option<&'static str> {
+    (!tracked && has_schema).then_some(
+        "the database already has auth tables but no _sqlx_migrations history \
+         (schema managed by hand); refusing to re-apply migrations. \
+         Unset AUTH_AUTO_MIGRATE for this database.",
+    )
+}
+
 #[cfg(test)]
 mod tests {
-    use super::meant_for_us;
+    use super::{env_flag, idp_config_from, meant_for_us, refuse_auto_migrate};
+    use std::collections::HashMap;
+
+    fn lookup(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let map: HashMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        move |k| map.get(k).cloned()
+    }
+
+    #[test]
+    fn production_idp_env_builds_the_same_config_as_before() {
+        // IDP_PROVIDER=google + client credentials, nothing else.
+        let c = idp_config_from(lookup(&[
+            ("IDP_PROVIDER", "google"),
+            ("IDP_CLIENT_ID", "cid"),
+            ("IDP_CLIENT_SECRET", "secret"),
+        ]));
+        assert_eq!(c.provider, "google");
+        assert_eq!(c.client_id, "cid");
+        assert_eq!(c.client_secret, "secret");
+        assert!(c.issuer_url.is_none());
+        assert!(c.auth_url.is_none() && c.token_url.is_none() && c.userinfo_url.is_none());
+        assert!(c.jwks_url.is_none() && c.display_name.is_none());
+        assert!(c.scopes.is_empty());
+        assert!(!c.needs_discovery());
+    }
+
+    #[test]
+    fn idp_provider_defaults_to_google() {
+        let c = idp_config_from(lookup(&[]));
+        assert_eq!(c.provider, "google");
+        assert!(!c.needs_discovery());
+    }
+
+    #[test]
+    fn generic_oidc_from_env() {
+        let c = idp_config_from(lookup(&[
+            ("IDP_PROVIDER", "oidc"),
+            ("IDP_ISSUER_URL", "https://idp.example.com/realms/x"),
+            ("IDP_SCOPES", "openid, email profile"),
+            ("IDP_DISPLAY_NAME", "Keycloak"),
+        ]));
+        assert_eq!(
+            c.issuer_url.as_deref(),
+            Some("https://idp.example.com/realms/x")
+        );
+        assert_eq!(c.scopes, vec!["openid", "email", "profile"]);
+        assert_eq!(c.button_label(), "Keycloak");
+        assert!(c.needs_discovery());
+    }
+
+    #[test]
+    fn blank_idp_values_count_as_unset() {
+        let c = idp_config_from(lookup(&[("IDP_PROVIDER", ""), ("IDP_ISSUER_URL", " ")]));
+        assert_eq!(c.provider, "google");
+        assert!(c.issuer_url.is_none());
+    }
+
+    #[test]
+    fn auto_migrate_flag_is_off_unless_explicit() {
+        assert!(!env_flag("false"));
+        assert!(!env_flag(""));
+        assert!(env_flag("true"));
+        assert!(env_flag("1"));
+        assert!(env_flag("ON"));
+    }
+
+    #[test]
+    fn auto_migrate_refuses_a_hand_managed_schema() {
+        // Production DB: tables exist, no _sqlx_migrations.
+        assert!(refuse_auto_migrate(false, true).is_some());
+        // Fresh DB, or one created by a previous auto-migrate.
+        assert!(refuse_auto_migrate(false, false).is_none());
+        assert!(refuse_auto_migrate(true, true).is_none());
+    }
 
     #[test]
     fn adopts_the_socket_only_when_systemd_named_this_process() {

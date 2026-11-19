@@ -446,16 +446,6 @@ pub struct LogoutQuery {
     pub return_to: Option<String>,
 }
 
-/// Only forward a `return_to` that points back at our own apps (https on
-/// *.unlaxer.org) — avoids turning logout into an open redirect.
-fn is_safe_return_to(rt: &str) -> bool {
-    let Some(rest) = rt.strip_prefix("https://") else {
-        return false;
-    };
-    let host = rest.split('/').next().unwrap_or("");
-    host == "unlaxer.org" || host.ends_with(".unlaxer.org")
-}
-
 /// GET /auth/logout — browser logout with redirect. Honors a safe `return_to`
 /// so logging out from an app (e.g. console) lands back at that app's login.
 pub async fn logout_get(
@@ -467,7 +457,9 @@ pub async fn logout_get(
         publish_logout_event(&state, &session_id).await;
         let _ = SessionStore::revoke(&state.db, &session_id).await;
     }
-    let login = match q.return_to.as_deref().filter(|r| is_safe_return_to(r)) {
+    // Only forward a `return_to` that points back at our own apps (see
+    // `return_to::ReturnToPolicy`) — avoids turning logout into an open redirect.
+    let login = match q.return_to.as_deref().filter(|r| state.return_to.allows(r)) {
         Some(rt) => format!(
             "{}/login?return_to={}",
             state.base_url,

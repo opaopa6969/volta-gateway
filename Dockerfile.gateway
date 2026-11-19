@@ -1,0 +1,41 @@
+# syntax=docker/dockerfile:1
+#
+# volta-gateway image (independent deployment; see docs/standalone-deploy.md).
+#
+#   docker build -f Dockerfile.gateway -t volta-gateway .
+#   docker run -v ./volta-gateway.yaml:/etc/volta-gateway/volta-gateway.yaml:ro -p 8080:8080 volta-gateway
+#
+# Runs as a non-root user, so listen on an unprivileged port (server.port, e.g.
+# 8080) and publish it as 80/443 on the host if needed.
+
+ARG RUST_VERSION=1
+FROM rust:${RUST_VERSION}-bookworm AS build
+WORKDIR /src
+# aws-lc-sys (rustls / ACME crypto) builds C sources with cmake.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends cmake \
+ && rm -rf /var/lib/apt/lists/*
+COPY . .
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/src/target,id=volta-gateway-target \
+    cargo build --locked --release -p volta-gateway \
+ && install -D -m 0755 target/release/volta-gateway /out/volta-gateway
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && groupadd --system --gid 10001 volta \
+ && useradd --system --uid 10001 --gid volta --no-create-home --shell /usr/sbin/nologin volta \
+ && install -d -o volta -g volta /etc/volta-gateway /var/lib/volta-gateway
+COPY --from=build /out/volta-gateway /usr/local/bin/volta-gateway
+USER 10001:10001
+WORKDIR /var/lib/volta-gateway
+# API-driven config changes go to a writable overlay, not next to the
+# (usually read-only mounted) YAML.
+ENV VOLTA_CONFIG_OVERLAY=/var/lib/volta-gateway/volta-gateway.overlay.json
+EXPOSE 8080
+# Health: `volta-gateway --health-check <server.port>` (GET /healthz on loopback).
+ENTRYPOINT ["/usr/local/bin/volta-gateway"]
+CMD ["/etc/volta-gateway/volta-gateway.yaml"]

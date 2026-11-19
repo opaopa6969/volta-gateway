@@ -141,6 +141,8 @@ curl -H "Host: app.localhost" http://localhost:8080/api/hi
 Full walkthrough: [`docs/getting-started.md`](docs/getting-started.md) ·
 [日本語](docs/getting-started-ja.md). The versioned YAML contract and migration
 rules are in [`docs/gateway-config-contract.md`](docs/gateway-config-contract.md).
+Running outside volta-platform (Docker images + a compose example with postgres,
+auth-server and gateway): [`docs/standalone-deploy.md`](docs/standalone-deploy.md).
 
 ## Rust-only identity service
 
@@ -449,6 +451,7 @@ cargo run -p volta -- config.yaml
 ## Docs
 
 - [Getting Started](docs/getting-started.md) · [日本語](docs/getting-started-ja.md)
+- [Standalone deployment (outside volta-platform, Docker / compose)](docs/standalone-deploy.md) — Dockerfiles, compose example, env vars and their defaults (Japanese)
 - [Architecture](docs/architecture.md) · [日本語](docs/architecture-ja.md) — FlowEngine, routing, auth-server 8-merge router, plugins
 - [Rust-only foundation specification](docs/rust-only-foundation-spec.md) — current topology, trust boundaries, and release gates
 - [Rust ↔ Java Parity (historical)](docs/parity.md) · [日本語](docs/parity-ja.md) — route-by-route comparison with the retired implementation

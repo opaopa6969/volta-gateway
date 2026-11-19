@@ -1,0 +1,36 @@
+# syntax=docker/dockerfile:1
+#
+# volta-auth-server image (independent deployment; see docs/standalone-deploy.md).
+#
+#   docker build -f Dockerfile.auth-server -t volta-auth-server .
+#
+# Production on unlaxer.org does not use this image (systemd + installed binary,
+# see deploy/README.md). Configuration is env only; see the doc for the list.
+
+ARG RUST_VERSION=1
+FROM rust:${RUST_VERSION}-bookworm AS build
+WORKDIR /src
+# aws-lc-sys (rustls' crypto provider) builds C sources with cmake.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends cmake \
+ && rm -rf /var/lib/apt/lists/*
+COPY . .
+# The cache mounts keep the registry and target/ between builds; the binary is
+# copied out of the mount inside the same step.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/src/target,id=volta-auth-server-target \
+    cargo build --locked --release -p volta-auth-server \
+ && install -D -m 0755 target/release/volta-auth-server /out/volta-auth-server
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && groupadd --system --gid 10001 volta \
+ && useradd --system --uid 10001 --gid volta --no-create-home --shell /usr/sbin/nologin volta
+COPY --from=build /out/volta-auth-server /usr/local/bin/volta-auth-server
+USER 10001:10001
+ENV PORT=7070
+EXPOSE 7070
+ENTRYPOINT ["/usr/local/bin/volta-auth-server"]
