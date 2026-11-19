@@ -4992,6 +4992,8 @@ dependencies = [
  "signature",
  "sqlx",
  "subtle",
+ "testcontainers",
+ "testcontainers-modules",
  "tokio",
  "tokio-stream",
  "tower",

@@ -2,6 +2,7 @@
 //! 100% compatible with Java volta-auth-proxy ApiRouter endpoints.
 
 use axum::extract::{Path, State};
+use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use axum_extra::extract::CookieJar;
@@ -9,7 +10,10 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::error::ApiError;
-use crate::helpers::extract_session_id;
+use crate::helpers::{
+    authorize_role_grant, extract_session_id, normalize_m2m_scopes, require_self,
+    require_tenant_role,
+};
 use crate::state::AppState;
 use volta_auth_core::record::SessionRecord;
 use volta_auth_core::store::*;
@@ -90,9 +94,11 @@ pub async fn create_tenant(
 pub async fn get_tenant(
     State(s): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
     Path(tid): Path<Uuid>,
 ) -> Result<Response, ApiError> {
-    let _ = auth(&s, &jar).await?;
+    // テナントの所属者なら誰でも参照できる。
+    require_tenant_role(&s, &jar, &headers, tid, "VIEWER").await?;
     let t = TenantStore::find_by_id(&s.db, tid)
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?
@@ -109,10 +115,11 @@ pub struct PatchTenantReq {
 pub async fn patch_tenant(
     State(s): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
     Path(tid): Path<Uuid>,
     Json(_b): Json<PatchTenantReq>,
 ) -> Result<Response, ApiError> {
-    let _ = auth(&s, &jar).await?;
+    require_tenant_role(&s, &jar, &headers, tid, "ADMIN").await?;
     // Simplified — real impl would update fields selectively
     let t = TenantStore::find_by_id(&s.db, tid)
         .await
@@ -126,10 +133,12 @@ pub async fn patch_tenant(
 pub async fn list_members(
     State(s): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
     Path(tid): Path<Uuid>,
     axum::extract::Query(q): axum::extract::Query<crate::pagination::PageRequest>,
 ) -> Result<Response, ApiError> {
-    let _ = auth(&s, &jar).await?;
+    // policy の view_tenant_members は MEMBER 以上。
+    require_tenant_role(&s, &jar, &headers, tid, "MEMBER").await?;
     let req = q.normalized();
     let order = crate::pagination::PageRequest::order_sql(
         req.sort.as_deref(),
@@ -146,43 +155,6 @@ pub async fn list_members(
 #[derive(Deserialize)]
 pub struct PatchMemberReq {
     pub role: String,
-}
-
-/// 呼び出し元がそのテナントで `permission` を持つことを確かめる。
-///
-/// これが無かった。`auth()` は**ログイン済みか見るだけ**で、テナントも権限も
-/// 見ていない。つまり誰でも任意のテナントの任意のメンバーを操作できた
-/// （自分の membership を OWNER に PATCH できる = 権限昇格）。
-async fn require_tenant_permission(
-    s: &AppState,
-    jar: &CookieJar,
-    tenant_id: Uuid,
-    permission: &str,
-) -> Result<(SessionRecord, String), ApiError> {
-    let session = auth(s, jar).await?;
-    let uid: Uuid = session
-        .user_id
-        .parse()
-        .map_err(|_| ApiError::internal("bad uid"))?;
-
-    let membership = MembershipStore::find(&s.db, uid, tenant_id)
-        .await
-        .map_err(|e| ApiError::internal(&e.to_string()))?
-        .filter(|m| m.is_active)
-        .ok_or_else(|| {
-            // 「そのテナントのメンバーではない」と「権限が足りない」を
-            // 区別して返さない。存在の有無を漏らさないため。
-            ApiError::forbidden("FORBIDDEN", "この操作を行う権限がありません")
-        })?;
-
-    let policy = volta_auth_core::policy::PolicyEngine::default_policy();
-    if !policy.can(&membership.role.to_ascii_uppercase(), permission) {
-        return Err(ApiError::forbidden(
-            "FORBIDDEN",
-            "この操作を行う権限がありません",
-        ));
-    }
-    Ok((session, membership.role.to_ascii_uppercase()))
 }
 
 /// mid がそのテナントの membership であることを確かめる。
@@ -290,11 +262,14 @@ fn authorize_member_removal(
 pub async fn patch_member(
     State(s): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
     Path((tid, mid)): Path<(Uuid, Uuid)>,
     Json(b): Json<PatchMemberReq>,
 ) -> Result<Response, ApiError> {
-    let (_session, caller_role) =
-        require_tenant_permission(&s, &jar, tid, "change_member_role").await?;
+    // change_member_role は ADMIN 以上。
+    let caller_role = require_tenant_role(&s, &jar, &headers, tid, "ADMIN")
+        .await?
+        .role;
     let target = member_in_tenant(&s, tid, mid).await?;
 
     let new_role = b.role.trim().to_ascii_uppercase();
@@ -319,10 +294,13 @@ pub async fn patch_member(
 pub async fn delete_member(
     State(s): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
     Path((tid, mid)): Path<(Uuid, Uuid)>,
 ) -> Result<Response, ApiError> {
-    let (_session, caller_role) =
-        require_tenant_permission(&s, &jar, tid, "remove_members").await?;
+    // remove_members は ADMIN 以上。
+    let caller_role = require_tenant_role(&s, &jar, &headers, tid, "ADMIN")
+        .await?
+        .role;
     let target = member_in_tenant(&s, tid, mid).await?;
 
     let owner_count = if target.role.eq_ignore_ascii_case("OWNER") {
@@ -352,14 +330,17 @@ pub struct CreateInviteReq {
 pub async fn create_invitation(
     State(s): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
     Path(tid): Path<Uuid>,
     Json(b): Json<CreateInviteReq>,
 ) -> Result<Response, ApiError> {
-    let session = auth(&s, &jar).await?;
-    let uid: Uuid = session
-        .user_id
-        .parse()
-        .map_err(|_| ApiError::internal("bad uid"))?;
+    let actor = require_tenant_role(&s, &jar, &headers, tid, "ADMIN").await?;
+    // 招待で付けるロールは呼び出し元以下、OWNER 不可、未知は拒否。
+    let role = authorize_role_grant(&actor.role, b.role.as_deref().unwrap_or("MEMBER"))?;
+    // invitations.created_by は users を指す。M2M client からは作れない。
+    let uid = actor.user_uuid().ok_or_else(|| {
+        ApiError::forbidden("FORBIDDEN", "M2M クライアントからは招待を作成できません")
+    })?;
     let code = uuid::Uuid::new_v4().to_string().replace('-', "")[..12].to_string();
     InvitationStore::create(
         &s.db,
@@ -368,7 +349,7 @@ pub async fn create_invitation(
             tenant_id: tid,
             code: code.clone(),
             email: b.email,
-            role: b.role.unwrap_or_else(|| "MEMBER".into()),
+            role,
             max_uses: 1,
             used_count: 0,
             created_by: uid,
@@ -384,10 +365,11 @@ pub async fn create_invitation(
 pub async fn list_invitations(
     State(s): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
     Path(tid): Path<Uuid>,
     axum::extract::Query(q): axum::extract::Query<crate::pagination::PageRequest>,
 ) -> Result<Response, ApiError> {
-    let _ = auth(&s, &jar).await?;
+    require_tenant_role(&s, &jar, &headers, tid, "ADMIN").await?;
     let req = q.normalized();
     let order = crate::pagination::PageRequest::order_sql(
         req.sort.as_deref(),
@@ -410,13 +392,17 @@ pub async fn list_invitations(
 pub async fn cancel_invitation(
     State(s): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
     Path((tid, inv_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Response, ApiError> {
-    let _ = auth(&s, &jar).await?;
-    let _ = tid;
-    InvitationStore::cancel(&s.db, inv_id)
+    require_tenant_role(&s, &jar, &headers, tid, "ADMIN").await?;
+    // テナントと招待 id の組で絞る。別テナントの招待 id には効かない。
+    let cancelled = InvitationStore::cancel(&s.db, tid, inv_id)
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
+    if !cancelled {
+        return Err(ApiError::bad_request("NOT_FOUND", "invitation not found"));
+    }
     Ok(Json(serde_json::json!({"ok": true})).into_response())
 }
 
@@ -441,9 +427,10 @@ pub async fn accept_invite(
 pub async fn list_idp_configs(
     State(s): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
     Path(tid): Path<Uuid>,
 ) -> Result<Response, ApiError> {
-    let _ = auth(&s, &jar).await?;
+    require_tenant_role(&s, &jar, &headers, tid, "ADMIN").await?;
     let configs = IdpConfigStore::list_by_tenant(&s.db, tid)
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
@@ -463,10 +450,11 @@ pub struct UpsertIdpReq {
 pub async fn upsert_idp_config(
     State(s): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
     Path(tid): Path<Uuid>,
     Json(b): Json<UpsertIdpReq>,
 ) -> Result<Response, ApiError> {
-    let _ = auth(&s, &jar).await?;
+    require_tenant_role(&s, &jar, &headers, tid, "ADMIN").await?;
     let id = IdpConfigStore::upsert(
         &s.db,
         volta_auth_core::record::IdpConfigRecord {
@@ -492,9 +480,10 @@ pub async fn upsert_idp_config(
 pub async fn list_m2m_clients(
     State(s): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
     Path(tid): Path<Uuid>,
 ) -> Result<Response, ApiError> {
-    let _ = auth(&s, &jar).await?;
+    require_tenant_role(&s, &jar, &headers, tid, "ADMIN").await?;
     let clients = M2mClientStore::list_by_tenant(&s.db, tid)
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
@@ -513,10 +502,14 @@ pub struct CreateM2mReq {
 pub async fn create_m2m_client(
     State(s): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
     Path(tid): Path<Uuid>,
     Json(b): Json<CreateM2mReq>,
 ) -> Result<Response, ApiError> {
-    let _ = auth(&s, &jar).await?;
+    let actor = require_tenant_role(&s, &jar, &headers, tid, "ADMIN").await?;
+    // scopes はそのまま発行トークンの roles になる。既知ロールに限り、
+    // 呼び出し元のロールを超えさせない。
+    let scopes = normalize_m2m_scopes(&actor.role, b.scopes.as_deref().unwrap_or(""))?;
     let client_id = format!("m2m_{}", &uuid::Uuid::new_v4().to_string()[..8]);
     let secret = uuid::Uuid::new_v4().to_string();
     let secret_hash = crate::handlers::mfa::sha256_hex_pub(&secret);
@@ -527,7 +520,7 @@ pub async fn create_m2m_client(
             tenant_id: tid,
             client_id: client_id.clone(),
             client_secret_hash: secret_hash,
-            scopes: b.scopes.unwrap_or_default(),
+            scopes,
             is_active: true,
             created_at: chrono::Utc::now(),
         },
@@ -547,7 +540,8 @@ pub async fn list_passkeys(
     jar: CookieJar,
     Path(uid): Path<Uuid>,
 ) -> Result<Response, ApiError> {
-    let _ = auth(&s, &jar).await?;
+    let session = auth(&s, &jar).await?;
+    require_self(&session, uid)?;
     let passkeys = PasskeyStore::list_by_user(&s.db, uid)
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
@@ -575,7 +569,8 @@ pub async fn delete_passkey(
     jar: CookieJar,
     Path((uid, pk_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Response, ApiError> {
-    let _ = auth(&s, &jar).await?;
+    let session = auth(&s, &jar).await?;
+    require_self(&session, uid)?;
     PasskeyStore::delete(&s.db, uid, pk_id)
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
@@ -597,7 +592,8 @@ pub async fn patch_user(
     Path(uid): Path<Uuid>,
     Json(b): Json<PatchUserReq>,
 ) -> Result<Response, ApiError> {
-    let _ = auth(&s, &jar).await?;
+    let session = auth(&s, &jar).await?;
+    require_self(&session, uid)?;
     if let Some(ref name) = b.display_name {
         UserStore::update_display_name(&s.db, uid, name)
             .await

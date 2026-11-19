@@ -9,7 +9,9 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::error::ApiError;
-use crate::helpers::{require_admin_with_headers, require_session as auth};
+use crate::helpers::{
+    authorize_role_grant, require_admin_with_headers, require_session as auth, require_tenant_role,
+};
 use crate::state::AppState;
 use volta_auth_core::store::*;
 
@@ -117,9 +119,10 @@ pub async fn delete_all_devices(
 pub async fn get_billing(
     State(s): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
     Path(tid): Path<Uuid>,
 ) -> Result<Response, ApiError> {
-    let _ = auth(&s, &jar).await?;
+    require_tenant_role(&s, &jar, &headers, tid, "ADMIN").await?;
     let plans = BillingStore::list_plans(&s.db)
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
@@ -137,10 +140,11 @@ pub struct SubscriptionReq {
 pub async fn upsert_subscription(
     State(s): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
     Path(tid): Path<Uuid>,
     Json(b): Json<SubscriptionReq>,
 ) -> Result<Response, ApiError> {
-    let _ = auth(&s, &jar).await?;
+    require_tenant_role(&s, &jar, &headers, tid, "ADMIN").await?;
     let id = BillingStore::upsert_subscription(
         &s.db,
         volta_auth_core::record::SubscriptionRecord {
@@ -163,9 +167,10 @@ pub async fn upsert_subscription(
 pub async fn list_policies(
     State(s): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
     Path(tid): Path<Uuid>,
 ) -> Result<Response, ApiError> {
-    let _ = auth(&s, &jar).await?;
+    require_tenant_role(&s, &jar, &headers, tid, "ADMIN").await?;
     let policies = PolicyStore::list_by_tenant(&s.db, tid)
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
@@ -187,10 +192,11 @@ pub struct CreatePolicyReq {
 pub async fn create_policy(
     State(s): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
     Path(tid): Path<Uuid>,
     Json(b): Json<CreatePolicyReq>,
 ) -> Result<Response, ApiError> {
-    let _ = auth(&s, &jar).await?;
+    require_tenant_role(&s, &jar, &headers, tid, "ADMIN").await?;
     let id = PolicyStore::create(
         &s.db,
         volta_auth_core::record::PolicyRecord {
@@ -219,10 +225,12 @@ pub struct EvaluatePolicyReq {
 pub async fn evaluate_policy(
     State(s): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
     Path(tid): Path<Uuid>,
     Json(b): Json<EvaluatePolicyReq>,
 ) -> Result<Response, ApiError> {
-    let _ = auth(&s, &jar).await?;
+    // 評価結果の参照だけなので、テナントの所属者なら可。
+    require_tenant_role(&s, &jar, &headers, tid, "VIEWER").await?;
     let policy = PolicyStore::find_matching(&s.db, tid, &b.resource, &b.action)
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
@@ -394,14 +402,21 @@ pub async fn admin_create_user(
     headers: HeaderMap,
     Json(body): Json<AdminCreateUserReq>,
 ) -> Result<Response, ApiError> {
-    let actor = auth_admin(&s, &jar, &headers).await?;
+    // 作成先の body.tenant_id で ADMIN 以上であること。呼び出し元のテナント以外へは
+    // 追加できない（Bearer はトークンの tenant_id、cookie は対象テナントの membership）。
+    let tenant_actor = require_tenant_role(&s, &jar, &headers, body.tenant_id, "ADMIN").await?;
     let user = normalize_new_user(&body.email, body.display_name.as_deref(), &body.role)?;
+    // 自分より上のロールは付けられない（OWNER は normalize_new_user が既に拒否）。
+    authorize_role_grant(&tenant_actor.role, &user.role)?;
     // Bearer 管理トークンは user ではなく M2M client を subject にできる。
     // memberships.invited_by は users への外部キーなので、その場合は空にする。
-    let actor_id = if actor.session_id.starts_with("m2m-") {
+    let actor_id = if tenant_actor.via_bearer {
         None
     } else {
-        Some(Uuid::parse_str(&actor.user_id).map_err(|_| ApiError::internal("bad actor id"))?)
+        Some(
+            Uuid::parse_str(&tenant_actor.session.user_id)
+                .map_err(|_| ApiError::internal("bad actor id"))?,
+        )
     };
 
     let mut tx =

@@ -85,3 +85,8 @@ rsa = { version = "0.9", features = ["sha2", "pem"] }
 signature = "2"
 
 lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls-tls"] }
+
+[dev-dependencies]
+# tenant_authz_tests（DB を使うハンドラ統合テスト、--ignored で実行）
+testcontainers = "0.23"
+testcontainers-modules = { version = "0.11", features = ["postgres"] }

@@ -8,8 +8,10 @@ use sha2::Sha256;
 
 use crate::error::ApiError;
 use crate::state::AppState;
+use uuid::Uuid;
+use volta_auth_core::policy::PolicyEngine;
 use volta_auth_core::record::SessionRecord;
-use volta_auth_core::store::SessionStore;
+use volta_auth_core::store::{MembershipStore, SessionStore};
 
 #[allow(dead_code)]
 type HmacSha256 = Hmac<Sha256>;
@@ -95,6 +97,214 @@ fn bearer_admin(state: &AppState, token: &str) -> Result<SessionRecord, ApiError
         .collect();
     enforce_admin_role(&roles)?;
     Ok(synthetic_session_from_claims(claims, roles))
+}
+
+// ─── テナント単位の認可 ─────────────────────────────────────────
+
+/// テナントを対象にする管理 API の呼び出し元。
+#[derive(Debug, Clone)]
+pub struct TenantActor {
+    pub session: SessionRecord,
+    /// 対象テナントにおける呼び出し元の最上位ロール（大文字）。
+    pub role: String,
+    /// `Authorization: Bearer` で認可されたか（M2M client やトークン経由）。
+    pub via_bearer: bool,
+}
+
+impl TenantActor {
+    /// 呼び出し元が users 行を持つ利用者ならその id。M2M client は `None`。
+    pub fn user_uuid(&self) -> Option<Uuid> {
+        Uuid::parse_str(&self.session.user_id).ok()
+    }
+}
+
+fn tenant_forbidden() -> ApiError {
+    // 「そのテナントのメンバーではない」と「権限が足りない」を区別しない。
+    // テナントの存在や所属の有無を漏らさないため。
+    ApiError::forbidden("FORBIDDEN", "この操作を行う権限がありません")
+}
+
+/// `roles` のうち既知で最も上位のロールを返す（大小無視、未知は無視）。
+fn highest_known_role(policy: &PolicyEngine, roles: &[String]) -> Option<String> {
+    roles
+        .iter()
+        .map(|r| r.trim().to_ascii_uppercase())
+        .filter(|r| policy.is_known_role(r))
+        .min_by_key(|r| policy.rank(r))
+}
+
+/// テナント単位の認可判定（DB を触らない純粋関数）。
+///
+/// - `actor_tenant` は呼び出し元が権限を持つテナント。cookie セッションなら
+///   対象テナントでの有効な membership があるときだけ `Some(target)`、
+///   Bearer ならトークンの `tenant_id` クレーム。
+/// - 対象テナントと一致しない、既知ロールを持たない、`min_role` 未満なら 403。
+/// - `min_role` が未知なら fail-closed で 403。
+///
+/// 成功時は対象テナントでの最上位ロールを返す。
+pub fn authorize_tenant_role(
+    actor_tenant: Option<Uuid>,
+    actor_roles: &[String],
+    target_tenant: Uuid,
+    min_role: &str,
+) -> Result<String, ApiError> {
+    let policy = PolicyEngine::default_policy();
+    if actor_tenant != Some(target_tenant) {
+        return Err(tenant_forbidden());
+    }
+    let min = min_role.trim().to_ascii_uppercase();
+    if !policy.is_known_role(&min) {
+        return Err(tenant_forbidden());
+    }
+    let highest = highest_known_role(&policy, actor_roles).ok_or_else(tenant_forbidden)?;
+    if !policy.is_at_least(&highest, &min) {
+        return Err(tenant_forbidden());
+    }
+    Ok(highest)
+}
+
+/// 呼び出し元が `role` を他者（招待・M2M client・ユーザー作成）に付与してよいか。
+///
+/// - 未知のロールは 400 `INVALID_ROLE`。
+/// - OWNER は ownership transfer 以外では付与しない（403）。
+/// - 呼び出し元のロールを超えるロールは付与できない（403）。
+///
+/// 成功時は正規化（trim + 大文字化）したロール名を返す。
+pub fn authorize_role_grant(caller_role: &str, role: &str) -> Result<String, ApiError> {
+    let policy = PolicyEngine::default_policy();
+    let role = role.trim().to_ascii_uppercase();
+    if !policy.is_known_role(&role) {
+        return Err(ApiError::bad_request(
+            "INVALID_ROLE",
+            &format!(
+                "未知のロール '{}' — {} のいずれかを指定してください",
+                role,
+                policy.hierarchy().join(" / ")
+            ),
+        ));
+    }
+    if role == "OWNER" {
+        return Err(ApiError::forbidden(
+            "FORBIDDEN",
+            "OWNER は付与できません（オーナー移譲を使ってください）",
+        ));
+    }
+    let caller = caller_role.trim().to_ascii_uppercase();
+    if !policy.is_known_role(&caller) || !policy.is_at_least(&caller, &role) {
+        return Err(ApiError::forbidden(
+            "FORBIDDEN",
+            "自分より上のロールは付与できません",
+        ));
+    }
+    Ok(role)
+}
+
+/// M2M client に付ける scopes（= JWT の roles）を検証して正規化する。
+///
+/// カンマ／空白区切り。各要素は既知のロールで、呼び出し元のロールを超えないこと。
+/// OWNER は呼び出し元が OWNER のときだけ付けられる。重複は除き、カンマ区切りで返す。
+pub fn normalize_m2m_scopes(caller_role: &str, scopes: &str) -> Result<String, ApiError> {
+    let policy = PolicyEngine::default_policy();
+    let caller = caller_role.trim().to_ascii_uppercase();
+    let mut out: Vec<String> = Vec::new();
+    for raw in scopes.split(|c: char| c == ',' || c.is_whitespace()) {
+        let scope = raw.trim().to_ascii_uppercase();
+        if scope.is_empty() {
+            continue;
+        }
+        if !policy.is_known_role(&scope) {
+            return Err(ApiError::bad_request(
+                "INVALID_SCOPE",
+                &format!(
+                    "未知の scope '{}' — {} のいずれかを指定してください",
+                    scope,
+                    policy.hierarchy().join(" / ")
+                ),
+            ));
+        }
+        if !policy.is_known_role(&caller) || !policy.is_at_least(&caller, &scope) {
+            return Err(ApiError::forbidden(
+                "FORBIDDEN",
+                "自分より上のロールを scope に指定できません",
+            ));
+        }
+        if !out.contains(&scope) {
+            out.push(scope);
+        }
+    }
+    Ok(out.join(","))
+}
+
+/// テナントを対象にする管理 API の共通認可。
+///
+/// - `Authorization: Bearer` があればそれだけで判定する（cookie には戻らない）。
+///   トークンの `tenant_id` が対象テナントと一致し、roles が `min_role` 以上であること。
+/// - なければ cookie セッション。対象テナントでの**有効な membership** のロールが
+///   `min_role` 以上であること。membership を正とするのは、複数テナントに所属する
+///   管理者がセッションを切り替えずに管理画面でテナントを選んで操作するため
+///   （volta-auth-console の tenant selector）。セッション上のロールより DB の
+///   membership の方が新しい。
+pub async fn require_tenant_role(
+    state: &AppState,
+    jar: &CookieJar,
+    headers: &HeaderMap,
+    tenant_id: Uuid,
+    min_role: &str,
+) -> Result<TenantActor, ApiError> {
+    if let Some(token) = bearer_token(headers) {
+        let claims = state
+            .jwt_verifier
+            .verify(token)
+            .map_err(|_| ApiError::unauthorized("INVALID_TOKEN", "invalid or expired token"))?;
+        let roles = split_roles(claims.roles.as_deref());
+        let actor_tenant = claims
+            .tenant_id
+            .as_deref()
+            .and_then(|t| Uuid::parse_str(t.trim()).ok());
+        let role = authorize_tenant_role(actor_tenant, &roles, tenant_id, min_role)?;
+        return Ok(TenantActor {
+            session: synthetic_session_from_claims(claims, roles),
+            role,
+            via_bearer: true,
+        });
+    }
+
+    let session = require_session(state, jar).await?;
+    let uid = Uuid::parse_str(&session.user_id).map_err(|_| tenant_forbidden())?;
+    let membership = MembershipStore::find(&state.db, uid, tenant_id)
+        .await
+        .map_err(|e| ApiError::internal(&e.to_string()))?
+        .filter(|m| m.is_active);
+    let (actor_tenant, roles) = match membership {
+        Some(m) => (Some(m.tenant_id), vec![m.role]),
+        None => (None, Vec::new()),
+    };
+    let role = authorize_tenant_role(actor_tenant, &roles, tenant_id, min_role)?;
+    Ok(TenantActor {
+        session,
+        role,
+        via_bearer: false,
+    })
+}
+
+/// 本人以外を対象にできない API（`/api/v1/users/{userId}/...`）の判定。
+pub fn require_self(session: &SessionRecord, user_id: Uuid) -> Result<(), ApiError> {
+    if Uuid::parse_str(session.user_id.trim()).ok() != Some(user_id) {
+        return Err(ApiError::forbidden(
+            "FORBIDDEN",
+            "他のユーザーは操作できません",
+        ));
+    }
+    Ok(())
+}
+
+fn split_roles(roles: Option<&str>) -> Vec<String> {
+    roles
+        .unwrap_or("")
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 fn enforce_admin_role(roles: &[String]) -> Result<(), ApiError> {
@@ -384,6 +594,155 @@ mod tests {
         let mut h = HeaderMap::new();
         h.insert("authorization", "Bearer   ".parse().unwrap());
         assert!(bearer_token(&h).is_none());
+    }
+
+    // ── テナント単位の認可 ─────────────────────────────────────
+
+    fn tid(n: u128) -> Uuid {
+        Uuid::from_u128(n)
+    }
+
+    fn roles(rs: &[&str]) -> Vec<String> {
+        rs.iter().map(|r| r.to_string()).collect()
+    }
+
+    #[test]
+    fn tenant_role_other_tenant_is_forbidden() {
+        // 自テナントの ADMIN/OWNER でも、別テナントを指定したら 403
+        for r in ["ADMIN", "OWNER"] {
+            let err =
+                authorize_tenant_role(Some(tid(1)), &roles(&[r]), tid(2), "ADMIN").unwrap_err();
+            assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+        }
+        // 所属なし（cookie で membership が無い / Bearer に tenant_id が無い）
+        let err = authorize_tenant_role(None, &roles(&["OWNER"]), tid(2), "ADMIN").unwrap_err();
+        assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn tenant_role_own_tenant_admin_and_owner_succeed() {
+        assert_eq!(
+            authorize_tenant_role(Some(tid(1)), &roles(&["ADMIN"]), tid(1), "ADMIN").unwrap(),
+            "ADMIN"
+        );
+        assert_eq!(
+            authorize_tenant_role(Some(tid(1)), &roles(&["owner"]), tid(1), "ADMIN").unwrap(),
+            "OWNER"
+        );
+        // 複数ロールなら最上位を返す（M2M の scopes は複数になり得る）
+        assert_eq!(
+            authorize_tenant_role(
+                Some(tid(1)),
+                &roles(&["VIEWER", " admin ", "typo"]),
+                tid(1),
+                "ADMIN"
+            )
+            .unwrap(),
+            "ADMIN"
+        );
+    }
+
+    #[test]
+    fn tenant_role_below_min_is_forbidden() {
+        for r in ["MEMBER", "OPERATOR", "VIEWER"] {
+            let err =
+                authorize_tenant_role(Some(tid(1)), &roles(&[r]), tid(1), "ADMIN").unwrap_err();
+            assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN, "{r}");
+        }
+        // 未知ロールだけ・ロール無しは何も持たない扱い
+        assert!(
+            authorize_tenant_role(Some(tid(1)), &roles(&["SUPERUSER"]), tid(1), "VIEWER").is_err()
+        );
+        assert!(authorize_tenant_role(Some(tid(1)), &[], tid(1), "VIEWER").is_err());
+        // MEMBER 以上で足りる参照系は MEMBER で通る
+        assert!(authorize_tenant_role(Some(tid(1)), &roles(&["MEMBER"]), tid(1), "MEMBER").is_ok());
+    }
+
+    #[test]
+    fn tenant_role_unknown_min_role_fails_closed() {
+        assert!(authorize_tenant_role(Some(tid(1)), &roles(&["OWNER"]), tid(1), "ADMNI").is_err());
+    }
+
+    #[test]
+    fn role_grant_rejects_owner_and_unknown() {
+        let err = authorize_role_grant("OWNER", "OWNER").unwrap_err();
+        assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+        let err = authorize_role_grant("OWNER", "owner").unwrap_err();
+        assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+        let err = authorize_role_grant("OWNER", "SUPERUSER").unwrap_err();
+        assert_eq!(err.code, "INVALID_ROLE");
+        assert!(authorize_role_grant("OWNER", "").is_err());
+    }
+
+    #[test]
+    fn role_grant_cannot_exceed_caller() {
+        // ADMIN は OWNER 相当を付与できない（OWNER 拒否）、OPERATOR は ADMIN を付与できない
+        assert!(authorize_role_grant("ADMIN", "OWNER").is_err());
+        let err = authorize_role_grant("OPERATOR", "ADMIN").unwrap_err();
+        assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+        let err = authorize_role_grant("MEMBER", "OPERATOR").unwrap_err();
+        assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn role_grant_allows_own_role_or_lower() {
+        assert_eq!(authorize_role_grant("ADMIN", "admin").unwrap(), "ADMIN");
+        assert_eq!(authorize_role_grant("ADMIN", " member ").unwrap(), "MEMBER");
+        assert_eq!(authorize_role_grant("OWNER", "ADMIN").unwrap(), "ADMIN");
+        assert_eq!(authorize_role_grant("ADMIN", "VIEWER").unwrap(), "VIEWER");
+    }
+
+    #[test]
+    fn m2m_scopes_are_validated_against_caller() {
+        // ADMIN は ADMIN 以下の scope を付けられる。正規化・重複除去される。
+        assert_eq!(
+            normalize_m2m_scopes("ADMIN", "admin, member ADMIN").unwrap(),
+            "ADMIN,MEMBER"
+        );
+        assert_eq!(normalize_m2m_scopes("ADMIN", "").unwrap(), "");
+        // 呼び出し元を超える scope は 403
+        let err = normalize_m2m_scopes("ADMIN", "OWNER").unwrap_err();
+        assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+        // 未知の scope は 400
+        let err = normalize_m2m_scopes("OWNER", "ADMIN,root").unwrap_err();
+        assert_eq!(err.code, "INVALID_SCOPE");
+        // OWNER の呼び出し元なら OWNER scope も可（自分のロールを超えない）
+        assert_eq!(normalize_m2m_scopes("OWNER", "OWNER").unwrap(), "OWNER");
+    }
+
+    fn session_for(user_id: &str) -> SessionRecord {
+        SessionRecord {
+            session_id: "s".into(),
+            user_id: user_id.into(),
+            tenant_id: String::new(),
+            return_to: None,
+            created_at: 0,
+            last_active_at: 0,
+            expires_at: 0,
+            invalidated_at: None,
+            mfa_verified_at: None,
+            ip_address: None,
+            user_agent: None,
+            csrf_token: None,
+            email: None,
+            tenant_slug: None,
+            roles: vec![],
+            display_name: None,
+        }
+    }
+
+    #[test]
+    fn require_self_only_matches_own_user_id() {
+        let me = Uuid::from_u128(7);
+        let s = session_for(&me.to_string());
+        assert!(require_self(&s, me).is_ok());
+        let err = require_self(&s, Uuid::from_u128(8)).unwrap_err();
+        assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+        // 大文字表記でも同じ UUID なら本人
+        let s = session_for(&me.to_string().to_ascii_uppercase());
+        assert!(require_self(&s, me).is_ok());
+        // M2M（UUID でない subject）は本人扱いしない
+        assert!(require_self(&session_for("m2m_abcd1234"), me).is_err());
     }
 
     #[test]
