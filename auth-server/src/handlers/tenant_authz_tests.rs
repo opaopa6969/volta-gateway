@@ -115,6 +115,7 @@ fn test_state(pool: PgPool) -> AppState {
         notify_channel: "DUMMY".into(),
         email_verification_enabled: false,
         passkey_signup_enabled: false,
+        signup_founder_emails: None,
         return_to: Arc::new(crate::return_to::ReturnToPolicy::from_settings(
             None,
             "",
@@ -472,6 +473,95 @@ async fn invitation_list_and_cancel_are_tenant_scoped() {
         .unwrap()
         .unwrap();
     assert!(!after.is_usable_at(Utc::now()));
+}
+
+#[tokio::test]
+#[ignore]
+async fn restricted_registration_requires_a_founder_or_addressed_invitation() {
+    use crate::handlers::registration::{register_resend, register_start, ResendReq, StartReq};
+
+    let f = setup().await;
+    let mut state = f.state.clone();
+    state.email_verification_enabled = true;
+    state.passkey_signup_enabled = true;
+    state.signup_founder_emails = Some(Arc::new(["founder@example.com".to_owned()].into()));
+    let start = |email: &str, code: Option<&str>| {
+        register_start(
+            State(state.clone()),
+            Json(StartReq {
+                email: email.into(),
+                invitation_code: code.map(str::to_owned),
+            }),
+        )
+    };
+    assert_eq!(
+        status(start("random@example.com", None).await),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        status(
+            register_resend(
+                State(state.clone()),
+                Json(ResendReq {
+                    email: "random@example.com".into(),
+                    invitation_code: None
+                }),
+            )
+            .await
+        ),
+        StatusCode::FORBIDDEN
+    );
+    assert!(NotificationJobStore::claim_pending(&state.db, 10)
+        .await
+        .unwrap()
+        .is_empty());
+
+    let code = "signup-with-invitation";
+    let id = Uuid::new_v4();
+    InvitationStore::create(
+        &state.db,
+        InvitationRecord {
+            id,
+            tenant_id: f.tenant_a,
+            code: code.into(),
+            email: Some("invitee@example.com".into()),
+            role: "MEMBER".into(),
+            max_uses: 1,
+            used_count: 0,
+            created_by: f.owner_a.user_id,
+            created_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::minutes(30),
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        status(start("random@example.com", Some(code)).await),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        status(start(" FOUNDER@example.com ", None).await),
+        StatusCode::OK
+    );
+    assert_eq!(
+        status(start(" INVITEE@example.com ", Some(code)).await),
+        StatusCode::OK
+    );
+    assert_eq!(
+        NotificationJobStore::claim_pending(&state.db, 10)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+    assert!(InvitationStore::cancel(&state.db, f.tenant_a, id)
+        .await
+        .unwrap());
+    assert_eq!(
+        status(start("invitee@example.com", Some(code)).await),
+        StatusCode::FORBIDDEN
+    );
 }
 
 // ─── M2M client ────────────────────────────────────────────────

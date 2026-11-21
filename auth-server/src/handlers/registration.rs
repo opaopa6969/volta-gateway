@@ -11,6 +11,7 @@ use axum::{
 use serde::Deserialize;
 
 use volta_auth_core::runtime;
+use volta_auth_core::store::{InvitationStore, TenantStore};
 
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -18,6 +19,7 @@ use crate::state::AppState;
 #[derive(Deserialize)]
 pub struct StartReq {
     pub email: String,
+    pub invitation_code: Option<String>,
 }
 
 /// GET /register — browser UI for the existing passwordless registration API.
@@ -44,7 +46,7 @@ pub async fn register_start(
     State(s): State<AppState>,
     Json(req): Json<StartReq>,
 ) -> Result<Response, ApiError> {
-    let email = registration_email(&s, req.email)?;
+    let email = registration_email(&s, req.email, req.invitation_code.as_deref()).await?;
     let res = runtime::start_registration(
         &s.db,
         &email,
@@ -96,6 +98,7 @@ pub async fn register_verify_email(
 #[derive(Deserialize)]
 pub struct ResendReq {
     pub email: String,
+    pub invitation_code: Option<String>,
 }
 
 /// POST /auth/register/resend-verification
@@ -105,7 +108,7 @@ pub async fn register_resend(
 ) -> Result<Response, ApiError> {
     // Best-effort; throttling + existence are handled inside. The response is
     // identical regardless of outcome to avoid account enumeration.
-    let email = registration_email(&s, req.email)?;
+    let email = registration_email(&s, req.email, req.invitation_code.as_deref()).await?;
     let _ = runtime::resend_verification(&s.db, &email, &s.notify_channel, 60)
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
@@ -116,8 +119,12 @@ pub async fn register_resend(
     .into_response())
 }
 
-fn registration_email(state: &AppState, value: String) -> Result<String, ApiError> {
-    if !state.passkey_signup_enabled {
+async fn registration_email(
+    state: &AppState,
+    value: String,
+    invitation_code: Option<&str>,
+) -> Result<String, ApiError> {
+    if !state.passkey_signup_enabled && state.signup_founder_emails.is_none() {
         return Ok(value);
     }
     let email = crate::security::normalize_email(&value);
@@ -131,7 +138,43 @@ fn registration_email(state: &AppState, value: String) -> Result<String, ApiErro
             "enter a valid email address",
         ));
     }
+    if let Some(founders) = &state.signup_founder_emails {
+        if !founders.contains(&email)
+            && !can_register_with_invitation(state, &email, invitation_code).await?
+        {
+            return Err(ApiError::forbidden(
+                "SIGNUP_NOT_APPROVED",
+                "登録には有効な招待または承認済みのメールアドレスが必要です",
+            ));
+        }
+    }
     Ok(email)
+}
+
+async fn can_register_with_invitation(
+    state: &AppState,
+    email: &str,
+    code: Option<&str>,
+) -> Result<bool, ApiError> {
+    let Some(code) = code.filter(|c| !c.is_empty() && c.len() <= 64) else {
+        return Ok(false);
+    };
+    let invitation = InvitationStore::find_by_code(&state.db, code)
+        .await
+        .map_err(ApiError::from)?;
+    let Some(invitation) = invitation.filter(|inv| {
+        inv.is_usable_at(chrono::Utc::now())
+            && inv
+                .email
+                .as_deref()
+                .is_some_and(|invited| crate::security::normalize_email(invited) == email)
+    }) else {
+        return Ok(false);
+    };
+    Ok(TenantStore::find_by_id(&state.db, invitation.tenant_id)
+        .await
+        .map_err(ApiError::from)?
+        .is_some_and(|tenant| tenant.is_active))
 }
 
 #[cfg(test)]

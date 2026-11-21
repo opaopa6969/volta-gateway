@@ -242,6 +242,13 @@ Set `AUTH_PASSKEY_SIGNUP_ENABLED=true` to enable first-passkey enrollment at
 a working email notification channel, and `WEBAUTHN_RP_ID` and
 `WEBAUTHN_RP_ORIGIN` for the registration page.
 
+Set `AUTH_PASSKEY_SIGNUP_FOUNDER_EMAILS` to restrict first-time registration to
+the listed founder addresses and recipients of active, email-bound invitations.
+Separate addresses with commas or newlines. An empty value allows registration
+only from invitation links. If unset, the opt-in first-passkey flow accepts any
+verified email address. Both registration and verification-mail resend require
+the same approval.
+
 The code in the verification email authorizes the registration ceremony.
 The account, its first passkey, and consumption of the code are committed
 together after the browser supplies a valid WebAuthn credential. This flow
