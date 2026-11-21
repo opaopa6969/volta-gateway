@@ -146,7 +146,7 @@ Rust 独自: `POST /auth/session/keepalive` は有効なセッションと Cooki
 | POST   | `/api/v1/tenants/{tenantId}/invitations`               | ✅   | ✅   | — |
 | GET    | `/api/v1/tenants/{tenantId}/invitations`               | ✅   | ✅   | Paginated |
 | DELETE | `/api/v1/tenants/{tenantId}/invitations/{invitationId}`| ✅   | ✅   | — |
-| POST   | `/invite/{code}/accept`                                | ✅   | ✅   | Rate limit 20/min/IP, NFC email normalize (Java #14) |
+| POST   | `/invite/{code}/accept`                                | ✅   | ✅   | Rate limit 20/min/IP, match the signed-in account against the normalized address (Java #14). Rust also provides a GET page and opt-in email delivery. |
 
 ### IdP / M2M / OAuth2 token
 

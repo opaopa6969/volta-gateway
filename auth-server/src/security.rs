@@ -5,7 +5,7 @@
 use std::net::IpAddr;
 
 use axum::http::HeaderMap;
-use unicode_normalization::UnicodeNormalization;
+pub use volta_auth_core::normalize_email;
 
 /// Constant-time comparison of two byte slices.
 ///
@@ -105,13 +105,6 @@ pub fn is_localhost_request(headers: &HeaderMap) -> bool {
     // `cargo run`). In production a gateway always fills X-Real-IP, so absence means
     // direct localhost access.
     true
-}
-
-/// NFC-normalize and lowercase an email for comparison (issue #14 homoglyph bypass).
-///
-/// Applied before storing or comparing `users.email` and invite `email` fields.
-pub fn normalize_email(email: &str) -> String {
-    email.trim().nfc().collect::<String>().to_lowercase()
 }
 
 /// Reject SAML XML that contains DTD / external entity declarations (issue #19 XXE).

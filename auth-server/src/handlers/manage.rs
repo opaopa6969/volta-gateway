@@ -3,7 +3,7 @@
 
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
-use axum::response::{IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::Json;
 use axum_extra::extract::CookieJar;
 use serde::Deserialize;
@@ -325,6 +325,8 @@ pub async fn delete_member(
 pub struct CreateInviteReq {
     pub email: Option<String>,
     pub role: Option<String>,
+    #[serde(default)]
+    pub send_email: bool,
 }
 
 pub async fn create_invitation(
@@ -341,25 +343,69 @@ pub async fn create_invitation(
     let uid = actor.user_uuid().ok_or_else(|| {
         ApiError::forbidden("FORBIDDEN", "M2M クライアントからは招待を作成できません")
     })?;
-    let code = uuid::Uuid::new_v4().to_string().replace('-', "")[..12].to_string();
-    InvitationStore::create(
-        &s.db,
-        volta_auth_core::record::InvitationRecord {
-            id: Uuid::new_v4(),
-            tenant_id: tid,
-            code: code.clone(),
-            email: b.email,
-            role,
-            max_uses: 1,
-            used_count: 0,
-            created_by: uid,
-            created_at: chrono::Utc::now(),
-            expires_at: chrono::Utc::now() + chrono::Duration::days(7),
-        },
-    )
-    .await
-    .map_err(|e| ApiError::internal(&e.to_string()))?;
-    Ok(Json(serde_json::json!({"code": code})).into_response())
+    let email = b
+        .email
+        .map(|value| {
+            let email = crate::security::normalize_email(&value);
+            if email.len() > 255 || email.parse::<lettre::Address>().is_err() {
+                return Err(ApiError::bad_request(
+                    "INVALID_EMAIL",
+                    "メールアドレスを確認してください",
+                ));
+            }
+            Ok(email)
+        })
+        .transpose()?;
+    let code = Uuid::new_v4().simple().to_string();
+    let now = chrono::Utc::now();
+    let invitation = volta_auth_core::record::InvitationRecord {
+        id: Uuid::new_v4(),
+        tenant_id: tid,
+        code: code.clone(),
+        email,
+        role,
+        max_uses: 1,
+        used_count: 0,
+        created_by: uid,
+        created_at: now,
+        expires_at: now + chrono::Duration::days(7),
+    };
+    if b.send_email {
+        if invitation.email.is_none() {
+            return Err(ApiError::bad_request(
+                "INVALID_EMAIL",
+                "招待メールの宛先を入力してください",
+            ));
+        }
+        if s.notify_channel != "EMAIL" {
+            return Err(ApiError::bad_request(
+                "EMAIL_DISABLED",
+                "この環境では招待メールを送信できません",
+            ));
+        }
+        let tenant = TenantStore::find_by_id(&s.db, tid)
+            .await
+            .map_err(ApiError::from)?
+            .filter(|tenant| tenant.is_active)
+            .ok_or_else(|| {
+                ApiError::forbidden("TENANT_ACCESS_DENIED", "組織が有効ではありません")
+            })?;
+        let url = format!("{}/invite/{code}/accept", s.base_url.trim_end_matches('/'));
+        s.db.create_emailed_invitation(
+            &invitation,
+            serde_json::json!({
+                "tenant": tenant.name,
+                "url": url,
+            }),
+        )
+        .await
+        .map_err(ApiError::from)?;
+    } else {
+        InvitationStore::create(&s.db, invitation)
+            .await
+            .map_err(ApiError::from)?;
+    }
+    Ok(Json(serde_json::json!({"code": code, "emailQueued": b.send_email})).into_response())
 }
 
 pub async fn list_invitations(
@@ -406,6 +452,16 @@ pub async fn cancel_invitation(
     Ok(Json(serde_json::json!({"ok": true})).into_response())
 }
 
+pub async fn invitation_page() -> Response {
+    let mut response = Html(include_str!("../invitation.html")).into_response();
+    crate::error::no_cache_headers(&mut response);
+    response.headers_mut().insert(
+        axum::http::header::REFERRER_POLICY,
+        axum::http::HeaderValue::from_static("no-referrer"),
+    );
+    response
+}
+
 pub async fn accept_invite(
     State(s): State<AppState>,
     jar: CookieJar,
@@ -416,10 +472,11 @@ pub async fn accept_invite(
         .user_id
         .parse()
         .map_err(|_| ApiError::internal("bad uid"))?;
-    InvitationStore::accept(&s.db, &code, uid)
-        .await
-        .map_err(ApiError::from)?;
-    Ok(Json(serde_json::json!({"ok": true})).into_response())
+    let tenant =
+        s.db.accept_invitation(&code, uid)
+            .await
+            .map_err(ApiError::from)?;
+    Ok(Json(serde_json::json!({"ok": true, "tenantId": tenant})).into_response())
 }
 
 // ─── IdP Config ────────────────────────────────────────────

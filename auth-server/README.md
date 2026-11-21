@@ -131,7 +131,9 @@ cargo run --release -p volta-auth-server
 | POST | /api/v1/tenants/{id}/transfer-ownership | オーナー移譲 |
 | GET/PATCH/DELETE | /api/v1/tenants/{id}/members/{id} | メンバー管理 |
 | POST/GET/DELETE | /api/v1/tenants/{id}/invitations | 招待管理 |
-| POST | /invite/{code}/accept | 招待受諾 |
+| GET/POST | /invite/{code}/accept | 招待画面の表示 / ログイン済みアカウントでの招待受諾 |
+
+招待の作成時に `{"email":"member@example.com","role":"MEMBER","send_email":true}` を送ると、`NOTIFICATION_DEFAULT_CHANNEL=EMAIL` の環境で招待メールがキューに入ります。メール内のURLは `BASE_URL` から生成します。招待先メールアドレスでログインし、招待画面で参加すると組織を切り替えられます。
 
 ### IdP / M2M / OAuth
 | Method | Path | 説明 |

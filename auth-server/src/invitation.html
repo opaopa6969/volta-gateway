@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>組織への招待</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; color: #182339; background: #f7f9fc; }
+    main { max-width: 32rem; margin: 8vh auto; padding: 1.5rem; }
+    h1 { font-size: 1.6rem; }
+    p { line-height: 1.6; }
+    button { background: #1955a5; color: white; border: 0; border-radius: .4rem; padding: .7rem 1rem; font: inherit; cursor: pointer; }
+    a { color: #174782; }
+    nav { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: 1rem; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>組織への招待</h1>
+  <p>招待されたメールアドレスのアカウントでログインしてから参加してください。</p>
+  <button type="button" id="join">招待を受ける</button>
+  <p id="status" role="status"></p>
+  <nav aria-label="アカウント">
+    <a id="login" href="/login">ログイン</a>
+    <a id="register" href="/register">アカウントを作成</a>
+  </nav>
+</main>
+<script>
+  const returnTo = new URLSearchParams({ return_to: location.pathname });
+  document.querySelector("#login").href = "/login?" + returnTo;
+  document.querySelector("#register").href = "/register?" + returnTo;
+  const join = document.querySelector("#join");
+  const statusText = document.querySelector("#status");
+  let tenantId;
+
+  join.addEventListener("click", async () => {
+    join.disabled = true;
+    try {
+      if (!tenantId) {
+        const response = await fetch(location.pathname, { method: "POST" });
+        if (response.status === 401) throw new Error("ログインしてから招待を受けてください。");
+        if (response.status === 403) throw new Error("招待されたメールアドレスのアカウントでお試しください。");
+        if (!response.ok) throw new Error("この招待は利用できません。招待元にご確認ください。");
+        tenantId = (await response.json()).tenantId;
+      }
+      const response = await fetch("/auth/switch-tenant", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tenantId })
+      });
+      if (!response.ok) throw new Error("参加しました。組織の切り替えをもう一度お試しください。");
+      location.assign("/");
+    } catch (error) {
+      statusText.textContent = error.message;
+      join.disabled = false;
+    }
+  });
+</script>
+</body>
+</html>

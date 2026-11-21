@@ -567,43 +567,56 @@ impl MembershipStore for PgStore {
 
 // ─── InvitationStore ───────────────────────────────────────
 
-#[async_trait]
-impl InvitationStore for PgStore {
-    async fn create(&self, record: InvitationRecord) -> Result<(), AuthError> {
-        sqlx::query(
-            "INSERT INTO invitations (id, tenant_id, code, email, role, max_uses, used_count, \
-                                      created_by, created_at, expires_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+async fn insert_invitation<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    record: &InvitationRecord,
+) -> Result<(), AuthError> {
+    sqlx::query(
+        "INSERT INTO invitations (id, tenant_id, code, email, role, max_uses, used_count, \
+                                  created_by, created_at, expires_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+    )
+    .bind(record.id)
+    .bind(record.tenant_id)
+    .bind(&record.code)
+    .bind(&record.email)
+    .bind(&record.role)
+    .bind(record.max_uses)
+    .bind(record.used_count)
+    .bind(record.created_by)
+    .bind(record.created_at)
+    .bind(record.expires_at)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+impl PgStore {
+    /// Store the invitation and its delivery job together.
+    pub async fn create_emailed_invitation(
+        &self,
+        record: &InvitationRecord,
+        payload: serde_json::Value,
+    ) -> Result<(), AuthError> {
+        let recipient = record.email.as_deref().ok_or_else(|| {
+            AuthError::Internal("An emailed invitation requires a recipient".into())
+        })?;
+        let mut tx = self.pool.begin().await?;
+        insert_invitation(&mut *tx, record).await?;
+        enqueue_notification(
+            &mut *tx,
+            "EMAIL",
+            recipient,
+            "tenant-invitation",
+            payload,
+            Some(&format!("tenant-invitation:{}", record.id)),
         )
-        .bind(record.id)
-        .bind(record.tenant_id)
-        .bind(&record.code)
-        .bind(&record.email)
-        .bind(&record.role)
-        .bind(record.max_uses)
-        .bind(record.used_count)
-        .bind(record.created_by)
-        .bind(record.created_at)
-        .bind(record.expires_at)
-        .execute(&self.pool)
-        .await
-        .map_err(AuthError::from)?;
+        .await?;
+        tx.commit().await?;
         Ok(())
     }
 
-    async fn find_by_code(&self, code: &str) -> Result<Option<InvitationRecord>, AuthError> {
-        sqlx::query_as::<_, InvitationRecord>(
-            "SELECT id, tenant_id, code, email, role, max_uses, used_count, \
-                    created_by, created_at, expires_at \
-             FROM invitations WHERE code = $1",
-        )
-        .bind(code)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(AuthError::from)
-    }
-
-    async fn accept(&self, code: &str, user_id: Uuid) -> Result<(), AuthError> {
+    pub async fn accept_invitation(&self, code: &str, user_id: Uuid) -> Result<Uuid, AuthError> {
         let mut tx = self.pool.begin().await.map_err(AuthError::from)?;
 
         // Fetch and lock the invitation
@@ -616,11 +629,48 @@ impl InvitationStore for PgStore {
         .fetch_optional(&mut *tx)
         .await
         .map_err(AuthError::from)?
-        .ok_or_else(|| AuthError::NotFound(format!("invitation code={}", code)))?;
+        .ok_or_else(|| AuthError::NotFound("invitation".into()))?;
 
         if !inv.is_usable_at(Utc::now()) {
             return Err(AuthError::Conflict(
                 "invitation expired or fully used".into(),
+            ));
+        }
+
+        let email: Option<String> = sqlx::query_scalar(
+            "SELECT u.email FROM users u JOIN tenants t ON t.id = $2 \
+             WHERE u.id = $1 AND u.is_active AND u.deleted_at IS NULL AND t.is_active \
+             FOR SHARE OF u, t",
+        )
+        .bind(user_id)
+        .bind(inv.tenant_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let eligible = email.is_some_and(|email| {
+            inv.email.as_deref().is_none_or(|invited| {
+                crate::normalize_email(&email) == crate::normalize_email(invited)
+            })
+        });
+        if !eligible {
+            return Err(AuthError::PolicyDenied(
+                "invitation is unavailable for this account".into(),
+            ));
+        }
+
+        // Joining an existing membership cannot change its role or reactivate it.
+        let membership = sqlx::query(
+            "INSERT INTO memberships (user_id, tenant_id, role, invited_by) \
+             VALUES ($1, $2, $3, $4) ON CONFLICT (user_id, tenant_id) DO NOTHING",
+        )
+        .bind(user_id)
+        .bind(inv.tenant_id)
+        .bind(&inv.role)
+        .bind(inv.created_by)
+        .execute(&mut *tx)
+        .await?;
+        if membership.rows_affected() == 0 {
+            return Err(AuthError::Conflict(
+                "an existing membership must be managed by an administrator".into(),
             ));
         }
 
@@ -639,23 +689,31 @@ impl InvitationStore for PgStore {
             .await
             .map_err(AuthError::from)?;
 
-        // Create membership (upsert: if already member, update role)
-        sqlx::query(
-            "INSERT INTO memberships (user_id, tenant_id, role, invited_by) \
-             VALUES ($1, $2, $3, $4) \
-             ON CONFLICT (user_id, tenant_id) DO UPDATE SET \
-               role = EXCLUDED.role, is_active = true",
-        )
-        .bind(user_id)
-        .bind(inv.tenant_id)
-        .bind(&inv.role)
-        .bind(inv.created_by)
-        .execute(&mut *tx)
-        .await
-        .map_err(AuthError::from)?;
-
         tx.commit().await.map_err(AuthError::from)?;
-        Ok(())
+        Ok(inv.tenant_id)
+    }
+}
+
+#[async_trait]
+impl InvitationStore for PgStore {
+    async fn create(&self, record: InvitationRecord) -> Result<(), AuthError> {
+        insert_invitation(&self.pool, &record).await
+    }
+
+    async fn find_by_code(&self, code: &str) -> Result<Option<InvitationRecord>, AuthError> {
+        sqlx::query_as::<_, InvitationRecord>(
+            "SELECT id, tenant_id, code, email, role, max_uses, used_count, \
+                    created_by, created_at, expires_at \
+             FROM invitations WHERE code = $1",
+        )
+        .bind(code)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(AuthError::from)
+    }
+
+    async fn accept(&self, code: &str, user_id: Uuid) -> Result<(), AuthError> {
+        self.accept_invitation(code, user_id).await.map(|_| ())
     }
 
     async fn list_by_tenant(&self, tenant_id: Uuid) -> Result<Vec<InvitationRecord>, AuthError> {
@@ -2450,6 +2508,34 @@ impl PgStore {
 
 // ─── NotificationJobStore (Phase 2: notification outbox) ───────────────────
 
+async fn enqueue_notification<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    channel: &str,
+    recipient: &str,
+    template_id: &str,
+    payload: serde_json::Value,
+    correlation_id: Option<&str>,
+) -> Result<uuid::Uuid, AuthError> {
+    // Idempotent on correlation_id. A NULL correlation_id never conflicts
+    // (Postgres treats NULLs as distinct) so anonymous jobs always insert;
+    // a duplicate correlation_id returns the existing job id.
+    let row: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO notification_jobs (channel, recipient, template_id, payload, correlation_id) \
+         VALUES ($1, $2, $3, $4, $5) \
+         ON CONFLICT (correlation_id) DO UPDATE SET correlation_id = EXCLUDED.correlation_id \
+         RETURNING id",
+    )
+    .bind(channel)
+    .bind(recipient)
+    .bind(template_id)
+    .bind(&payload)
+    .bind(correlation_id)
+    .fetch_one(executor)
+    .await
+    .map_err(AuthError::from)?;
+    Ok(row.0)
+}
+
 #[async_trait::async_trait]
 impl crate::store::NotificationJobStore for PgStore {
     async fn enqueue(
@@ -2460,24 +2546,15 @@ impl crate::store::NotificationJobStore for PgStore {
         payload: serde_json::Value,
         correlation_id: Option<&str>,
     ) -> Result<uuid::Uuid, AuthError> {
-        // Idempotent on correlation_id. A NULL correlation_id never conflicts
-        // (Postgres treats NULLs as distinct) so anonymous jobs always insert;
-        // a duplicate correlation_id returns the existing job id.
-        let row: (uuid::Uuid,) = sqlx::query_as(
-            "INSERT INTO notification_jobs (channel, recipient, template_id, payload, correlation_id) \
-             VALUES ($1, $2, $3, $4, $5) \
-             ON CONFLICT (correlation_id) DO UPDATE SET correlation_id = EXCLUDED.correlation_id \
-             RETURNING id",
+        enqueue_notification(
+            &self.pool,
+            channel,
+            recipient,
+            template_id,
+            payload,
+            correlation_id,
         )
-        .bind(channel)
-        .bind(recipient)
-        .bind(template_id)
-        .bind(&payload)
-        .bind(correlation_id)
-        .fetch_one(&self.pool)
         .await
-        .map_err(AuthError::from)?;
-        Ok(row.0)
     }
 
     async fn claim_pending(
