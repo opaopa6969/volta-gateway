@@ -127,7 +127,8 @@ cargo run --release -p volta-auth-server
 ### Tenant / Member / Invite
 | Method | Path | 説明 |
 |--------|------|------|
-| POST/GET/PATCH | /api/v1/tenants | テナント CRUD |
+| POST | /api/v1/tenants | 組織を作成し、作成者をオーナーとして登録 |
+| GET/PATCH | /api/v1/tenants/{id} | 組織情報の取得 / 管理者による名称変更 |
 | POST | /api/v1/tenants/{id}/transfer-ownership | オーナー移譲 |
 | GET/PATCH/DELETE | /api/v1/tenants/{id}/members/{id} | メンバー管理 |
 | POST/GET/DELETE | /api/v1/tenants/{id}/invitations | 招待管理 |

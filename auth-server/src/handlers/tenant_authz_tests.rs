@@ -792,6 +792,78 @@ async fn admin_create_user_is_bounded_to_callers_tenant() {
     );
 }
 
+// ─── 組織の作成と名称変更 ────────────────────────────────────────
+
+#[tokio::test]
+#[ignore]
+async fn company_creation_and_management_are_scoped_and_atomic() {
+    let f = setup().await;
+    let state = &f.state;
+    let slug = "new-company";
+    let create = |name: &str| {
+        manage::create_tenant(
+            State(state.clone()),
+            f.owner_a.jar(),
+            Json(manage::CreateTenantReq {
+                name: name.into(),
+                slug: slug.into(),
+            }),
+        )
+    };
+    assert_eq!(status(create("   ").await), StatusCode::BAD_REQUEST);
+    sqlx::query("ALTER TABLE memberships ADD CONSTRAINT test_owner_creation_guard CHECK (role <> 'OWNER') NOT VALID")
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    assert!(create("新しい会社").await.is_err());
+    assert!(TenantStore::find_by_slug(&state.db, slug)
+        .await
+        .unwrap()
+        .is_none());
+    sqlx::query("ALTER TABLE memberships DROP CONSTRAINT test_owner_creation_guard")
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+
+    let response = body_json(create("  新しい会社  ").await).await;
+    let id = response["id"].as_str().unwrap().parse::<Uuid>().unwrap();
+    let owner = MembershipStore::find(&state.db, f.owner_a.user_id, id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(owner.role, "OWNER");
+    assert_eq!(
+        TenantStore::find_by_id(&state.db, id)
+            .await
+            .unwrap()
+            .unwrap()
+            .name,
+        "新しい会社"
+    );
+
+    let rename = |actor: &Actor| {
+        manage::patch_tenant(
+            State(state.clone()),
+            actor.jar(),
+            no_bearer(),
+            Path(id),
+            Json(manage::PatchTenantReq {
+                name: Some("変更後の名称".into()),
+            }),
+        )
+    };
+    assert_eq!(status(rename(&f.owner_b).await), StatusCode::FORBIDDEN);
+    assert_eq!(status(rename(&f.owner_a).await), StatusCode::OK);
+    assert_eq!(
+        TenantStore::find_by_id(&state.db, id)
+            .await
+            .unwrap()
+            .unwrap()
+            .name,
+        "変更後の名称"
+    );
+}
+
 // ─── その他のテナント管理 API ──────────────────────────────────
 
 #[tokio::test]

@@ -54,41 +54,38 @@ pub async fn create_tenant(
         .user_id
         .parse()
         .map_err(|_| ApiError::internal("bad uid"))?;
-    let t = TenantStore::create(
-        &s.db,
-        volta_auth_core::record::TenantRecord {
-            id: Uuid::new_v4(),
-            name: b.name,
-            slug: b.slug,
-            email_domain: None,
-            auto_join: false,
-            created_by: Some(uid),
-            created_at: chrono::Utc::now(),
-            plan: Some("FREE".into()),
-            max_members: Some(50),
-            is_active: true,
-            mfa_required: false,
-            mfa_grace_until: None,
-        },
-    )
-    .await
-    .map_err(|e| ApiError::internal(&e.to_string()))?;
-    // Create owner membership
-    MembershipStore::create(
-        &s.db,
-        volta_auth_core::record::MembershipRecord {
-            id: Uuid::new_v4(),
-            user_id: uid,
-            tenant_id: t.id,
-            role: "OWNER".into(),
-            joined_at: chrono::Utc::now(),
-            invited_by: None,
-            is_active: true,
-        },
-    )
-    .await
-    .map_err(|e| ApiError::internal(&e.to_string()))?;
+    let t =
+        s.db.create_tenant_with_owner(
+            &volta_auth_core::record::TenantRecord {
+                id: Uuid::new_v4(),
+                name: company_name(&b.name)?.to_owned(),
+                slug: b.slug,
+                email_domain: None,
+                auto_join: false,
+                created_by: Some(uid),
+                created_at: chrono::Utc::now(),
+                plan: Some("FREE".into()),
+                max_members: Some(50),
+                is_active: true,
+                mfa_required: false,
+                mfa_grace_until: None,
+            },
+            uid,
+        )
+        .await
+        .map_err(ApiError::from)?;
     Ok(Json(serde_json::json!({"id": t.id, "slug": t.slug})).into_response())
+}
+
+fn company_name(name: &str) -> Result<&str, ApiError> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 100 || name.chars().any(char::is_control) {
+        return Err(ApiError::bad_request(
+            "INVALID_COMPANY_NAME",
+            "組織名を1〜100文字で入力してください",
+        ));
+    }
+    Ok(name)
 }
 
 pub async fn get_tenant(
@@ -107,7 +104,6 @@ pub async fn get_tenant(
 }
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 pub struct PatchTenantReq {
     pub name: Option<String>,
 }
@@ -117,15 +113,20 @@ pub async fn patch_tenant(
     jar: CookieJar,
     headers: HeaderMap,
     Path(tid): Path<Uuid>,
-    Json(_b): Json<PatchTenantReq>,
+    Json(b): Json<PatchTenantReq>,
 ) -> Result<Response, ApiError> {
     require_tenant_role(&s, &jar, &headers, tid, "ADMIN").await?;
-    // Simplified — real impl would update fields selectively
-    let t = TenantStore::find_by_id(&s.db, tid)
-        .await
-        .map_err(|e| ApiError::internal(&e.to_string()))?
-        .ok_or_else(|| ApiError::bad_request("NOT_FOUND", "tenant not found"))?;
-    Ok(Json(serde_json::json!({"ok": true, "id": t.id})).into_response())
+    if let Some(name) = b.name {
+        s.db.rename_tenant(tid, company_name(&name)?)
+            .await
+            .map_err(ApiError::from)?;
+    } else {
+        TenantStore::find_by_id(&s.db, tid)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::bad_request("NOT_FOUND", "tenant not found"))?;
+    }
+    Ok(Json(serde_json::json!({"ok": true, "id": tid})).into_response())
 }
 
 // ─── Member ────────────────────────────────────────────────
