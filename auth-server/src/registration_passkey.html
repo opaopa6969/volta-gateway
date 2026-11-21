@@ -39,6 +39,8 @@
   const statusText = document.querySelector("#status");
   const login = document.querySelector("#login");
   const returnTo = new URL(location.href).searchParams.get("return_to");
+  const invitationCode = returnTo?.match(/^\/invite\/([a-zA-Z0-9_-]{1,64})\/accept$/)?.[1];
+  const signupDetails = () => ({ email: email.value, invitation_code: invitationCode });
   if (returnTo) login.href = "/login?" + new URLSearchParams({ return_to: returnTo });
 
   async function post(path, data, failure) {
@@ -47,6 +49,9 @@
       headers: { "content-type": "application/json" },
       body: JSON.stringify(data)
     });
+    if (response.status === 403 && (path === "start" || path === "resend-verification")) {
+      throw new Error("承認済みのメールアドレスを入力するか、招待メールのリンクからお進みください。");
+    }
     if (!response.ok) throw new Error(failure);
     return response.json();
   }
@@ -64,7 +69,7 @@
       if (!window.PublicKeyCredential || !navigator.credentials) {
         throw new Error("このブラウザではパスキーを登録できません。対応するブラウザで開き直してください。");
       }
-      await post("start", { email: email.value }, "メールを送信できませんでした。時間をおいてもう一度お試しください。");
+      await post("start", signupDetails(), "メールを送信できませんでした。時間をおいてもう一度お試しください。");
       send.hidden = true;
       enroll.hidden = false;
       statusText.textContent = "確認メールを送信しました。";
@@ -92,7 +97,7 @@
 
   document.querySelector("#resend").addEventListener("click", event => {
     whileBusy(event.currentTarget, async () => {
-      await post("resend-verification", { email: email.value }, "再送できませんでした。時間をおいてもう一度お試しください。");
+      await post("resend-verification", signupDetails(), "再送できませんでした。時間をおいてもう一度お試しください。");
       statusText.textContent = "再送を受け付けました。新しく届いたコードを入力してください。";
       code.focus();
     });

@@ -236,6 +236,16 @@ async fn main() {
         );
     }
 
+    let signup_founder_emails = std::env::var_os("AUTH_PASSKEY_SIGNUP_FOUNDER_EMAILS").map(|raw| {
+        Arc::new(
+            raw.to_string_lossy()
+                .split([',', '\n'])
+                .map(security::normalize_email)
+                .filter(|email| !email.is_empty())
+                .collect(),
+        )
+    });
+
     let state = AppState {
         db,
         idp: Arc::new(idp),
@@ -258,6 +268,7 @@ async fn main() {
         notify_channel,
         email_verification_enabled,
         passkey_signup_enabled: env("AUTH_PASSKEY_SIGNUP_ENABLED", "false") == "true",
+        signup_founder_emails,
         return_to: Arc::new(return_to_policy),
         system_admins: Arc::new(system_admins),
     };

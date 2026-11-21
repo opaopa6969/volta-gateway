@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use volta_auth_core::crypto::KeyCipher;
 use volta_auth_core::idp::IdpClient;
@@ -55,6 +56,8 @@ pub struct AppState {
     pub email_verification_enabled: bool,
     /// Allow email-verified enrollment of the first passkey on a new account.
     pub passkey_signup_enabled: bool,
+    /// If set, allow first-time signup only for approved founders or invitees.
+    pub signup_founder_emails: Option<Arc<HashSet<String>>>,
     /// Allowed `return_to` targets for login / logout redirects
     /// (`ALLOWED_RETURN_TO_DOMAINS`, else `COOKIE_DOMAIN`, else BASE_URL host).
     pub return_to: Arc<ReturnToPolicy>,

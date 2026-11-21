@@ -6,39 +6,29 @@ use axum::Json;
 use axum_extra::extract::CookieJar;
 
 use crate::error::ApiError;
-use crate::helpers::extract_session_id;
+use crate::helpers::require_session;
 use crate::state::AppState;
-use volta_auth_core::store::{MembershipStore, SessionStore, TenantStore, UserStore};
+use volta_auth_core::store::{MembershipStore, TenantStore, UserStore};
 
-/// GET /api/v1/users/me — authenticated user profile.
-pub async fn me(State(state): State<AppState>, jar: CookieJar) -> Result<Response, ApiError> {
-    let session_id = extract_session_id(&jar).ok_or_else(|| {
-        ApiError::unauthorized(
-            "SESSION_EXPIRED",
-            "セッションの有効期限が切れました。再ログインしてください。",
-        )
-    })?;
-
-    let session = SessionStore::find(&state.db, &session_id)
-        .await
-        .map_err(|e| ApiError::internal(&e.to_string()))?
-        .ok_or_else(|| {
-            ApiError::unauthorized(
-                "SESSION_EXPIRED",
-                "セッションの有効期限が切れました。再ログインしてください。",
-            )
-        })?;
-
+async fn active_user(
+    state: &AppState,
+    jar: &CookieJar,
+) -> Result<volta_auth_core::record::UserRecord, ApiError> {
+    let session = require_session(state, jar).await?;
     let user_id: uuid::Uuid = session
         .user_id
         .parse()
         .map_err(|_| ApiError::internal("invalid user_id"))?;
-
-    let user = UserStore::find_by_id(&state.db, user_id)
+    UserStore::find_by_id(&state.db, user_id)
         .await
-        .map_err(|e| ApiError::internal(&e.to_string()))?
-        .ok_or_else(|| ApiError::internal("user not found"))?;
+        .map_err(ApiError::from)?
+        .filter(|user| user.is_active && user.deleted_at.is_none())
+        .ok_or_else(|| ApiError::unauthorized("SESSION_EXPIRED", "account is unavailable"))
+}
 
+/// GET /api/v1/users/me — authenticated user profile.
+pub async fn me(State(state): State<AppState>, jar: CookieJar) -> Result<Response, ApiError> {
+    let user = active_user(&state, &jar).await?;
     Ok(Json(serde_json::json!({
         "id": user.id,
         "email": user.email,
@@ -54,45 +44,25 @@ pub async fn me_tenants(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> Result<Response, ApiError> {
-    let session_id = extract_session_id(&jar).ok_or_else(|| {
-        ApiError::unauthorized(
-            "SESSION_EXPIRED",
-            "セッションの有効期限が切れました。再ログインしてください。",
-        )
-    })?;
-
-    let session = SessionStore::find(&state.db, &session_id)
-        .await
-        .map_err(|e| ApiError::internal(&e.to_string()))?
-        .ok_or_else(|| {
-            ApiError::unauthorized(
-                "SESSION_EXPIRED",
-                "セッションの有効期限が切れました。再ログインしてください。",
-            )
-        })?;
-
-    let user_id: uuid::Uuid = session
-        .user_id
-        .parse()
-        .map_err(|_| ApiError::internal("invalid user_id"))?;
-
+    let user_id = active_user(&state, &jar).await?.id;
     let tenants = TenantStore::find_by_user(&state.db, user_id)
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
 
     let mut items = Vec::new();
     for t in &tenants {
-        let membership = MembershipStore::find(&state.db, user_id, t.id)
+        let Some(membership) = MembershipStore::find(&state.db, user_id, t.id)
             .await
-            .map_err(|e| ApiError::internal(&e.to_string()))?;
-        let role = membership
-            .map(|m| m.role)
-            .unwrap_or_else(|| "MEMBER".into());
+            .map_err(ApiError::from)?
+            .filter(|membership| membership.is_active)
+        else {
+            continue;
+        };
         items.push(serde_json::json!({
             "id": t.id,
             "name": t.name,
             "slug": t.slug,
-            "role": role,
+            "role": membership.role,
         }));
     }
 
