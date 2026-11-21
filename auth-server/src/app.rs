@@ -237,6 +237,10 @@ pub fn build_router(state: AppState) -> Router {
         // /invite/{code}/accept — moved into `invite_routes` sub-router (rate-limited)
         // IdP Config
         .route(
+            "/api/v1/tenants/{tenantId}/invitations/{invitationId}/resend",
+            post(handlers::manage::resend_invitation),
+        )
+        .route(
             "/api/v1/tenants/{tenantId}/idp-configs",
             get(handlers::manage::list_idp_configs),
         )

@@ -355,7 +355,7 @@ volta-gateway/
   Cargo.toml              ワークスペースルート (5 crate)
   gateway/                HTTP リバースプロキシ (30+ 機能)
   auth-core/              認証ライブラリ — JWT / セッション / OIDC・MFA・Passkey SM フロー
-  auth-server/            Axum 認証 API — 129 ルートのRust認証サービス
+  auth-server/            Axum 認証 API — 130 ルートのRust認証サービス
   volta-bin/              実験用authコンポーネント／flow smoke-check scaffold
   tools/traefik-to-volta/ 設定変換 CLI
 ```
