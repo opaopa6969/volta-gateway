@@ -10,8 +10,8 @@ use uuid::Uuid;
 
 use crate::error::{no_cache_headers, ApiError};
 use crate::helpers::{
-    authorize_role_grant, clear_session_cookie, extract_session_id, require_session,
-    require_system_admin, require_tenant_role,
+    authorize_role_grant, clear_session_cookie, extract_session_id, lock_active_tenant_memberships,
+    require_session, require_system_admin, require_tenant_role,
 };
 use crate::state::AppState;
 use volta_auth_core::crypto::{random_token_hex, session_id_fingerprint, sha256_hex};
@@ -162,6 +162,8 @@ pub async fn transfer_ownership(
             .begin()
             .await
             .map_err(|e| ApiError::internal(&e.to_string()))?;
+
+    lock_active_tenant_memberships(&mut tx, tid).await?;
 
     // 移譲先: 同じテナントの有効な membership と、有効で削除されていない users 行。
     let to_membership = sqlx::query_scalar::<_, Uuid>(

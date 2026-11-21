@@ -11,8 +11,8 @@ use uuid::Uuid;
 
 use crate::error::ApiError;
 use crate::helpers::{
-    authorize_role_grant, extract_session_id, normalize_m2m_scopes, require_self,
-    require_tenant_role,
+    authorize_role_grant, extract_session_id, lock_active_tenant_memberships, normalize_m2m_scopes,
+    require_self, require_tenant_role,
 };
 use crate::state::AppState;
 use volta_auth_core::record::SessionRecord;
@@ -158,24 +158,6 @@ pub struct PatchMemberReq {
     pub role: String,
 }
 
-/// mid がそのテナントの membership であることを確かめる。
-///
-/// パスの tenantId と memberId は独立に渡ってくるので、**別テナントの
-/// membership id を渡せば他所のテナントを操作できる**。
-async fn member_in_tenant(
-    s: &AppState,
-    tenant_id: Uuid,
-    member_id: Uuid,
-) -> Result<volta_auth_core::record::MembershipRecord, ApiError> {
-    let members = MembershipStore::list_by_tenant(&s.db, tenant_id)
-        .await
-        .map_err(|e| ApiError::internal(&e.to_string()))?;
-    members
-        .into_iter()
-        .find(|m| m.id == member_id && m.is_active)
-        .ok_or_else(|| ApiError::forbidden("FORBIDDEN", "この操作を行う権限がありません"))
-}
-
 /// ロール変更が許されるかを判定する（DB を触らない）。
 ///
 /// ここを純粋関数にしてあるのは、**権限判定こそテストが要る**のに、
@@ -260,6 +242,109 @@ fn authorize_member_removal(
     Ok(())
 }
 
+enum MemberChange<'a> {
+    Role(&'a str),
+    Suspend,
+}
+
+async fn change_member(
+    state: &AppState,
+    tenant_id: Uuid,
+    membership_id: Uuid,
+    actor: &crate::helpers::TenantActor,
+    change: MemberChange<'_>,
+) -> Result<(), ApiError> {
+    use volta_auth_core::error::AuthError;
+
+    let mut tx = state.db.pool().begin().await.map_err(AuthError::from)?;
+    lock_active_tenant_memberships(&mut tx, tenant_id).await?;
+    let actor_id = actor.user_uuid();
+    let role;
+    let caller_role = if actor.via_bearer {
+        &actor.role
+    } else {
+        role = sqlx::query_scalar::<_, String>(
+            "SELECT m.role FROM memberships m JOIN users u ON u.id=m.user_id \
+             WHERE m.tenant_id=$1 AND m.user_id=$2 AND m.is_active \
+             AND u.is_active AND u.deleted_at IS NULL",
+        )
+        .bind(tenant_id)
+        .bind(actor_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(AuthError::from)?
+        .map(|role| role.to_ascii_uppercase())
+        .filter(|role| matches!(role.as_str(), "OWNER" | "ADMIN"))
+        .ok_or_else(|| ApiError::forbidden("FORBIDDEN", "この操作を行う権限がありません"))?;
+        &role
+    };
+    let (target_user, target_role) = sqlx::query_as::<_, (Uuid, String)>(
+        "SELECT user_id, role FROM memberships WHERE id=$1 AND tenant_id=$2 AND is_active FOR UPDATE",
+    )
+    .bind(membership_id)
+    .bind(tenant_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(AuthError::from)?
+    .ok_or_else(|| ApiError::forbidden("FORBIDDEN", "この操作を行う権限がありません"))?;
+    let owner_count = if target_role.eq_ignore_ascii_case("OWNER") {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM memberships WHERE tenant_id=$1 AND is_active AND upper(role)='OWNER'",
+        )
+        .bind(tenant_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(AuthError::from)? as usize
+    } else {
+        usize::MAX
+    };
+    let (event, detail) = match change {
+        MemberChange::Role(new_role) => {
+            authorize_role_change(caller_role, &target_role, new_role, owner_count)?;
+            if target_role == new_role {
+                return Ok(());
+            }
+            sqlx::query("UPDATE memberships SET role=$1 WHERE id=$2")
+                .bind(new_role)
+                .bind(membership_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(AuthError::from)?;
+            (
+                "tenant.member.role_changed",
+                serde_json::json!({"previousRole": target_role, "role": new_role}),
+            )
+        }
+        MemberChange::Suspend => {
+            authorize_member_removal(caller_role, &target_role, owner_count)?;
+            sqlx::query("UPDATE memberships SET is_active=false WHERE id=$1")
+                .bind(membership_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(AuthError::from)?;
+            (
+                "tenant.member.suspended",
+                serde_json::json!({"previousRole": target_role}),
+            )
+        }
+    };
+    sqlx::query(
+        "INSERT INTO audit_logs (event_type, actor_id, tenant_id, target_type, target_id, detail, request_id) \
+         VALUES ($1,$2,$3,'user',$4,$5,$6)",
+    )
+    .bind(event)
+    .bind(actor_id)
+    .bind(tenant_id)
+    .bind(target_user.to_string())
+    .bind(detail)
+    .bind(Uuid::new_v4())
+    .execute(&mut *tx)
+    .await
+    .map_err(AuthError::from)?;
+    tx.commit().await.map_err(AuthError::from)?;
+    Ok(())
+}
+
 pub async fn patch_member(
     State(s): State<AppState>,
     jar: CookieJar,
@@ -267,29 +352,10 @@ pub async fn patch_member(
     Path((tid, mid)): Path<(Uuid, Uuid)>,
     Json(b): Json<PatchMemberReq>,
 ) -> Result<Response, ApiError> {
-    // change_member_role は ADMIN 以上。
-    let caller_role = require_tenant_role(&s, &jar, &headers, tid, "ADMIN")
-        .await?
-        .role;
-    let target = member_in_tenant(&s, tid, mid).await?;
-
-    let new_role = b.role.trim().to_ascii_uppercase();
-
-    // 最後の OWNER かどうかは DB を引かないと分からないので、必要なときだけ数える。
-    let owner_count = if target.role.eq_ignore_ascii_case("OWNER") {
-        MembershipStore::count_active_owners(&s.db, tid)
-            .await
-            .map_err(|e| ApiError::internal(&e.to_string()))?
-    } else {
-        usize::MAX
-    };
-
-    authorize_role_change(&caller_role, &target.role, &new_role, owner_count)?;
-
-    MembershipStore::update_role(&s.db, mid, &new_role)
-        .await
-        .map_err(|e| ApiError::internal(&e.to_string()))?;
-    Ok(Json(serde_json::json!({"ok": true, "role": new_role})).into_response())
+    let actor = require_tenant_role(&s, &jar, &headers, tid, "ADMIN").await?;
+    let role = b.role.trim().to_ascii_uppercase();
+    change_member(&s, tid, mid, &actor, MemberChange::Role(&role)).await?;
+    Ok(Json(serde_json::json!({"ok": true, "role": role})).into_response())
 }
 
 pub async fn delete_member(
@@ -298,25 +364,8 @@ pub async fn delete_member(
     headers: HeaderMap,
     Path((tid, mid)): Path<(Uuid, Uuid)>,
 ) -> Result<Response, ApiError> {
-    // remove_members は ADMIN 以上。
-    let caller_role = require_tenant_role(&s, &jar, &headers, tid, "ADMIN")
-        .await?
-        .role;
-    let target = member_in_tenant(&s, tid, mid).await?;
-
-    let owner_count = if target.role.eq_ignore_ascii_case("OWNER") {
-        MembershipStore::count_active_owners(&s.db, tid)
-            .await
-            .map_err(|e| ApiError::internal(&e.to_string()))?
-    } else {
-        usize::MAX
-    };
-
-    authorize_member_removal(&caller_role, &target.role, owner_count)?;
-
-    MembershipStore::deactivate(&s.db, mid)
-        .await
-        .map_err(|e| ApiError::internal(&e.to_string()))?;
+    let actor = require_tenant_role(&s, &jar, &headers, tid, "ADMIN").await?;
+    change_member(&s, tid, mid, &actor, MemberChange::Suspend).await?;
     Ok(Json(serde_json::json!({"ok": true})).into_response())
 }
 
