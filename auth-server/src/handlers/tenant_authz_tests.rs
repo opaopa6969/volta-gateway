@@ -114,6 +114,7 @@ fn test_state(pool: PgPool) -> AppState {
         notifications: Arc::new(NotificationService::new(NotificationConfig::default())),
         notify_channel: "DUMMY".into(),
         email_verification_enabled: false,
+        passkey_signup_enabled: false,
         return_to: Arc::new(crate::return_to::ReturnToPolicy::from_settings(
             None,
             "",

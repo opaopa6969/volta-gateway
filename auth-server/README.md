@@ -4,7 +4,7 @@ Java volta-auth-proxy の 100% 互換 Rust 置き換え。**Java/JVM 不要。**
 
 ## 概要
 
-volta-auth-server は Axum ベースの認証 API サーバーで、auth-core ライブラリの上に 126 の HTTP エンドポイントを公開します。
+volta-auth-server は Axum ベースの認証 API サーバーで、auth-core ライブラリの上に 129 の HTTP エンドポイントを公開します。
 
 ```
 volta-gateway (リバースプロキシ)
@@ -65,7 +65,7 @@ cargo run --release -p volta-auth-server
 この値を rotate してはならない。鍵は secret manager で保管し、十分なランダム値
 （例: `openssl rand -hex 32`）を使う。
 
-## エンドポイント一覧 (127 routes)
+## エンドポイント一覧 (129 routes)
 
 ### 認証
 | Method | Path | 説明 |
@@ -233,3 +233,17 @@ cargo test -p volta-auth-server     # SAML テスト (5 tests)
 
 Volta Index は同一 origin の `POST /api/session/keepalive` からこのAPIへ中継し、
 Cookie の属性を保持してブラウザへ返します。認証サーバーを先に更新してから Index を更新してください。
+
+
+## Email-verified passkey signup
+
+Set `AUTH_PASSKEY_SIGNUP_ENABLED=true` to enable first-passkey enrollment at
+`/register`. The default is disabled. The feature requires email verification,
+a working email notification channel, and `WEBAUTHN_RP_ID` and
+`WEBAUTHN_RP_ORIGIN` for the registration page.
+
+The code in the verification email authorizes the registration ceremony.
+The account, its first passkey, and consumption of the code are committed
+together after the browser supplies a valid WebAuthn credential. This flow
+cannot modify an existing account. Tenant creation and membership are
+handled separately by the tenant management endpoints.

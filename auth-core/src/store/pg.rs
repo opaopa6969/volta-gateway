@@ -1158,28 +1158,34 @@ impl M2mClientStore for PgStore {
 
 // ─── PasskeyStore ──────────────────────────────────────────
 
+async fn insert_passkey(
+    executor: impl sqlx::PgExecutor<'_>,
+    record: &PasskeyRecord,
+) -> Result<Uuid, AuthError> {
+    let id = sqlx::query_scalar(
+        "INSERT INTO user_passkeys (id, user_id, credential_id, public_key, sign_count, \
+                                    transports, name, aaguid, backup_eligible, backup_state) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id",
+    )
+    .bind(record.id)
+    .bind(record.user_id)
+    .bind(&record.credential_id)
+    .bind(&record.public_key)
+    .bind(record.sign_count)
+    .bind(&record.transports)
+    .bind(&record.name)
+    .bind(record.aaguid)
+    .bind(record.backup_eligible)
+    .bind(record.backup_state)
+    .fetch_one(executor)
+    .await?;
+    Ok(id)
+}
+
 #[async_trait]
 impl PasskeyStore for PgStore {
     async fn create(&self, record: PasskeyRecord) -> Result<Uuid, AuthError> {
-        let row: (Uuid,) = sqlx::query_as(
-            "INSERT INTO user_passkeys (id, user_id, credential_id, public_key, sign_count, \
-                                        transports, name, aaguid, backup_eligible, backup_state) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id",
-        )
-        .bind(record.id)
-        .bind(record.user_id)
-        .bind(&record.credential_id)
-        .bind(&record.public_key)
-        .bind(record.sign_count)
-        .bind(&record.transports)
-        .bind(&record.name)
-        .bind(record.aaguid)
-        .bind(record.backup_eligible)
-        .bind(record.backup_state)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(AuthError::from)?;
-        Ok(row.0)
+        insert_passkey(&self.pool, &record).await
     }
 
     async fn list_by_user(&self, user_id: Uuid) -> Result<Vec<PasskeyRecord>, AuthError> {
@@ -2548,6 +2554,97 @@ impl crate::store::NotificationJobStore for PgStore {
 }
 
 // ─── EmailVerificationTokenStore (Phase 2) ─────────────────────────────────
+
+impl PgStore {
+    /// A signup request must not consume a challenge created for login or an
+    /// authenticated user's credential settings.
+    pub async fn consume_signup_challenge(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<PasskeyChallengeRecord>, AuthError> {
+        let challenge = sqlx::query_as(
+            "DELETE FROM passkey_challenges WHERE id = $1 AND kind = 'signup' AND expires_at > now() \
+             RETURNING id, user_id, state, kind, created_at, expires_at",
+        ).bind(id).fetch_optional(&self.pool).await?;
+        Ok(challenge)
+    }
+
+    /// Read the registration purpose and address for a valid mail code without
+    /// consuming it. A cancelled WebAuthn prompt can be started again.
+    pub async fn pending_passkey_signup(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<(Uuid, String)>, AuthError> {
+        let signup = sqlx::query_as(
+            "SELECT f.id, t.email FROM email_verification_tokens t \
+             JOIN auth_flows f ON f.id = t.flow_id \
+             WHERE t.token_hash = $1 AND t.used_at IS NULL AND t.expires_at > now() \
+               AND f.flow_type = 'registration' AND f.current_state = 'EmailVerificationPending' \
+               AND f.completed_at IS NULL AND f.expires_at > now()",
+        )
+        .bind(token_hash)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(signup)
+    }
+
+    /// Commit the user's first verified credential and consume the email code
+    /// in one transaction. A mail code never adds credentials to an existing account.
+    pub async fn complete_passkey_signup(
+        &self,
+        flow_id: Uuid,
+        token_hash: &str,
+        passkey: &PasskeyRecord,
+    ) -> Result<bool, AuthError> {
+        let mut tx = self.pool.begin().await?;
+        let email: Option<String> = sqlx::query_scalar(
+            "UPDATE email_verification_tokens SET used_at = now() \
+             WHERE flow_id = $1 AND token_hash = $2 AND used_at IS NULL AND expires_at > now() \
+             RETURNING email",
+        )
+        .bind(flow_id)
+        .bind(token_hash)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(email) = email else { return Ok(false) };
+        let flow = sqlx::query(
+            "UPDATE auth_flows SET current_state = 'Completed', exit_state = 'Completed', \
+                                   completed_at = now(), updated_at = now(), version = version + 1 \
+             WHERE id = $1 AND flow_type = 'registration' \
+               AND current_state = 'EmailVerificationPending' AND completed_at IS NULL \
+               AND expires_at > now()",
+        )
+        .bind(flow_id)
+        .execute(&mut *tx)
+        .await?;
+        if flow.rows_affected() == 0 {
+            return Ok(false);
+        }
+
+        let user = sqlx::query(
+            "INSERT INTO users (id, email) \
+             SELECT $1, $2 WHERE NOT EXISTS (SELECT 1 FROM users WHERE lower(email) = lower($2::text)) \
+             ON CONFLICT (email) DO NOTHING",
+        )
+        .bind(passkey.user_id)
+        .bind(&email)
+        .execute(&mut *tx)
+        .await?;
+        if user.rows_affected() == 0 {
+            return Ok(false);
+        }
+        insert_passkey(&mut *tx, passkey).await?;
+        sqlx::query(
+            "INSERT INTO auth_flow_transitions (flow_id, from_state, to_state, trigger) \
+             VALUES ($1, 'EmailVerificationPending', 'Completed', 'PasskeySignup')",
+        )
+        .bind(flow_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+}
 
 #[async_trait::async_trait]
 impl crate::store::EmailVerificationTokenStore for PgStore {

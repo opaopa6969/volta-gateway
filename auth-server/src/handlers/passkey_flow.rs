@@ -14,7 +14,7 @@ use axum_extra::extract::CookieJar;
 use serde::Deserialize;
 use uuid::Uuid;
 use webauthn_rs::prelude::{
-    DiscoverableKey, Passkey, PublicKeyCredential, RegisterPublicKeyCredential,
+    DiscoverableKey, Passkey, PasskeyRegistration, PublicKeyCredential, RegisterPublicKeyCredential,
 };
 
 use crate::error::{no_cache_headers, ApiError};
@@ -24,6 +24,7 @@ use volta_auth_core::store::{
     MembershipStore, PasskeyChallengeRecord, PasskeyChallengeStore, PasskeyStore, SessionStore,
     TenantStore, UserStore,
 };
+use volta_auth_core::{crypto::sha256_hex, record::PasskeyRecord};
 
 /// Challenge TTL — same as OIDC flow TTL. WebAuthn spec suggests ≤5 minutes.
 const CHALLENGE_TTL_SECS: i64 = 300;
@@ -517,34 +518,147 @@ pub async fn register_finish(
             ApiError::bad_request("PASSKEY_FAILED", &format!("registration failed: {}", e))
         })?;
 
-    // serde_json, not bincode: webauthn-rs's Passkey uses serde `deserialize_any`
-    // (untagged/flatten), which bincode (non-self-describing) cannot read back —
-    // it serializes fine but `bincode::deserialize::<Passkey>` then fails at login
-    // with "Bincode does not support deserialize_any". JSON round-trips cleanly.
-    let pub_key_bytes = serde_json::to_vec(&passkey)
-        .map_err(|e| ApiError::internal(&format!("passkey serialize: {}", e)))?;
-
-    PasskeyStore::create(
-        &s.db,
-        volta_auth_core::record::PasskeyRecord {
-            id: Uuid::new_v4(),
-            user_id: uid,
-            credential_id: passkey.cred_id().as_ref().to_vec(),
-            public_key: pub_key_bytes,
-            sign_count: 0,
-            transports: None,
-            name: req.name.or_else(|| Some("My Passkey".into())),
-            aaguid: None,
-            backup_eligible: false,
-            backup_state: false,
-            created_at: chrono::Utc::now(),
-            last_used_at: None,
-        },
-    )
-    .await
-    .map_err(|e| ApiError::internal(&e.to_string()))?;
+    PasskeyStore::create(&s.db, passkey_record(uid, &passkey, req.name)?)
+        .await
+        .map_err(|e| ApiError::internal(&e.to_string()))?;
 
     Ok(Json(serde_json::json!({"ok": true})).into_response())
+}
+
+#[derive(Deserialize)]
+pub struct SignupStartReq {
+    pub token: String,
+}
+
+#[derive(Deserialize)]
+pub struct SignupFinishReq {
+    pub token: String,
+    pub challenge_id: Uuid,
+    pub credential: RegisterPublicKeyCredential,
+}
+
+#[derive(serde::Serialize, Deserialize)]
+struct SignupChallenge {
+    flow_id: Uuid,
+    token_hash: String,
+    registration: PasskeyRegistration,
+}
+
+fn signup_service(s: &AppState) -> Result<&volta_auth_core::passkey::PasskeyService, ApiError> {
+    if !s.passkey_signup_enabled || !s.email_verification_enabled {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "SIGNUP_DISABLED",
+            "passkey signup is disabled",
+        ));
+    }
+    service(s)
+}
+
+fn invalid_signup() -> ApiError {
+    ApiError::bad_request("INVALID_SIGNUP", "registration code is invalid or expired")
+}
+
+fn signup_token_hash(token: &str) -> Result<String, ApiError> {
+    let token = token.trim();
+    if token.len() != 64 || !token.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return Err(invalid_signup());
+    }
+    Ok(sha256_hex(token))
+}
+
+pub async fn signup_start(
+    State(s): State<AppState>,
+    Json(req): Json<SignupStartReq>,
+) -> Result<Response, ApiError> {
+    let svc = signup_service(&s)?;
+    let token_hash = signup_token_hash(&req.token)?;
+    let (flow_id, email) =
+        s.db.pending_passkey_signup(&token_hash)
+            .await
+            .map_err(|e| ApiError::internal(&e.to_string()))?
+            .ok_or_else(invalid_signup)?;
+    let user_id = Uuid::new_v4();
+    let (options, registration) = svc
+        .start_registration(user_id, &email, &email, None)
+        .map_err(|e| ApiError::internal(&e.to_string()))?;
+    let challenge = SignupChallenge {
+        flow_id,
+        token_hash,
+        registration,
+    };
+    let challenge_id = persist_challenge(&s, Some(user_id), "signup", &challenge).await?;
+    let mut response = Json(serde_json::json!({
+        "challenge_id": challenge_id,
+        "options": options,
+    }))
+    .into_response();
+    no_cache_headers(&mut response);
+    Ok(response)
+}
+
+pub async fn signup_finish(
+    State(s): State<AppState>,
+    Json(req): Json<SignupFinishReq>,
+) -> Result<Response, ApiError> {
+    let svc = signup_service(&s)?;
+    let token_hash = signup_token_hash(&req.token)?;
+    let (flow_id, _) =
+        s.db.pending_passkey_signup(&token_hash)
+            .await
+            .map_err(|e| ApiError::internal(&e.to_string()))?
+            .ok_or_else(invalid_signup)?;
+    let record =
+        s.db.consume_signup_challenge(req.challenge_id)
+            .await
+            .map_err(|e| ApiError::internal(&e.to_string()))?
+            .ok_or_else(invalid_signup)?;
+    let user_id = record.user_id.ok_or_else(invalid_signup)?;
+    let challenge: SignupChallenge = decode_state(&record.state)?;
+    if challenge.flow_id != flow_id || challenge.token_hash != token_hash {
+        return Err(invalid_signup());
+    }
+    let passkey = svc
+        .finish_registration(&req.credential, &challenge.registration)
+        .map_err(|_| ApiError::bad_request("PASSKEY_FAILED", "passkey registration failed"))?;
+    let saved =
+        s.db.complete_passkey_signup(
+            flow_id,
+            &token_hash,
+            &passkey_record(user_id, &passkey, None)?,
+        )
+        .await
+        .map_err(|e| ApiError::internal(&e.to_string()))?;
+    if !saved {
+        return Err(invalid_signup());
+    }
+    let mut response = Json(serde_json::json!({"ok": true})).into_response();
+    no_cache_headers(&mut response);
+    Ok(response)
+}
+
+fn passkey_record(
+    user_id: Uuid,
+    passkey: &Passkey,
+    name: Option<String>,
+) -> Result<PasskeyRecord, ApiError> {
+    // Passkey uses serde deserialize_any; JSON round-trips through login.
+    let public_key = serde_json::to_vec(passkey)
+        .map_err(|e| ApiError::internal(&format!("passkey serialize: {e}")))?;
+    Ok(PasskeyRecord {
+        id: Uuid::new_v4(),
+        user_id,
+        credential_id: passkey.cred_id().as_ref().to_vec(),
+        public_key,
+        sign_count: 0,
+        transports: None,
+        name: name.or_else(|| Some("My Passkey".into())),
+        aaguid: None,
+        backup_eligible: false,
+        backup_state: false,
+        created_at: chrono::Utc::now(),
+        last_used_at: None,
+    })
 }
 
 // ── helpers ───────────────────────────────────────────────

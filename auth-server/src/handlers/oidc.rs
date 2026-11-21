@@ -92,7 +92,7 @@ fn js_literal(s: &str) -> String {
 }
 
 /// Shared WebAuthn base64url helpers injected into both pages.
-const WEBAUTHN_JS: &str = r#"
+pub(super) const WEBAUTHN_JS: &str = r#"
 function b64urlToBuf(s){s=s.replace(/-/g,'+').replace(/_/g,'/');const p=s.length%4;if(p)s+='='.repeat(4-p);const b=atob(s);const u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return u.buffer;}
 function bufToB64url(buf){const u=new Uint8Array(buf);let s='';for(let i=0;i<u.length;i++)s+=String.fromCharCode(u[i]);return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
 function assertionJSON(c){const r=c.response;return {id:c.id,rawId:bufToB64url(c.rawId),type:c.type,extensions:c.getClientExtensionResults?c.getClientExtensionResults():{},response:{authenticatorData:bufToB64url(r.authenticatorData),clientDataJSON:bufToB64url(r.clientDataJSON),signature:bufToB64url(r.signature),userHandle:r.userHandle?bufToB64url(r.userHandle):null}};}

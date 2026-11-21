@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>パスキーでアカウントを作成</title>
+  <style>
+    body { font: 1rem/1.6 system-ui, sans-serif; max-width: 26rem; margin: 4rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.4rem; }
+    label, input, button { display: block; margin-top: .5rem; }
+    input, button { box-sizing: border-box; padding: .55rem; font: inherit; }
+    input { width: 100%; }
+    button { cursor: pointer; }
+    form { margin: 1.2rem 0; }
+  </style>
+</head>
+<body>
+  <h1>パスキーでアカウントを作成</h1>
+  <form id="send">
+    <label for="email">メールアドレス</label>
+    <input id="email" type="email" autocomplete="email" maxlength="255" required>
+    <button type="submit">確認メールを送る</button>
+  </form>
+  <form id="enroll" hidden>
+    <p>メールに届いたコードを入力し、この端末でパスキーを登録してください。</p>
+    <label for="code">確認コード</label>
+    <input id="code" autocomplete="one-time-code" spellcheck="false" required>
+    <button type="submit">パスキーを登録する</button>
+    <button type="button" id="resend">確認メールを再送する</button>
+  </form>
+  <p id="status" role="status"></p>
+  <a href="/login" id="login">ログインへ</a>
+  <script>
+  /* WEBAUTHN_HELPERS */
+  const send = document.querySelector("#send");
+  const enroll = document.querySelector("#enroll");
+  const email = document.querySelector("#email");
+  const code = document.querySelector("#code");
+  const statusText = document.querySelector("#status");
+  const login = document.querySelector("#login");
+  const returnTo = new URL(location.href).searchParams.get("return_to");
+  if (returnTo) login.href = "/login?" + new URLSearchParams({ return_to: returnTo });
+
+  async function post(path, data, failure) {
+    const response = await fetch("/auth/register/" + path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(data)
+    });
+    if (!response.ok) throw new Error(failure);
+    return response.json();
+  }
+
+  async function whileBusy(button, action) {
+    button.disabled = true;
+    try { await action(); }
+    catch (error) { statusText.textContent = passkeyErr(error); }
+    finally { button.disabled = false; }
+  }
+
+  send.addEventListener("submit", event => {
+    event.preventDefault();
+    whileBusy(event.submitter, async () => {
+      if (!window.PublicKeyCredential || !navigator.credentials) {
+        throw new Error("このブラウザではパスキーを登録できません。対応するブラウザで開き直してください。");
+      }
+      await post("start", { email: email.value }, "メールを送信できませんでした。時間をおいてもう一度お試しください。");
+      send.hidden = true;
+      enroll.hidden = false;
+      statusText.textContent = "確認メールを送信しました。";
+      code.focus();
+    });
+  });
+
+  enroll.addEventListener("submit", event => {
+    event.preventDefault();
+    whileBusy(event.submitter, async () => {
+      const token = code.value.trim();
+      const { challenge_id, options } = await post("passkey/start", { token },
+          "確認コードを確認してください。有効期限が切れた場合は再送してください。");
+      const publicKey = options.publicKey;
+      publicKey.challenge = b64urlToBuf(publicKey.challenge);
+      publicKey.user.id = b64urlToBuf(publicKey.user.id);
+      const credential = await navigator.credentials.create({ publicKey });
+      await post("passkey/finish", { token, challenge_id, credential: attestationJSON(credential) },
+          "登録できませんでした。アカウントをお持ちの方はログインしてください。");
+      enroll.hidden = true;
+      statusText.textContent = "パスキーを登録しました。ログインへ進んでください。";
+      login.focus();
+    });
+  });
+
+  document.querySelector("#resend").addEventListener("click", event => {
+    whileBusy(event.currentTarget, async () => {
+      await post("resend-verification", { email: email.value }, "再送できませんでした。時間をおいてもう一度お試しください。");
+      statusText.textContent = "再送を受け付けました。新しく届いたコードを入力してください。";
+      code.focus();
+    });
+  });
+  </script>
+</body>
+</html>

@@ -46,7 +46,7 @@ Legend:
 
 ---
 
-## Route parity (auth-server, ~126 endpoints)
+## Route parity (auth-server, 129 endpoints)
 
 Route list generated from `auth-server/src/app.rs`. Method column = Axum
 method used at mount time.
@@ -102,6 +102,10 @@ method used at mount time.
 | POST   | `/api/v1/users/{userId}/passkeys/register/finish`                 | ✅   | ✅   | — |
 | GET    | `/api/v1/users/{userId}/passkeys`                                 | ✅   | ✅   | — |
 | DELETE | `/api/v1/users/{userId}/passkeys/{passkeyId}`                     | ✅   | ✅   | Sign-counter atomic UPDATE (Java #17) |
+
+Rust-only first-passkey signup (opt-in): `POST /auth/register/passkey/start`
+and `POST /auth/register/passkey/finish`. Both require a valid registration email
+code.
 
 ### Sessions
 
@@ -314,7 +318,7 @@ cargo test --workspace
 cargo test -p volta-auth-server --bins      # 44 unit tests
 cargo test -p volta-auth-core --features postgres -- --ignored  # integration
 
-# Route count sanity check (should print ~126)
+# Route count sanity check (should print 129)
 rg -c '^\s+\.route\(' auth-server/src/app.rs
 ```
 

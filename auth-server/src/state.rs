@@ -53,6 +53,8 @@ pub struct AppState {
     pub notify_channel: String,
     /// Whether registration requires email verification (`AUTH_EMAIL_VERIFICATION`).
     pub email_verification_enabled: bool,
+    /// Allow email-verified enrollment of the first passkey on a new account.
+    pub passkey_signup_enabled: bool,
     /// Allowed `return_to` targets for login / logout redirects
     /// (`ALLOWED_RETURN_TO_DOMAINS`, else `COOKIE_DOMAIN`, else BASE_URL host).
     pub return_to: Arc<ReturnToPolicy>,
