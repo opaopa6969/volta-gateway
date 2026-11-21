@@ -130,7 +130,7 @@ cargo run --release -p volta-auth-server
 | POST | /api/v1/tenants | 組織を作成し、作成者をオーナーとして登録 |
 | GET/PATCH | /api/v1/tenants/{id} | 組織情報の取得 / 管理者による名称変更 |
 | POST | /api/v1/tenants/{id}/transfer-ownership | オーナー移譲 |
-| GET/PATCH/DELETE | /api/v1/tenants/{id}/members/{id} | メンバー管理 |
+| GET/PATCH/DELETE | /api/v1/tenants/{id}/members/{id} | メンバー管理。役割変更・利用停止を監査ログに記録 |
 | POST/GET/DELETE | /api/v1/tenants/{id}/invitations | 招待管理 |
 | POST | /api/v1/tenants/{id}/invitations/{invitationId}/resend | 管理者が参加待ちの招待メールを再送 |
 | GET/POST | /invite/{code}/accept | 招待画面の表示 / ログイン済みアカウントでの招待受諾 |

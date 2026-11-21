@@ -287,6 +287,25 @@ pub async fn require_tenant_role(
     })
 }
 
+/// Serialize membership changes so authorization and the last-owner check
+/// remain valid through later writes and audit logging.
+pub(crate) async fn lock_active_tenant_memberships(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant: Uuid,
+) -> Result<(), ApiError> {
+    let exists = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM tenants WHERE id = $1 AND is_active FOR UPDATE",
+    )
+    .bind(tenant)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(volta_auth_core::error::AuthError::from)?;
+    if exists.is_none() {
+        return Err(tenant_forbidden());
+    }
+    Ok(())
+}
+
 /// 本人以外を対象にできない API（`/api/v1/users/{userId}/...`）の判定。
 pub fn require_self(session: &SessionRecord, user_id: Uuid) -> Result<(), ApiError> {
     if Uuid::parse_str(session.user_id.trim()).ok() != Some(user_id) {

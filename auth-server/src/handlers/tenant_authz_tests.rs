@@ -1253,6 +1253,61 @@ async fn role_of(db: &PgStore, user: Uuid, tenant: Uuid) -> Option<String> {
 
 #[tokio::test]
 #[ignore]
+async fn concurrent_demotions_keep_an_owner_and_audit_only_committed_changes() {
+    let f = setup().await;
+    let state = &f.state;
+    let mid = |actor: &Actor| MembershipStore::find(&state.db, actor.user_id, f.tenant_a);
+    let owner = mid(&f.owner_a).await.unwrap().unwrap();
+    let second_owner = mid(&f.admin_a).await.unwrap().unwrap();
+    MembershipStore::update_role(&state.db, second_owner.id, "OWNER")
+        .await
+        .unwrap();
+    let demote = |actor: &Actor, target| {
+        manage::patch_member(
+            State(state.clone()),
+            actor.jar(),
+            no_bearer(),
+            Path((f.tenant_a, target)),
+            Json(manage::PatchMemberReq {
+                role: "ADMIN".into(),
+            }),
+        )
+    };
+    let (a, b) = tokio::join!(
+        demote(&f.owner_a, second_owner.id),
+        demote(&f.admin_a, owner.id)
+    );
+    assert_eq!(a.is_ok() as u8 + b.is_ok() as u8, 1);
+    assert_eq!(
+        MembershipStore::count_active_owners(&state.db, f.tenant_a)
+            .await
+            .unwrap(),
+        1
+    );
+    let audit: Vec<(Uuid, String)> = sqlx::query_as(
+        "SELECT actor_id, target_id FROM audit_logs WHERE tenant_id=$1 AND event_type='tenant.member.role_changed'"
+    ).bind(f.tenant_a).fetch_all(state.db.pool()).await.unwrap();
+    assert_eq!(audit.len(), 1);
+    assert_ne!(audit[0].0.to_string(), audit[0].1);
+
+    let target = mid(&f.member_a).await.unwrap().unwrap();
+    assert!(manage::delete_member(
+        State(state.clone()),
+        f.owner_a.jar(),
+        no_bearer(),
+        Path((f.tenant_a, target.id)),
+    )
+    .await
+    .is_ok());
+    assert!(!mid(&f.member_a).await.unwrap().unwrap().is_active);
+    let actor: Uuid = sqlx::query_scalar(
+        "SELECT actor_id FROM audit_logs WHERE tenant_id=$1 AND event_type='tenant.member.suspended' AND target_id=$2"
+    ).bind(f.tenant_a).bind(f.member_a.user_id.to_string()).fetch_one(state.db.pool()).await.unwrap();
+    assert_eq!(actor, f.owner_a.user_id);
+}
+
+#[tokio::test]
+#[ignore]
 async fn transfer_ownership_is_owner_only_and_within_tenant() {
     let f = setup().await;
     let s = &f.state;
