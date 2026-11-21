@@ -477,6 +477,29 @@ async fn invitation_list_and_cancel_are_tenant_scoped() {
 
 #[tokio::test]
 #[ignore]
+async fn inactive_account_cannot_load_company_access_with_an_existing_session() {
+    use crate::handlers::user;
+    let f = setup().await;
+    let state = &f.state;
+    assert_eq!(
+        status(user::me_tenants(State(state.clone()), f.owner_a.jar()).await),
+        StatusCode::OK
+    );
+    UserStore::soft_delete(&state.db, f.owner_a.user_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        status(user::me(State(state.clone()), f.owner_a.jar()).await),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        status(user::me_tenants(State(state.clone()), f.owner_a.jar()).await),
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+#[ignore]
 async fn restricted_registration_requires_a_founder_or_addressed_invitation() {
     use crate::handlers::registration::{register_resend, register_start, ResendReq, StartReq};
 
