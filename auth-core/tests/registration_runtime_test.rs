@@ -24,6 +24,8 @@ async fn setup() -> (
         .await
         .unwrap();
     for m in [
+        include_str!("../migrations/001_create_users.sql"),
+        include_str!("../migrations/015_create_user_passkeys.sql"),
         include_str!("../migrations/006_create_auth_flows.sql"),
         include_str!("../migrations/007_create_auth_flow_transitions.sql"),
         include_str!("../migrations/024_create_notification_jobs.sql"),
@@ -130,4 +132,68 @@ async fn resend_is_throttled_then_allowed() {
             .await
             .unwrap()
     );
+}
+
+#[tokio::test]
+#[ignore]
+async fn initial_passkey_and_verification_state_commit_once() {
+    use volta_auth_core::store::{PasskeyStore, UserStore};
+    use volta_auth_core::{crypto::sha256_hex, record::PasskeyRecord};
+
+    let (store, _container) = setup().await;
+    let email = "first-passkey@example.test";
+    let started = runtime::start_registration(&store, email, true, "DUMMY")
+        .await
+        .unwrap();
+    let hash = sha256_hex(&started.dev_token.unwrap());
+    let flow = started.outcome.flow_id;
+    assert_eq!(
+        store.pending_passkey_signup(&hash).await.unwrap(),
+        Some((flow, email.into()))
+    );
+    let passkey = PasskeyRecord {
+        id: uuid::Uuid::new_v4(),
+        user_id: uuid::Uuid::new_v4(),
+        credential_id: vec![1, 2, 3, 4],
+        public_key: vec![5, 6, 7, 8],
+        sign_count: 0,
+        transports: None,
+        name: None,
+        aaguid: None,
+        backup_eligible: false,
+        backup_state: false,
+        created_at: chrono::Utc::now(),
+        last_used_at: None,
+    };
+    let (first, second) = tokio::join!(
+        store.complete_passkey_signup(flow, &hash, &passkey),
+        store.complete_passkey_signup(flow, &hash, &passkey),
+    );
+    assert_ne!(first.unwrap(), second.unwrap());
+    assert_eq!(
+        store.find_by_email(email).await.unwrap().unwrap().id,
+        passkey.user_id
+    );
+    assert_eq!(store.list_by_user(passkey.user_id).await.unwrap().len(), 1);
+    assert!(store.pending_passkey_signup(&hash).await.unwrap().is_none());
+
+    let again = runtime::start_registration(&store, email, true, "DUMMY")
+        .await
+        .unwrap();
+    let second_hash = sha256_hex(&again.dev_token.unwrap());
+    let another_key = PasskeyRecord {
+        id: uuid::Uuid::new_v4(),
+        user_id: uuid::Uuid::new_v4(),
+        ..passkey.clone()
+    };
+    assert!(!store
+        .complete_passkey_signup(again.outcome.flow_id, &second_hash, &another_key)
+        .await
+        .unwrap());
+    assert_eq!(store.list_by_user(passkey.user_id).await.unwrap().len(), 1);
+    assert!(store
+        .pending_passkey_signup(&second_hash)
+        .await
+        .unwrap()
+        .is_some());
 }

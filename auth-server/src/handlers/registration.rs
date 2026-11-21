@@ -25,8 +25,14 @@ pub struct StartReq {
 /// The verification value is intentionally entered by the user rather than
 /// embedded in a URL. This keeps a mailbox token out of browser history,
 /// referrer headers, and access logs.
-pub async fn registration_page() -> Response {
-    let mut response = Html(REGISTRATION_PAGE).into_response();
+pub async fn registration_page(State(s): State<AppState>) -> Response {
+    let page = if s.passkey_signup_enabled && s.email_verification_enabled && s.passkey.is_some() {
+        include_str!("../registration_passkey.html")
+            .replace("/* WEBAUTHN_HELPERS */", super::oidc::WEBAUTHN_JS)
+    } else {
+        REGISTRATION_PAGE.to_owned()
+    };
+    let mut response = Html(page).into_response();
     crate::error::no_cache_headers(&mut response);
     response
 }
@@ -38,9 +44,10 @@ pub async fn register_start(
     State(s): State<AppState>,
     Json(req): Json<StartReq>,
 ) -> Result<Response, ApiError> {
+    let email = registration_email(&s, req.email)?;
     let res = runtime::start_registration(
         &s.db,
-        &req.email,
+        &email,
         s.email_verification_enabled,
         &s.notify_channel,
     )
@@ -98,7 +105,8 @@ pub async fn register_resend(
 ) -> Result<Response, ApiError> {
     // Best-effort; throttling + existence are handled inside. The response is
     // identical regardless of outcome to avoid account enumeration.
-    let _ = runtime::resend_verification(&s.db, &req.email, &s.notify_channel, 60)
+    let email = registration_email(&s, req.email)?;
+    let _ = runtime::resend_verification(&s.db, &email, &s.notify_channel, 60)
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
     Ok(Json(serde_json::json!({
@@ -106,6 +114,24 @@ pub async fn register_resend(
         "message": "If the address is pending verification, a new email has been sent."
     }))
     .into_response())
+}
+
+fn registration_email(state: &AppState, value: String) -> Result<String, ApiError> {
+    if !state.passkey_signup_enabled {
+        return Ok(value);
+    }
+    let email = crate::security::normalize_email(&value);
+    let valid = email.split_once('@').is_some_and(|(local, domain)| {
+        !local.is_empty() && !domain.is_empty() && !domain.contains('@')
+    }) && !email.chars().any(char::is_whitespace)
+        && email.len() <= 255;
+    if !valid {
+        return Err(ApiError::bad_request(
+            "INVALID_EMAIL",
+            "enter a valid email address",
+        ));
+    }
+    Ok(email)
 }
 
 #[cfg(test)]

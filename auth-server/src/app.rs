@@ -75,6 +75,14 @@ pub fn build_router(state: AppState) -> Router {
             "/auth/passkey/discover/finish",
             post(handlers::passkey_flow::discover_finish),
         )
+        .route(
+            "/auth/register/passkey/start",
+            post(handlers::passkey_flow::signup_start),
+        )
+        .route(
+            "/auth/register/passkey/finish",
+            post(handlers::passkey_flow::signup_finish),
+        )
         .route_layer(from_fn_with_state(rl_passkey, limit_by_ip));
 
     let invite_routes = Router::new()

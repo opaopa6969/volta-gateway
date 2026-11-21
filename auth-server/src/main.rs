@@ -257,6 +257,7 @@ async fn main() {
         notifications: notifications.clone(),
         notify_channel,
         email_verification_enabled,
+        passkey_signup_enabled: env("AUTH_PASSKEY_SIGNUP_ENABLED", "false") == "true",
         return_to: Arc::new(return_to_policy),
         system_admins: Arc::new(system_admins),
     };

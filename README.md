@@ -147,7 +147,7 @@ auth-server and gateway): [`docs/standalone-deploy.md`](docs/standalone-deploy.m
 ## Rust-only identity service
 
 volta-gateway ships with **Rust auth-server** (`auth-server/` in this
-workspace). Its ~126 endpoints cover auth, OIDC, SAML, MFA,
+workspace). Its 129 endpoints cover auth, OIDC, SAML, MFA,
 Passkey, Magic Link, SCIM 2.0, Webhook, Audit, Billing, Policy, GDPR,
 Admin, JWKS, viz/SSE.
 
@@ -385,7 +385,7 @@ volta-gateway/
   Cargo.toml              Workspace root (5 crates)
   gateway/                HTTP reverse proxy (30+ features)
   auth-core/              Auth library — JWT, session, OIDC/MFA/Passkey SM flows
-  auth-server/            Axum auth API — ~127-route Rust identity service
+  auth-server/            Axum auth API — ~129-route Rust identity service
   volta-bin/              Experimental auth component/flow smoke-check scaffold
   tools/traefik-to-volta/ Config converter CLI
 ```
