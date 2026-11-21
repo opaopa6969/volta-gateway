@@ -453,6 +453,31 @@ pub async fn cancel_invitation(
     Ok(Json(serde_json::json!({"ok": true})).into_response())
 }
 
+pub async fn resend_invitation(
+    State(s): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Path((tenant_id, invitation_id)): Path<(Uuid, Uuid)>,
+) -> Result<Response, ApiError> {
+    let actor = require_tenant_role(&s, &jar, &headers, tenant_id, "ADMIN").await?;
+    if actor.user_uuid().is_none() {
+        return Err(ApiError::forbidden(
+            "FORBIDDEN",
+            "M2M クライアントからは招待メールを再送できません",
+        ));
+    }
+    if s.notify_channel != "EMAIL" {
+        return Err(ApiError::bad_request(
+            "EMAIL_DISABLED",
+            "この環境では招待メールを送信できません",
+        ));
+    }
+    s.db.resend_invitation_email(tenant_id, invitation_id)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(serde_json::json!({"emailQueued": true})).into_response())
+}
+
 pub async fn invitation_page() -> Response {
     let mut response = Html(include_str!("../invitation.html")).into_response();
     crate::error::no_cache_headers(&mut response);

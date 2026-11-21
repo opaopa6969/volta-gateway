@@ -481,6 +481,133 @@ async fn emailed_invitation_joins_only_the_addressed_account_once() {
 
 #[tokio::test]
 #[ignore]
+async fn invitation_delivery_status_and_retry_are_scoped_and_serialized() {
+    let f = setup().await;
+    let mut state = f.state.clone();
+    state.notify_channel = "EMAIL".into();
+    let reply = body_json(
+        manage::create_invitation(
+            State(state.clone()),
+            f.owner_a.jar(),
+            no_bearer(),
+            Path(f.tenant_a),
+            Json(manage::CreateInviteReq {
+                email: Some("delivery@example.test".into()),
+                role: Some("MEMBER".into()),
+                send_email: true,
+            }),
+        )
+        .await,
+    )
+    .await;
+    let code = reply["code"].as_str().unwrap();
+    let invitation = InvitationStore::find_by_code(&state.db, code)
+        .await
+        .unwrap()
+        .unwrap();
+    let resend = |tenant, who: &Actor| {
+        manage::resend_invitation(
+            State(state.clone()),
+            who.jar(),
+            no_bearer(),
+            Path((tenant, invitation.id)),
+        )
+    };
+    let list = || {
+        manage::list_invitations(
+            State(state.clone()),
+            f.owner_a.jar(),
+            no_bearer(),
+            Path(f.tenant_a),
+            page(),
+        )
+    };
+    assert_eq!(
+        body_json(list().await).await["items"][0]["delivery_status"],
+        "queued"
+    );
+    assert_eq!(
+        status(resend(f.tenant_a, &f.member_a).await),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        status(resend(f.tenant_b, &f.owner_b).await),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        status(resend(f.tenant_a, &f.owner_a).await),
+        StatusCode::BAD_REQUEST
+    );
+
+    sqlx::query("UPDATE notification_jobs SET attempt_count = 1")
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        body_json(list().await).await["items"][0]["delivery_status"],
+        "retrying"
+    );
+    sqlx::query(
+        "UPDATE notification_jobs SET status = 'failed', created_at = now() - interval '6 minutes'",
+    )
+    .execute(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        body_json(list().await).await["items"][0]["delivery_status"],
+        "failed"
+    );
+    let (first, second) = tokio::join!(
+        resend(f.tenant_a, &f.owner_a),
+        resend(f.tenant_a, &f.owner_a)
+    );
+    assert_eq!(first.is_ok() as u8 + second.is_ok() as u8, 1);
+    let queued = NotificationJobStore::claim_pending(&state.db, 10)
+        .await
+        .unwrap();
+    assert_eq!(queued.len(), 1);
+    let job = &queued[0];
+    assert_eq!(job.recipient, "delivery@example.test");
+    assert!(job.payload["url"]
+        .as_str()
+        .unwrap()
+        .ends_with(&format!("/{code}/accept")));
+
+    NotificationJobStore::mark_sent(&state.db, job.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        body_json(list().await).await["items"][0]["delivery_status"],
+        "unconfirmed"
+    );
+    sqlx::query(
+        "INSERT INTO notification_logs (job_id, channel, provider, recipient, template_id, outcome) \
+         VALUES ($1, 'EMAIL', 'SMTP', 'delivery@example.test', 'tenant-invitation', 'sent')"
+    ).bind(job.id).execute(state.db.pool()).await.unwrap();
+    let result = body_json(list().await).await;
+    assert_eq!(result["items"][0]["delivery_status"], "relay_accepted");
+    assert!(result["items"][0]["delivery_at"].as_str().is_some());
+
+    sqlx::query(
+        "UPDATE notification_jobs SET created_at = now() - interval '6 minutes' WHERE id = $1",
+    )
+    .bind(job.id)
+    .execute(state.db.pool())
+    .await
+    .unwrap();
+    assert!(
+        InvitationStore::cancel(&state.db, f.tenant_a, invitation.id)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        status(resend(f.tenant_a, &f.owner_a).await),
+        StatusCode::BAD_REQUEST
+    );
+}
+
+#[tokio::test]
+#[ignore]
 async fn invitation_list_and_cancel_are_tenant_scoped() {
     let f = setup().await;
     let s = &f.state;

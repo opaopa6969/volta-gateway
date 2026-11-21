@@ -4,7 +4,7 @@ Java volta-auth-proxy の 100% 互換 Rust 置き換え。**Java/JVM 不要。**
 
 ## 概要
 
-volta-auth-server は Axum ベースの認証 API サーバーで、auth-core ライブラリの上に 129 の HTTP エンドポイントを公開します。
+volta-auth-server は Axum ベースの認証 API サーバーで、auth-core ライブラリの上に 130 の HTTP エンドポイントを公開します。
 
 ```
 volta-gateway (リバースプロキシ)
@@ -65,7 +65,7 @@ cargo run --release -p volta-auth-server
 この値を rotate してはならない。鍵は secret manager で保管し、十分なランダム値
 （例: `openssl rand -hex 32`）を使う。
 
-## エンドポイント一覧 (129 routes)
+## エンドポイント一覧 (130 routes)
 
 ### 認証
 | Method | Path | 説明 |
@@ -132,9 +132,12 @@ cargo run --release -p volta-auth-server
 | POST | /api/v1/tenants/{id}/transfer-ownership | オーナー移譲 |
 | GET/PATCH/DELETE | /api/v1/tenants/{id}/members/{id} | メンバー管理 |
 | POST/GET/DELETE | /api/v1/tenants/{id}/invitations | 招待管理 |
+| POST | /api/v1/tenants/{id}/invitations/{invitationId}/resend | 管理者が参加待ちの招待メールを再送 |
 | GET/POST | /invite/{code}/accept | 招待画面の表示 / ログイン済みアカウントでの招待受諾 |
 
 招待の作成時に `{"email":"member@example.com","role":"MEMBER","send_email":true}` を送ると、`NOTIFICATION_DEFAULT_CHANNEL=EMAIL` の環境で招待メールがキューに入ります。メール内のURLは `BASE_URL` から生成します。招待先メールアドレスでログインし、招待画面で参加すると組織を切り替えられます。
+
+`GET /api/v1/tenants/{id}/invitations` の各行に配信状態と状態を確認できる時刻が付きます。SMTP の受理は受信箱への到着を示しません。再送の間隔は5分で、送信が待機中の招待や、取り消し・参加済み・期限切れの招待は再送できません。
 
 ### IdP / M2M / OAuth
 | Method | Path | 説明 |

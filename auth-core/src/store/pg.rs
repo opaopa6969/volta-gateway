@@ -614,6 +614,8 @@ impl MembershipStore for PgStore {
 
 // ─── InvitationStore ───────────────────────────────────────
 
+const INVITATION_RESEND_MINUTES: i64 = 5;
+
 async fn insert_invitation<'e>(
     executor: impl sqlx::PgExecutor<'e>,
     record: &InvitationRecord,
@@ -638,6 +640,30 @@ async fn insert_invitation<'e>(
     Ok(())
 }
 
+async fn enqueue_invitation_delivery(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    invitation: Uuid,
+    recipient: &str,
+    payload: serde_json::Value,
+    correlation: &str,
+) -> Result<(), AuthError> {
+    let job = enqueue_notification(
+        &mut **tx,
+        "EMAIL",
+        recipient,
+        "tenant-invitation",
+        payload,
+        Some(correlation),
+    )
+    .await?;
+    sqlx::query("INSERT INTO invitation_email_deliveries (invitation_id, job_id) VALUES ($1, $2)")
+        .bind(invitation)
+        .bind(job)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
 impl PgStore {
     /// Store the invitation and its delivery job together.
     pub async fn create_emailed_invitation(
@@ -650,13 +676,71 @@ impl PgStore {
         })?;
         let mut tx = self.pool.begin().await?;
         insert_invitation(&mut *tx, record).await?;
-        enqueue_notification(
-            &mut *tx,
-            "EMAIL",
+        enqueue_invitation_delivery(
+            &mut tx,
+            record.id,
             recipient,
-            "tenant-invitation",
             payload,
-            Some(&format!("tenant-invitation:{}", record.id)),
+            &format!("tenant-invitation:{}", record.id),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Serialize explicit mail retries with each other and with acceptance.
+    pub async fn resend_invitation_email(
+        &self,
+        tenant_id: Uuid,
+        invitation_id: Uuid,
+    ) -> Result<(), AuthError> {
+        let mut tx = self.pool.begin().await?;
+        let invitation = sqlx::query_as::<_, InvitationRecord>(
+            "SELECT i.id, i.tenant_id, i.code, i.email, i.role, i.max_uses, i.used_count, \
+                    i.created_by, i.created_at, i.expires_at \
+             FROM invitations i JOIN tenants t ON t.id = i.tenant_id \
+             WHERE i.id = $1 AND i.tenant_id = $2 AND t.is_active FOR UPDATE OF i",
+        )
+        .bind(invitation_id)
+        .bind(tenant_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| AuthError::NotFound("invitation".into()))?;
+        let now = Utc::now();
+        let Some(email) = invitation
+            .email
+            .as_deref()
+            .filter(|_| invitation.used_count == 0 && invitation.is_usable_at(now))
+        else {
+            return Err(AuthError::Conflict(
+                "invitation is no longer available for resend".into(),
+            ));
+        };
+        let (status, created, payload): (String, chrono::DateTime<Utc>, serde_json::Value) =
+            sqlx::query_as(
+                "SELECT j.status, j.created_at, j.payload \
+             FROM invitation_email_deliveries d JOIN notification_jobs j ON j.id = d.job_id \
+             WHERE d.invitation_id = $1 ORDER BY j.created_at DESC, j.id DESC LIMIT 1",
+            )
+            .bind(invitation_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| {
+                AuthError::Conflict("invitation has no email delivery history".into())
+            })?;
+        if status == "pending"
+            || now - created < chrono::Duration::minutes(INVITATION_RESEND_MINUTES)
+        {
+            return Err(AuthError::Conflict(
+                "invitation email was recently queued".into(),
+            ));
+        }
+        enqueue_invitation_delivery(
+            &mut tx,
+            invitation_id,
+            email,
+            payload,
+            &format!("tenant-invitation:{invitation_id}:{}", Uuid::new_v4()),
         )
         .await?;
         tx.commit().await?;
@@ -2505,10 +2589,24 @@ impl PgStore {
             _ => "TRUE",
         };
         let sql = format!(
-            "SELECT id, tenant_id, code, email, role, used_count, max_uses, created_at, expires_at, \
-                    COUNT(*) OVER() AS total_count \
-             FROM invitations \
-             WHERE tenant_id = $1 AND {} \
+            "SELECT i.id, i.tenant_id, i.code, i.email, i.role, i.used_count, i.max_uses, i.created_at, i.expires_at, \
+                    COUNT(*) OVER() AS total_count, d.delivery_status, d.delivery_at, d.queued_at \
+             FROM invitations i \
+             LEFT JOIN LATERAL ( \
+               SELECT CASE \
+                        WHEN j.status = 'pending' AND j.attempt_count > 0 THEN 'retrying' \
+                        WHEN j.status = 'pending' THEN 'queued' \
+                        WHEN j.status = 'failed' THEN 'failed' \
+                        WHEN j.status = 'sent' AND l.outcome = 'sent' AND l.provider IN ('SMTP', 'MAILPIT') THEN 'relay_accepted' \
+                        WHEN j.status = 'sent' AND l.outcome = 'sent' THEN 'no_relay' \
+                        ELSE 'unconfirmed' END AS delivery_status, \
+                      COALESCE(l.created_at, j.created_at) AS delivery_at, j.created_at AS queued_at \
+               FROM invitation_email_deliveries e JOIN notification_jobs j ON j.id = e.job_id \
+               LEFT JOIN LATERAL (SELECT outcome, provider, created_at FROM notification_logs \
+                  WHERE job_id = j.id ORDER BY id DESC LIMIT 1) l ON true \
+               WHERE e.invitation_id = i.id ORDER BY j.created_at DESC, j.id DESC LIMIT 1 \
+             ) d ON true \
+             WHERE i.tenant_id = $1 AND {} \
              ORDER BY {} LIMIT $2 OFFSET $3",
             status_sql, order
         );
@@ -2523,6 +2621,9 @@ impl PgStore {
             chrono::DateTime<chrono::Utc>,
             chrono::DateTime<chrono::Utc>,
             i64,
+            Option<String>,
+            Option<chrono::DateTime<Utc>>,
+            Option<chrono::DateTime<Utc>>,
         )> = sqlx::query_as(&sql)
             .bind(tenant_id)
             .bind(limit)
@@ -2534,7 +2635,29 @@ impl PgStore {
         let items = rows
             .into_iter()
             .map(
-                |(id, tid, code, email, role, used, max, created, expires, _)| {
+                |(
+                    id,
+                    tid,
+                    code,
+                    email,
+                    role,
+                    used,
+                    max,
+                    created,
+                    expires,
+                    _,
+                    delivery_status,
+                    delivery_at,
+                    queued_at,
+                )| {
+                    let resend_available_at = queued_at
+                        .filter(|_| {
+                            matches!(
+                                delivery_status.as_deref(),
+                                Some("relay_accepted" | "failed" | "no_relay" | "unconfirmed")
+                            )
+                        })
+                        .map(|at| at + chrono::Duration::minutes(INVITATION_RESEND_MINUTES));
                     serde_json::json!({
                         "id": id,
                         "tenant_id": tid,
@@ -2545,6 +2668,9 @@ impl PgStore {
                         "max_uses": max,
                         "created_at": created.to_rfc3339(),
                         "expires_at": expires.to_rfc3339(),
+                        "delivery_status": delivery_status,
+                        "delivery_at": delivery_at.map(|at| at.to_rfc3339()),
+                        "resend_available_at": resend_available_at.map(|at| at.to_rfc3339()),
                     })
                 },
             )

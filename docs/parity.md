@@ -46,7 +46,7 @@ Legend:
 
 ---
 
-## Route parity (auth-server, 129 endpoints)
+## Route parity (auth-server, 130 endpoints)
 
 Route list generated from `auth-server/src/app.rs`. Method column = Axum
 method used at mount time.
@@ -146,6 +146,7 @@ Rust 独自: `POST /auth/session/keepalive` は有効なセッションと Cooki
 | POST   | `/api/v1/tenants/{tenantId}/invitations`               | ✅   | ✅   | — |
 | GET    | `/api/v1/tenants/{tenantId}/invitations`               | ✅   | ✅   | Paginated |
 | DELETE | `/api/v1/tenants/{tenantId}/invitations/{invitationId}`| ✅   | ✅   | — |
+| POST   | `/api/v1/tenants/{tenantId}/invitations/{invitationId}/resend` | ✅ | — | Rust SMTP outbox |
 | POST   | `/invite/{code}/accept`                                | ✅   | ✅   | Rate limit 20/min/IP, match the signed-in account against the normalized address (Java #14). Rust also provides a GET page and opt-in email delivery. |
 
 ### IdP / M2M / OAuth2 token
@@ -318,7 +319,7 @@ cargo test --workspace
 cargo test -p volta-auth-server --bins      # 44 unit tests
 cargo test -p volta-auth-core --features postgres -- --ignored  # integration
 
-# Route count sanity check (should print 129)
+# Route count sanity check (should print 130)
 rg -c '^\s+\.route\(' auth-server/src/app.rs
 ```
 
