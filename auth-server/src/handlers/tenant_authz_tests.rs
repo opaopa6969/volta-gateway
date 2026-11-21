@@ -313,6 +313,7 @@ fn invite(role: Option<&str>) -> Json<manage::CreateInviteReq> {
     Json(manage::CreateInviteReq {
         email: None,
         role: role.map(String::from),
+        send_email: false,
     })
 }
 
@@ -400,6 +401,81 @@ async fn invitation_create_is_tenant_and_role_bounded() {
     )
     .await;
     assert_eq!(status(r), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+#[ignore]
+async fn emailed_invitation_joins_only_the_addressed_account_once() {
+    let f = setup().await;
+    let mut state = f.state.clone();
+    let email = "invited@example.com";
+    let invitee = create_user(&state.db, email).await;
+    let request = || {
+        Json(manage::CreateInviteReq {
+            email: Some(" Invited@EXAMPLE.COM ".into()),
+            role: Some("MEMBER".into()),
+            send_email: true,
+        })
+    };
+    let create = |state: AppState, request| {
+        manage::create_invitation(
+            State(state),
+            f.owner_a.jar(),
+            no_bearer(),
+            Path(f.tenant_a),
+            request,
+        )
+    };
+
+    assert_eq!(
+        status(create(state.clone(), request()).await),
+        StatusCode::BAD_REQUEST
+    );
+    state.notify_channel = "EMAIL".into();
+    let response = body_json(create(state.clone(), request()).await).await;
+    assert_eq!(response["emailQueued"], true);
+    let code = response["code"].as_str().unwrap();
+    let jobs = NotificationJobStore::claim_pending(&state.db, 10)
+        .await
+        .unwrap();
+    assert_eq!(jobs.len(), 1);
+    let job = &jobs[0];
+    assert_eq!(job.recipient, email);
+    assert_eq!(job.channel, "EMAIL");
+    assert_eq!(job.template_id, "tenant-invitation");
+    assert_eq!(
+        job.payload["url"],
+        format!("http://localhost/invite/{code}/accept")
+    );
+    assert!(InvitationStore::accept(&state.db, code, f.owner_b.user_id)
+        .await
+        .is_err());
+    assert!(
+        MembershipStore::find(&state.db, f.owner_b.user_id, f.tenant_a)
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let accept = || state.db.accept_invitation(code, invitee);
+    let (first, second) = tokio::join!(accept(), accept());
+    assert_eq!(first.is_ok() as u8 + second.is_ok() as u8, 1);
+    let membership = MembershipStore::find(&state.db, invitee, f.tenant_a)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(membership.role, "MEMBER");
+
+    let unused = body_json(create(state.clone(), invite(Some("MEMBER"))).await).await;
+    let code = unused["code"].as_str().unwrap();
+    assert!(InvitationStore::accept(&state.db, code, f.owner_a.user_id)
+        .await
+        .is_err());
+    let owner = MembershipStore::find(&state.db, f.owner_a.user_id, f.tenant_a)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(owner.role, "OWNER");
 }
 
 #[tokio::test]

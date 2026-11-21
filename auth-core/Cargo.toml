@@ -49,6 +49,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 
 # URL
 url = "2"
+unicode-normalization = "0.1"
 
 # Logging
 tracing = "0.1"

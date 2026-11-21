@@ -88,7 +88,7 @@ pub fn build_router(state: AppState) -> Router {
     let invite_routes = Router::new()
         .route(
             "/invite/{code}/accept",
-            post(handlers::manage::accept_invite),
+            get(handlers::manage::invitation_page).post(handlers::manage::accept_invite),
         )
         .route_layer(from_fn_with_state(rl_invite, limit_by_ip));
 

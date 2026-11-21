@@ -22,3 +22,9 @@ pub mod session;
 pub mod store;
 pub mod token;
 pub mod totp;
+
+/// NFC-normalize and lowercase an email used as an account identifier.
+pub fn normalize_email(email: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    email.trim().nfc().collect::<String>().to_lowercase()
+}

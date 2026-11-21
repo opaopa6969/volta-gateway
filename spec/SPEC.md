@@ -864,7 +864,8 @@ GET  /login?provider=google&return_to=/dashboard
 POST /auth/callback/complete     {"code":"…","state":"…"}
 POST /auth/mfa/verify            {"code":"123456"}
 POST /auth/passkey/start         {"email":"alice@example.com"}
-POST /invite/{code}/accept       {"email":"alice@example.com"}
+GET  /invite/{code}/accept                                 # invitation page
+POST /invite/{code}/accept       Cookie: __volta_session=…
 GET  /api/v1/users/me
 GET  /api/me/sessions
 POST /oauth/token                grant_type=client_credentials&client_id=…&client_secret=…
@@ -1580,7 +1581,7 @@ and (c) its Java equivalent appears in `docs/parity.md`.
 | POST   | `/api/v1/tenants/{tenantId}/invitations`                   | `manage::create_invitation`         | —          |
 | GET    | `/api/v1/tenants/{tenantId}/invitations`                   | `manage::list_invitations`          | —          |
 | DELETE | `/api/v1/tenants/{tenantId}/invitations/{invitationId}`    | `manage::cancel_invitation`         | —          |
-| POST   | `/invite/{code}/accept`                                    | `manage::accept_invite`             | 20 / min / IP |
+| GET / POST | `/invite/{code}/accept`                                | `manage::invitation_page` / `manage::accept_invite` | 20 / min / IP |
 
 ### C.10 IdP / M2M / OAuth2 token (`handlers/manage.rs`)
 

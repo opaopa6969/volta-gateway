@@ -44,6 +44,14 @@ pub fn render(t: &NotificationTemplate) -> (String, String) {
                 get("token")
             ),
         ),
+        "tenant-invitation" => (
+            "組織への招待".to_string(),
+            format!(
+                "{} への招待が届きました。招待されたメールアドレスのアカウントでログインして、参加してください。\n\n{}\n\nこの招待は7日間有効です。心当たりがない場合は無視してください。",
+                get("tenant"),
+                get("url"),
+            ),
+        ),
         "password-reset" => (
             "パスワードリセット".to_string(),
             format!("リセット用トークン:\n\n{}\n", get("token")),
@@ -401,6 +409,13 @@ mod tests {
         let (subject, body) = render(&t);
         assert!(subject.contains("確認"));
         assert!(body.contains("TOK123"));
+
+        let invitation = NotificationTemplate::new("tenant-invitation")
+            .var("tenant", "取引先組織")
+            .var("url", "https://auth.example.test/invite/test/accept");
+        let (_, body) = render(&invitation);
+        assert!(body.contains("取引先組織"));
+        assert!(body.contains("https://auth.example.test/invite/test/accept"));
 
         let t = NotificationTemplate::new("mfa-code").var("code", "654321");
         let (_s, body) = render(&t);

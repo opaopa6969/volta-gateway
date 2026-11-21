@@ -57,7 +57,6 @@ urlencoding = "2"
 url = "2"
 
 # Unicode normalization (NFC for email comparison)
-unicode-normalization = "0.1"
 
 # CIDR parsing (local network bypass)
 ipnet = "2"
