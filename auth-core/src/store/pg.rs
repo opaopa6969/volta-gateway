@@ -386,6 +386,74 @@ impl UserStore for PgStore {
 
 // ─── TenantStore ───────────────────────────────────────────
 
+async fn insert_tenant<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    record: &TenantRecord,
+) -> Result<TenantRecord, AuthError> {
+    sqlx::query_as::<_, TenantRecord>(
+        "INSERT INTO tenants (id, name, slug, email_domain, auto_join, created_by, created_at, \
+                              plan, max_members, is_active, mfa_required, mfa_grace_until) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
+         RETURNING id, name, slug, email_domain, auto_join, created_by, created_at, \
+                   plan, max_members, is_active, mfa_required, mfa_grace_until",
+    )
+    .bind(record.id)
+    .bind(&record.name)
+    .bind(&record.slug)
+    .bind(&record.email_domain)
+    .bind(record.auto_join)
+    .bind(record.created_by)
+    .bind(record.created_at)
+    .bind(&record.plan)
+    .bind(record.max_members)
+    .bind(record.is_active)
+    .bind(record.mfa_required)
+    .bind(record.mfa_grace_until)
+    .fetch_one(executor)
+    .await
+    .map_err(AuthError::from)
+}
+
+impl PgStore {
+    /// Create a company and its initial owner atomically.
+    pub async fn create_tenant_with_owner(
+        &self,
+        record: &TenantRecord,
+        owner_id: Uuid,
+    ) -> Result<TenantRecord, AuthError> {
+        let mut tx = self.pool.begin().await?;
+        let active_owner: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM users WHERE id = $1 AND is_active AND deleted_at IS NULL FOR SHARE",
+        )
+        .bind(owner_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if active_owner.is_none() {
+            return Err(AuthError::PolicyDenied("account is unavailable".into()));
+        }
+        let tenant = insert_tenant(&mut *tx, record).await?;
+        sqlx::query("INSERT INTO memberships (user_id, tenant_id, role) VALUES ($1, $2, 'OWNER')")
+            .bind(owner_id)
+            .bind(tenant.id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(tenant)
+    }
+
+    pub async fn rename_tenant(&self, id: Uuid, name: &str) -> Result<(), AuthError> {
+        let result = sqlx::query("UPDATE tenants SET name = $1 WHERE id = $2 AND is_active")
+            .bind(name)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        if result.rows_affected() == 0 {
+            return Err(AuthError::NotFound("active tenant".into()));
+        }
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl TenantStore for PgStore {
     async fn find_by_id(&self, id: Uuid) -> Result<Option<TenantRecord>, AuthError> {
@@ -426,28 +494,7 @@ impl TenantStore for PgStore {
     }
 
     async fn create(&self, record: TenantRecord) -> Result<TenantRecord, AuthError> {
-        sqlx::query_as::<_, TenantRecord>(
-            "INSERT INTO tenants (id, name, slug, email_domain, auto_join, created_by, created_at, \
-                                  plan, max_members, is_active, mfa_required, mfa_grace_until) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
-             RETURNING id, name, slug, email_domain, auto_join, created_by, created_at, \
-                       plan, max_members, is_active, mfa_required, mfa_grace_until"
-        )
-        .bind(record.id)
-        .bind(&record.name)
-        .bind(&record.slug)
-        .bind(&record.email_domain)
-        .bind(record.auto_join)
-        .bind(record.created_by)
-        .bind(record.created_at)
-        .bind(&record.plan)
-        .bind(record.max_members)
-        .bind(record.is_active)
-        .bind(record.mfa_required)
-        .bind(record.mfa_grace_until)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(AuthError::from)
+        insert_tenant(&self.pool, &record).await
     }
 
     async fn create_personal(
